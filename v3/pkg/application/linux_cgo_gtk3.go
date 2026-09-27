@@ -1511,14 +1511,15 @@ func (w *linuxWebviewWindow) minimise() {
 	C.gtk_window_iconify(w.gtkWindow())
 }
 
+// createWindowWebview builds the in-window webview widget. The CEF
+// backend (wails_cef build tag) replaces it at init with its own
+// container widget; without the tag this is the plain WebKit path.
+var createWindowWebview = windowNewWebview
+
 func windowNew(application pointer, menu pointer, _ LinuxMenuStyle, windowId uint, gpuPolicy WebviewGpuPolicy) (window, webview, vbox pointer) {
 	window = pointer(C.gtk_application_window_new((*C.GtkApplication)(application)))
 	C.g_object_ref_sink(C.gpointer(window))
-	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendCEF {
-		webview = windowNewCEFWebview(windowId)
-	} else {
-		webview = windowNewWebview(windowId, gpuPolicy)
-	}
+	webview = createWindowWebview(windowId, gpuPolicy)
 	vbox = pointer(C.gtk_box_new(C.GTK_ORIENTATION_VERTICAL, 0))
 	name := C.CString("webview-box")
 	defer C.free(unsafe.Pointer(name))

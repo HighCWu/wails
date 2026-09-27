@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && wails_cef
 
 package cef
 

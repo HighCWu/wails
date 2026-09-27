@@ -1,4 +1,4 @@
-//go:build linux && cgo && gtk3 && !android && !server
+//go:build linux && cgo && gtk3 && wails_cef && !android && !server
 
 package application
 
@@ -78,10 +78,14 @@ type linuxCEFWebview struct {
 // trampolines can find the Go side.
 var cefEngines sync.Map // unsafe.Pointer(widget) -> *linuxCEFWebview
 
-// windowNewCEFWebview creates the GTK container widget used in place of a
+func init() {
+	createWindowWebview = newCEFWebview
+}
+
+// newCEFWebview creates the GTK container widget used in place of a
 // WebKitWebView. The CEF browser itself is created when the widget is
 // mapped (its X11 window only exists then).
-func windowNewCEFWebview(windowId uint) pointer {
+func newCEFWebview(windowId uint, _ WebviewGpuPolicy) pointer {
 	widget := pointer(C.gtk_drawing_area_new())
 	C.gtk_widget_set_can_focus((*C.GtkWidget)(widget), C.gboolean(1))
 	e := &linuxCEFWebview{widget: widget, windowID: windowId}

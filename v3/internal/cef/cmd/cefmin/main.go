@@ -1,3 +1,5 @@
+//go:build linux && wails_cef
+
 // Command cefmin is a minimal browser-process smoke test for the cef
 // package, bypassing the wails application layer.
 package main
