@@ -82,6 +82,7 @@ func ExecuteSubprocess() error {
 		return err
 	}
 
+	fmt.Fprintf(os.Stderr, "[cef-sub] execute_process enter args=%d\n", len(os.Args))
 	ma := newMainArgs()
 	defer ma.free()
 	app := buildApp()
@@ -181,6 +182,16 @@ func logHint(opts InitializeOptions) string {
 // Initialized reports whether the browser process CEF state is live.
 func Initialized() bool { return initialized.Load() }
 
+// DoMessageLoopWork pumps CEF's message loop once; the host calls it
+// from its UI loop (~10ms cadence) when multi_threaded_message_loop is
+// disabled.
+func DoMessageLoopWork() {
+	if !initialized.Load() {
+		return
+	}
+	C.wcef_do_message_loop_work()
+}
+
 // shutdownGracePeriod bounds how long CloseAllBrowsers may block when
 // tearing the browser process down.
 const shutdownGracePeriod = 3 * time.Second
@@ -265,7 +276,11 @@ func buildSettings(dir string, opts InitializeOptions) (*C.cef_settings_t, func(
 		s.log_severity = C.LOGSEVERITY_ERROR
 	}
 
-	s.multi_threaded_message_loop = 1
+	// MTML stays off on Linux: with multi_threaded_message_loop=1 CEF
+	// fails to create the browser's native X window in this embedding
+	// (verified against a pure-C host pumping the loop manually). The
+	// glue pumps CefDoMessageLoopWork from a GTK timeout instead.
+	s.multi_threaded_message_loop = 0
 	s.windowless_rendering_enabled = 0
 	if !opts.EnableSandbox {
 		s.no_sandbox = 1

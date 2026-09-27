@@ -150,6 +150,7 @@ static void wcef_init_displayh(void* p) {
 import "C"
 
 import (
+	"fmt"
 	"log/slog"
 	"math"
 	"os"
@@ -421,6 +422,7 @@ func loadStart(browser *C.cef_browser_t, frame *C.cef_frame_t, client *browserCl
 	if frame == nil || C.wcef_frame_is_main(frame) != 1 {
 		return
 	}
+	fmt.Fprintf(os.Stderr, "[cef-nav] load start win=%d url=%s\n", client.windowID, userfreeToString(C.wcef_frame_get_url(frame)))
 	st := state.Load()
 	if st != nil && st.OnWindowLoadStart != nil {
 		st.OnWindowLoadStart(client.windowID)

@@ -71,6 +71,7 @@ int wcef_initialize(const cef_main_args_t* args,
                     const cef_settings_t* settings,
                     cef_app_t* app);
 void wcef_shutdown(void);
+void wcef_do_message_loop_work(void);
 int wcef_get_exit_code(void);
 
 int wcef_create_browser(const cef_window_info_t* window_info,

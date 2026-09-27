@@ -13,6 +13,7 @@
 typedef int (*wcef_execute_process_fn)(const cef_main_args_t*, cef_app_t*, void*);
 typedef int (*wcef_initialize_fn)(const cef_main_args_t*, const cef_settings_t*, cef_app_t*, void*);
 typedef void (*wcef_shutdown_fn)(void);
+typedef void (*wcef_do_work_fn)(void);
 typedef int (*wcef_get_exit_code_fn)(void);
 typedef int (*wcef_create_browser_fn)(const cef_window_info_t*, cef_client_t*, const cef_string_t*, const cef_browser_settings_t*, cef_dictionary_value_t*, cef_request_context_t*);
 typedef int (*wcef_string_utf8_to_utf16_fn)(const char*, size_t, cef_string_utf16_t*);
@@ -48,6 +49,7 @@ static char g_error[192];
 static wcef_execute_process_fn g_execute_process;
 static wcef_initialize_fn g_initialize;
 static wcef_shutdown_fn g_shutdown;
+static wcef_do_work_fn g_do_work;
 static wcef_get_exit_code_fn g_get_exit_code;
 static wcef_create_browser_fn g_create_browser;
 static wcef_string_utf8_to_utf16_fn g_str_u8u16;
@@ -98,6 +100,7 @@ int wcef_load(const char* libcef_path) {
   g_execute_process = (wcef_execute_process_fn)wcef_sym("cef_execute_process");
   g_initialize = (wcef_initialize_fn)wcef_sym("cef_initialize");
   g_shutdown = (wcef_shutdown_fn)wcef_sym("cef_shutdown");
+  g_do_work = (wcef_do_work_fn)wcef_sym("cef_do_message_loop_work");
   g_get_exit_code = (wcef_get_exit_code_fn)wcef_sym("cef_get_exit_code");
   g_create_browser = (wcef_create_browser_fn)wcef_sym("cef_browser_host_create_browser");
   g_str_u8u16 = (wcef_string_utf8_to_utf16_fn)wcef_sym("cef_string_utf8_to_utf16");
@@ -176,6 +179,8 @@ int wcef_initialize(const cef_main_args_t* args, const cef_settings_t* settings,
 }
 
 void wcef_shutdown(void) { g_shutdown(); }
+
+void wcef_do_message_loop_work(void) { g_do_work(); }
 
 int wcef_get_exit_code(void) { return g_get_exit_code(); }
 

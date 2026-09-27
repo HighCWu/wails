@@ -6,6 +6,12 @@ package application
 #cgo linux pkg-config: gtk+-3.0 webkit2gtk-4.1 gdk-3.0
 #include <gtk/gtk.h>
 
+// The pump callback: calls into the cef package's DoMessageLoopWork.
+extern gboolean wailsCEFPumpMessageLoop(gpointer user_data);
+static void wails_cef_start_message_pump(void) {
+  g_timeout_add(10, wailsCEFPumpMessageLoop, NULL);
+}
+
 // GTK signal trampolines for the CEF engine container widget (the engine
 // file's preamble carries definitions, so exports live here).
 extern void wailsCEFOnMap(GtkWidget* widget, gpointer user_data);
@@ -16,6 +22,7 @@ import "C"
 import (
 	"fmt"
 	"os"
+	"sync"
 	"unsafe"
 
 	"github.com/wailsapp/wails/v3/internal/assetserver"
@@ -45,9 +52,27 @@ func init() {
 
 //export wailsCEFOnMap
 func wailsCEFOnMap(widget *C.GtkWidget, userData C.gpointer) {
+	// The widget is realized now (its X window exists); this is the
+	// reliable attach driver once startURL has arrived via setURL
+	// (attach is a no-op until then). Earlier size-allocate attempts
+	// may have run before realize and failed to obtain the XID.
 	if e, ok := cefEngines.Load(unsafe.Pointer(widget)); ok {
 		e.(*linuxCEFWebview).attach()
 	}
+}
+
+var pumpOnce sync.Once
+
+//export wailsCEFPumpMessageLoop
+func wailsCEFPumpMessageLoop(userData C.gpointer) C.gboolean {
+	pumpOnce.Do(func() { fmt.Fprintln(os.Stderr, "[cef-pump] first tick") })
+	cef.DoMessageLoopWork()
+	// Lazy attach driver (see tryAttach): runs on the GTK main thread.
+	cefEngines.Range(func(_, v any) bool {
+		v.(*linuxCEFWebview).tryAttach()
+		return true
+	})
+	return C.gboolean(1) // keep the source
 }
 
 //export wailsCEFOnFocusIn
@@ -61,7 +86,14 @@ func wailsCEFOnFocusIn(widget *C.GtkWidget, event *C.GdkEvent, userData C.gpoint
 //export wailsCEFOnSizeAllocate
 func wailsCEFOnSizeAllocate(widget *C.GtkWidget, allocation *C.GdkRectangle, userData C.gpointer) {
 	if e, ok := cefEngines.Load(unsafe.Pointer(widget)); ok {
-		e.(*linuxCEFWebview).resizeBrowser(int(allocation.width), int(allocation.height))
+		engine := e.(*linuxCEFWebview)
+		// First valid allocation drives browser creation — the drawing
+		// area's absolute origin is only reliable after toplevel layout.
+		if engine.hostChild == 0 {
+			engine.attach()
+			return
+		}
+		engine.resizeBrowser(int(allocation.width), int(allocation.height))
 	}
 }
 
@@ -150,7 +182,15 @@ func initCEFBackend(app *App) error {
 	if os.Getenv("WAILS_CEF_LOG_TO_FILE") == "1" {
 		opts.LogToFile = true
 	}
-	return cef.Initialize(opts)
+	if err := cef.Initialize(opts); err != nil {
+		return err
+	}
+
+	// MTML is off: pump CEF's message loop from the GTK main loop. The
+	// source is attached before g_application_run starts; 10ms keeps CEF
+	// responsive (~60-100fps budget) without busy-spinning.
+	C.wails_cef_start_message_pump()
+	return nil
 }
 
 // shutdownCEFBackend tears CEF down after the GTK main loop has stopped.
