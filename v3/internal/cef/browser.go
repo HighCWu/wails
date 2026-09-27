@@ -4,7 +4,7 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15200
 
 // Shims over the //export'ed callbacks in handlers.go.
 
@@ -56,13 +56,75 @@ static void wails_cef_displayh_on_title_change(struct _cef_display_handler_t* se
   wailsCEFDisplayHOnTitleChange(self, browser, title);
 }
 
+// cef_keyboard_handler_t
+int wailsCEFKeyboardOnKeyEvent(struct _cef_keyboard_handler_t* self, struct _cef_browser_t* browser, const cef_key_event_t* event, cef_event_handle_t os_event);
+static int wails_cef_kb_on_key_event(struct _cef_keyboard_handler_t* self, struct _cef_browser_t* browser, const cef_key_event_t* event, cef_event_handle_t os_event) {
+  return wailsCEFKeyboardOnKeyEvent(self, browser, event, os_event);
+}
+
+// cef_permission_handler_t
+int wailsCEFPermissionOnMediaAccess(struct _cef_permission_handler_t* self, struct _cef_browser_t* browser, struct _cef_frame_t* frame, const cef_string_t* requesting_origin, uint32_t requested_permissions, struct _cef_media_access_callback_t* callback);
+static int wails_cef_perm_on_media_access(struct _cef_permission_handler_t* self, struct _cef_browser_t* browser, struct _cef_frame_t* frame, const cef_string_t* requesting_origin, uint32_t requested_permissions, struct _cef_media_access_callback_t* callback) {
+  return wailsCEFPermissionOnMediaAccess(self, browser, frame, requesting_origin, requested_permissions, callback);
+}
+
+// cef_drag_handler_t
+int wailsCEFDragOnEnter(struct _cef_drag_handler_t* self, struct _cef_browser_t* browser, struct _cef_drag_data_t* drag_data, int mask);
+static int wails_cef_drag_on_enter(struct _cef_drag_handler_t* self, struct _cef_browser_t* browser, struct _cef_drag_data_t* drag_data, cef_drag_operations_mask_t mask) {
+  return wailsCEFDragOnEnter(self, browser, drag_data, (int)mask);
+}
+
+// cef_request_handler_t
+int wailsCEFRequestOnBeforeBrowse(struct _cef_request_handler_t* self, struct _cef_browser_t* browser, struct _cef_frame_t* frame, struct _cef_request_t* request, int user_gesture, int is_redirect);
+static int wails_cef_req_on_before_browse(struct _cef_request_handler_t* self, struct _cef_browser_t* browser, struct _cef_frame_t* frame, struct _cef_request_t* request, int user_gesture, int is_redirect) {
+  return wailsCEFRequestOnBeforeBrowse(self, browser, frame, request, user_gesture, is_redirect);
+}
+
+// client getters for the new handlers
+struct _cef_keyboard_handler_t* wailsCEFClientGetKeyboardH(struct _cef_client_t* self);
+static struct _cef_keyboard_handler_t* wails_cef_client_get_keyboardh(struct _cef_client_t* self) {
+  return wailsCEFClientGetKeyboardH(self);
+}
+struct _cef_permission_handler_t* wailsCEFClientGetPermissionH(struct _cef_client_t* self);
+static struct _cef_permission_handler_t* wails_cef_client_get_permissionh(struct _cef_client_t* self) {
+  return wailsCEFClientGetPermissionH(self);
+}
+struct _cef_drag_handler_t* wailsCEFClientGetDragH(struct _cef_client_t* self);
+static struct _cef_drag_handler_t* wails_cef_client_get_dragh(struct _cef_client_t* self) {
+  return wailsCEFClientGetDragH(self);
+}
+struct _cef_request_handler_t* wailsCEFClientGetRequestH(struct _cef_client_t* self);
+static struct _cef_request_handler_t* wails_cef_client_get_requesth(struct _cef_client_t* self) {
+  return wailsCEFClientGetRequestH(self);
+}
+
 // Struct initialisers (see app.go for why wiring happens in C).
 static void wcef_init_client(void* p) {
   cef_client_t* c = (cef_client_t*)p;
   c->get_life_span_handler = wails_cef_client_get_lsh;
   c->get_load_handler = wails_cef_client_get_loadh;
   c->get_display_handler = wails_cef_client_get_displayh;
+  c->get_keyboard_handler = wails_cef_client_get_keyboardh;
+  c->get_permission_handler = wails_cef_client_get_permissionh;
+  c->get_drag_handler = wails_cef_client_get_dragh;
+  c->get_request_handler = wails_cef_client_get_requesth;
   c->on_process_message_received = wails_cef_client_process_message;
+}
+static void wcef_init_keyboardh(void* p) {
+  cef_keyboard_handler_t* h = (cef_keyboard_handler_t*)p;
+  h->on_key_event = wails_cef_kb_on_key_event;
+}
+static void wcef_init_permissionh(void* p) {
+  cef_permission_handler_t* h = (cef_permission_handler_t*)p;
+  h->on_request_media_access_permission = wails_cef_perm_on_media_access;
+}
+static void wcef_init_dragh(void* p) {
+  cef_drag_handler_t* h = (cef_drag_handler_t*)p;
+  h->on_drag_enter = wails_cef_drag_on_enter;
+}
+static void wcef_init_requesth(void* p) {
+  cef_request_handler_t* h = (cef_request_handler_t*)p;
+  h->on_before_browse = wails_cef_req_on_before_browse;
 }
 static void wcef_init_lsh(void* p) {
   cef_life_span_handler_t* h = (cef_life_span_handler_t*)p;
@@ -91,7 +153,9 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"strings"
 	"sync"
+	"time"
 	"unsafe"
 )
 
@@ -130,11 +194,21 @@ func LookupBrowser(windowID uint) *Browser {
 
 // browserClient owns the per-window CEF handler structs.
 type browserClient struct {
-	c        *C.cef_client_t
-	lsh      *C.cef_life_span_handler_t
-	loadH    *C.cef_load_handler_t
-	displayH *C.cef_display_handler_t
-	windowID uint
+	c           *C.cef_client_t
+	lsh         *C.cef_life_span_handler_t
+	loadH       *C.cef_load_handler_t
+	displayH    *C.cef_display_handler_t
+	keyboardH   *C.cef_keyboard_handler_t
+	permissionH *C.cef_permission_handler_t
+	dragH       *C.cef_drag_handler_t
+	requestH    *C.cef_request_handler_t
+	windowID    uint
+
+	// dragPending caches the dragged file paths from on_drag_enter until
+	// the resulting file:// navigation arrives in on_before_browse, which
+	// is the only drop notification windowed CEF offers.
+	dragPending []string
+	dragMu      sync.Mutex
 }
 
 func newBrowserClient(windowID uint) *browserClient {
@@ -149,12 +223,28 @@ func newBrowserClient(windowID uint) *browserClient {
 	bc.displayH = (*C.cef_display_handler_t)(allocStruct(C.sizeof_cef_display_handler_t))
 	C.wcef_init_displayh(unsafe.Pointer(bc.displayH))
 
+	bc.keyboardH = (*C.cef_keyboard_handler_t)(allocStruct(C.sizeof_cef_keyboard_handler_t))
+	C.wcef_init_keyboardh(unsafe.Pointer(bc.keyboardH))
+
+	bc.permissionH = (*C.cef_permission_handler_t)(allocStruct(C.sizeof_cef_permission_handler_t))
+	C.wcef_init_permissionh(unsafe.Pointer(bc.permissionH))
+
+	bc.dragH = (*C.cef_drag_handler_t)(allocStruct(C.sizeof_cef_drag_handler_t))
+	C.wcef_init_dragh(unsafe.Pointer(bc.dragH))
+
+	bc.requestH = (*C.cef_request_handler_t)(allocStruct(C.sizeof_cef_request_handler_t))
+	C.wcef_init_requesth(unsafe.Pointer(bc.requestH))
+
 	bc.c = (*C.cef_client_t)(allocStruct(C.sizeof_cef_client_t))
 	C.wcef_init_client(unsafe.Pointer(bc.c))
 
 	handlerOwners.Store(unsafe.Pointer(bc.lsh), bc)
 	handlerOwners.Store(unsafe.Pointer(bc.loadH), bc)
 	handlerOwners.Store(unsafe.Pointer(bc.displayH), bc)
+	handlerOwners.Store(unsafe.Pointer(bc.keyboardH), bc)
+	handlerOwners.Store(unsafe.Pointer(bc.permissionH), bc)
+	handlerOwners.Store(unsafe.Pointer(bc.dragH), bc)
+	handlerOwners.Store(unsafe.Pointer(bc.requestH), bc)
 	return bc
 }
 
@@ -190,6 +280,41 @@ type CreateBrowserOptions struct {
 	URL string
 	// Width/Height are the initial bounds within the parent.
 	Width, Height int
+	// BackgroundColor is the base cef_color_t (CEF_COLOR_ARGB layout:
+	// 0xAARRGGBB) applied before the first paint; 0 keeps CEF's default.
+	BackgroundColor uint32
+}
+
+// CloseAllBrowsers force-closes every live browser and waits until their
+// before_close notifications arrive (CEF requires this before shutdown),
+// bounded by timeout. Returns the number of browsers still alive.
+func CloseAllBrowsers(timeout time.Duration) int {
+	var browsers []*Browser
+	browsersByWin.Range(func(_, v any) bool {
+		browsers = append(browsers, v.(*Browser))
+		return true
+	})
+	for _, b := range browsers {
+		b.Close(true)
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		alive := 0
+		browsersByWin.Range(func(_, _ any) bool {
+			alive++
+			return true
+		})
+		if alive == 0 {
+			return 0
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	alive := 0
+	browsersByWin.Range(func(_, _ any) bool {
+		alive++
+		return true
+	})
+	return alive
 }
 
 // CreateBrowser creates a windowed browser embedded into the given X11
@@ -215,6 +340,9 @@ func CreateBrowser(opts CreateBrowserOptions) (*Browser, error) {
 
 	settings := (*C.cef_browser_settings_t)(C.calloc(1, C.sizeof_cef_browser_settings_t))
 	settings.size = C.sizeof_cef_browser_settings_t
+	if opts.BackgroundColor != 0 {
+		settings.background_color = C.cef_color_t(opts.BackgroundColor)
+	}
 	defer C.free(unsafe.Pointer(settings))
 
 	url := newCefString(opts.URL)
@@ -332,6 +460,102 @@ func titleChange(browser *C.cef_browser_t, title *C.cef_string_t, client *browse
 	}
 }
 
+// keyEvent implements cef_keyboard_handler_t.on_key_event: forwards raw
+// keydowns to the host (accelerators, key bindings) and lets the host
+// decide consumption.
+func keyEvent(browser *C.cef_browser_t, event *C.cef_key_event_t, client *browserClient) C.int {
+	if event == nil {
+		return 0
+	}
+	if event._type != C.KEYEVENT_RAWKEYDOWN {
+		return 0
+	}
+	st := state.Load()
+	if st == nil || st.OnKeyEvent == nil {
+		return 0
+	}
+	consumed := st.OnKeyEvent(client.windowID, uint32(event.native_key_code), uint32(event.modifiers))
+	if consumed {
+		return 1
+	}
+	return 0
+}
+
+// mediaPermission implements
+// cef_permission_handler_t.on_request_media_access_permission, honouring
+// the host's decision (mirrors the system webview permission handling).
+func mediaPermission(browser *C.cef_browser_t, requestedPermissions C.uint32_t, callback unsafe.Pointer, client *browserClient) C.int {
+	st := state.Load()
+	if st == nil || st.OnMediaPermission == nil {
+		return 0
+	}
+	needVideo := requestedPermissions&C.uint32_t(C.CEF_PERMISSION_TYPE_CAMERA_STREAM) != 0
+	needAudio := requestedPermissions&C.uint32_t(C.CEF_PERMISSION_TYPE_MIC_STREAM) != 0
+	if st.OnMediaPermission(client.windowID, needAudio, needVideo) {
+		C.wcef_media_callback_cont(callback, requestedPermissions)
+	} else {
+		C.wcef_media_callback_cont(callback, 0)
+	}
+	return 1
+}
+
+// dragEnter implements cef_drag_handler_t.on_drag_enter: stash dragged
+// file paths; the drop itself surfaces as the file:// navigation that
+// beforeBrowse cancels and converts into OnFilesDropped.
+func dragEnter(browser *C.cef_browser_t, dragData *C.cef_drag_data_t, client *browserClient) C.int {
+	if dragData == nil {
+		return 0
+	}
+	list := C.wcef_drag_data_get_file_paths(dragData)
+	defer C.wcef_string_list_free(list)
+	n := int(C.wcef_string_list_size(list))
+	if n == 0 {
+		return 0
+	}
+	var files []string
+	var out C.cef_string_t
+	for i := 0; i < n; i++ {
+		if C.wcef_string_list_value(list, C.size_t(i), &out) != 1 {
+			continue
+		}
+		files = append(files, goString(&out))
+	}
+	if len(files) == 0 {
+		return 0
+	}
+	client.dragMu.Lock()
+	client.dragPending = files
+	client.dragMu.Unlock()
+	// Allow the drag so Chromium starts the file:// navigation on
+	// release; beforeBrowse turns that into the drop event.
+	return 0
+}
+
+// beforeBrowse implements cef_request_handler_t.on_before_browse:
+// converts the file:// navigation caused by an external file drop into
+// the host's OnFilesDropped event and cancels the navigation.
+func beforeBrowse(browser *C.cef_browser_t, request *C.cef_request_t, client *browserClient) C.int {
+	if request == nil {
+		return 0
+	}
+	url := userfreeToString(C.wcef_request_get_url(request))
+	if !strings.HasPrefix(url, "file://") {
+		return 0
+	}
+	client.dragMu.Lock()
+	files := client.dragPending
+	client.dragPending = nil
+	client.dragMu.Unlock()
+	if len(files) == 0 {
+		return 0
+	}
+	st := state.Load()
+	if st != nil && st.OnFilesDropped != nil {
+		st.OnFilesDropped(client.windowID, files)
+	}
+	return 1 // cancel the file:// navigation
+}
+
 // ExecJS evaluates JavaScript in the browser's main frame. CEF marshals
 // execution onto its UI thread internally.
 func (b *Browser) ExecJS(js string) {
@@ -390,6 +614,14 @@ func (b *Browser) ZoomFactor() float64 {
 		return 1
 	}
 	return math.Pow(2, float64(C.wcef_host_get_zoom_level(b.host)))
+}
+
+// OpenDevTools opens CEF's developer tools window (default position).
+func (b *Browser) OpenDevTools() {
+	if b == nil || b.host == nil {
+		return
+	}
+	C.wcef_host_show_dev_tools(b.host)
 }
 
 // Close destroys the browser. The native child window is removed

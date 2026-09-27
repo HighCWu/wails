@@ -50,6 +50,14 @@ func wailsCEFOnMap(widget *C.GtkWidget, userData C.gpointer) {
 	}
 }
 
+//export wailsCEFOnFocusIn
+func wailsCEFOnFocusIn(widget *C.GtkWidget, event *C.GdkEvent, userData C.gpointer) C.gboolean {
+	if e := engineForToplevel(unsafe.Pointer(widget)); e != nil {
+		e.focusBrowser()
+	}
+	return C.gboolean(0) // let GTK continue default handling
+}
+
 //export wailsCEFOnSizeAllocate
 func wailsCEFOnSizeAllocate(widget *C.GtkWidget, allocation *C.GdkRectangle, userData C.gpointer) {
 	if e, ok := cefEngines.Load(unsafe.Pointer(widget)); ok {
@@ -112,6 +120,26 @@ func initCEFBackend(app *App) error {
 			}
 			return ""
 		},
+		OnKeyEvent: func(windowID uint, nativeKeyCode uint32, modifiers uint32) bool {
+			accelerator, ok := cefAccelerator(nativeKeyCode, modifiers)
+			if !ok {
+				return false
+			}
+			windowKeyEvents <- &windowKeyEvent{
+				windowId:          windowID,
+				acceleratorString: accelerator,
+			}
+			// Consume undo/redo for the same reason the WebKit path
+			// does: the native handler is unreliable for inputs and
+			// handleKeyEvent re-issues it via execCommand.
+			return accelerator == "Ctrl+Z" || accelerator == "Ctrl+Shift+Z"
+		},
+		OnMediaPermission: func(windowID uint, needAudio, needVideo bool) bool {
+			return allowMediaCapture(windowID, needAudio, needVideo)
+		},
+		OnFilesDropped: func(windowID uint, filenames []string) {
+			addDragAndDropMessage(windowID, filenames, nil)
+		},
 	})
 
 	// Serve the asset server from http://wails.localhost (the Windows
@@ -129,4 +157,25 @@ func initCEFBackend(app *App) error {
 // Called from appRun.
 func shutdownCEFBackend() {
 	cef.Shutdown()
+}
+
+// cefAccelerator converts a CEF key event (X keysym + EVENTFLAG modifier
+// mask) into the wails accelerator string used by key bindings and menus.
+func cefAccelerator(nativeKeyCode, modifiers uint32) (string, bool) {
+	var acc accelerator
+	if modifiers&cef.EventFlagShiftDown != 0 {
+		acc.Modifiers = append(acc.Modifiers, ShiftKey)
+	}
+	if modifiers&cef.EventFlagControlDown != 0 {
+		acc.Modifiers = append(acc.Modifiers, ControlKey)
+	}
+	if modifiers&cef.EventFlagAltDown != 0 {
+		acc.Modifiers = append(acc.Modifiers, OptionOrAltKey)
+	}
+	keyString, ok := VirtualKeyCodes[uint(nativeKeyCode)]
+	if !ok {
+		return "", false
+	}
+	acc.Key = keyString
+	return acc.String(), true
 }

@@ -4,7 +4,7 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15200
 */
 import "C"
 
@@ -166,6 +166,70 @@ func wailsCEFLoadHOnLoadError(self *C.cef_load_handler_t, browser *C.cef_browser
 }
 
 // --- cef_display_handler_t ---
+
+//export wailsCEFClientGetKeyboardH
+func wailsCEFClientGetKeyboardH(self *C.cef_client_t) *C.cef_keyboard_handler_t {
+	if bc := clientByPtr(unsafe.Pointer(self)); bc != nil {
+		return bc.keyboardH
+	}
+	return nil
+}
+
+//export wailsCEFClientGetPermissionH
+func wailsCEFClientGetPermissionH(self *C.cef_client_t) *C.cef_permission_handler_t {
+	if bc := clientByPtr(unsafe.Pointer(self)); bc != nil {
+		return bc.permissionH
+	}
+	return nil
+}
+
+//export wailsCEFClientGetDragH
+func wailsCEFClientGetDragH(self *C.cef_client_t) *C.cef_drag_handler_t {
+	if bc := clientByPtr(unsafe.Pointer(self)); bc != nil {
+		return bc.dragH
+	}
+	return nil
+}
+
+//export wailsCEFClientGetRequestH
+func wailsCEFClientGetRequestH(self *C.cef_client_t) *C.cef_request_handler_t {
+	if bc := clientByPtr(unsafe.Pointer(self)); bc != nil {
+		return bc.requestH
+	}
+	return nil
+}
+
+//export wailsCEFKeyboardOnKeyEvent
+func wailsCEFKeyboardOnKeyEvent(self *C.cef_keyboard_handler_t, browser *C.cef_browser_t, event *C.cef_key_event_t, osEvent C.cef_event_handle_t) C.int {
+	if bc := clientByHandlerPtr(unsafe.Pointer(self)); bc != nil {
+		return keyEvent(browser, event, bc)
+	}
+	return 0
+}
+
+//export wailsCEFPermissionOnMediaAccess
+func wailsCEFPermissionOnMediaAccess(self *C.cef_permission_handler_t, browser *C.cef_browser_t, frame *C.cef_frame_t, requestingOrigin *C.cef_string_t, requestedPermissions C.uint32_t, callback *C.cef_media_access_callback_t) C.int {
+	if bc := clientByHandlerPtr(unsafe.Pointer(self)); bc != nil {
+		return mediaPermission(browser, requestedPermissions, unsafe.Pointer(callback), bc)
+	}
+	return 0
+}
+
+//export wailsCEFDragOnEnter
+func wailsCEFDragOnEnter(self *C.cef_drag_handler_t, browser *C.cef_browser_t, dragData *C.cef_drag_data_t, mask C.int) C.int {
+	if bc := clientByHandlerPtr(unsafe.Pointer(self)); bc != nil {
+		return dragEnter(browser, dragData, bc)
+	}
+	return 0
+}
+
+//export wailsCEFRequestOnBeforeBrowse
+func wailsCEFRequestOnBeforeBrowse(self *C.cef_request_handler_t, browser *C.cef_browser_t, frame *C.cef_frame_t, request *C.cef_request_t, userGesture C.int, isRedirect C.int) C.int {
+	if bc := clientByHandlerPtr(unsafe.Pointer(self)); bc != nil {
+		return beforeBrowse(browser, request, bc)
+	}
+	return 0
+}
 
 //export wailsCEFDisplayHOnTitleChange
 func wailsCEFDisplayHOnTitleChange(self *C.cef_display_handler_t, browser *C.cef_browser_t, title *C.cef_string_t) {

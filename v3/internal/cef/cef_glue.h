@@ -192,6 +192,21 @@ void wcef_browser_stop_load(cef_browser_t* b);
 double wcef_host_get_zoom_level(cef_browser_host_t* h);
 void wcef_host_set_zoom_level(cef_browser_host_t* h, double zoom_level);
 
+// cef_browser_host_t (continued)
+void wcef_host_show_dev_tools(cef_browser_host_t* h);
+
+// cef_drag_data_t (browser process, drag handler)
+cef_string_list_t wcef_drag_data_get_file_paths(cef_drag_data_t* d);
+
+// String lists (drag data file names).
+cef_string_list_t wcef_string_list_alloc(void);
+void wcef_string_list_free(cef_string_list_t list);
+size_t wcef_string_list_size(cef_string_list_t list);
+int wcef_string_list_value(cef_string_list_t list, size_t index, cef_string_t* value);
+
+// cef_media_access_callback_t
+void wcef_media_callback_cont(void* cb, uint32_t allowed_permissions);
+
 // cef_callback_t
 void wcef_callback_cont(cef_callback_t* cb);
 void wcef_callback_cancel(cef_callback_t* cb);

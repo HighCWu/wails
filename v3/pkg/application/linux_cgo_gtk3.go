@@ -1643,7 +1643,7 @@ func (w *linuxWebviewWindow) setDefaultSize(width int, height int) {
 
 func (w *linuxWebviewWindow) setBackgroundColour(colour RGBA) {
 	if w.cefEngine != nil {
-		// TODO(v3/cef): map onto CEF background_color (browser settings)
+		w.cefEngine.setBackgroundColour(colour)
 		return
 	}
 	rgba := C.GdkRGBA{C.double(colour.Red) / 255.0, C.double(colour.Green) / 255.0, C.double(colour.Blue) / 255.0, C.double(colour.Alpha) / 255.0}
@@ -1951,12 +1951,34 @@ func getMouseButtons() (bool, bool, bool) {
 	return state&C.GDK_BUTTON1_MASK > 0, state&C.GDK_BUTTON2_MASK > 0, state&C.GDK_BUTTON3_MASK > 0
 }
 
+// cefEngineForWidget resolves the CEF engine owning a webview widget; the
+// default returns nil (no CEF backend compiled in) and the wails_cef
+// engine replaces it at init.
+var cefEngineForWidget = func(webview pointer) cefEngineHooks { return nil }
+
 func openDevTools(webview pointer) {
+	if e := cefEngineForWidget(webview); e != nil {
+		// CEF backend: the widget is not a WebKitWebView — open the
+		// embedded browser's devtools window instead.
+		e.openDevTools()
+		return
+	}
 	inspector := C.webkit_web_view_get_inspector((*C.WebKitWebView)(webview))
 	C.webkit_web_inspector_show(inspector)
 }
 
 func (w *linuxWebviewWindow) startDrag() error {
+	if w.cefEngine != nil {
+		// The CEF native child window swallows GTK button events, so the
+		// drag state was never captured — synthesize it from the current
+		// pointer position.
+		if btn, x, y := w.cefEngine.queryPointerDragState(); btn > 0 {
+			w.drag.MouseButton = uint(btn)
+			w.drag.XRoot = x
+			w.drag.YRoot = y
+			w.drag.DragTime = uint32(C.gtk_get_current_event_time())
+		}
+	}
 	C.gtk_window_begin_move_drag(
 		(*C.GtkWindow)(w.window),
 		C.int(w.drag.MouseButton),
@@ -2000,6 +2022,10 @@ func (w *linuxWebviewWindow) startResize(border string) error {
 }
 
 func enableDevTools(webview pointer) {
+	if cefEngineForWidget(webview) != nil {
+		// CEF devtools are always available; opened on demand.
+		return
+	}
 	settings := C.webkit_web_view_get_settings((*C.WebKitWebView)(webview))
 	enabled := C.webkit_settings_get_enable_developer_extras(settings)
 	switch enabled {

@@ -68,7 +68,33 @@ type State struct {
 
 	// WindowName resolves a wails window name from a wails window id.
 	WindowName func(windowID uint) string
+
+	// OnKeyEvent reports a raw key press from the embedded browser.
+	// nativeKeyCode is the platform key code (X keysym on Linux),
+	// modifiers is a bitmask of EventFlag* constants. Returns true when
+	// the host consumed the event (it must not reach the renderer).
+	OnKeyEvent func(windowID uint, nativeKeyCode uint32, modifiers uint32) bool
+
+	// OnMediaPermission decides a getUserMedia request; mirrors the
+	// system webview permission handling.
+	OnMediaPermission func(windowID uint, needAudio, needVideo bool) bool
+
+	// OnFilesDropped delivers files dropped onto the browser window.
+	OnFilesDropped func(windowID uint, filenames []string)
 }
+
+// cef_key_event_t modifier flags (cef_types.h).
+const (
+	EventFlagNone              = 0
+	EventFlagShiftDown         = 1 << 1
+	EventFlagControlDown       = 1 << 2
+	EventFlagAltDown           = 1 << 3
+	EventFlagCapsLockOn        = 1 << 0
+	EventFlagLeftMouseButton   = 1 << 4
+	EventFlagMiddleMouseButton = 1 << 5
+	EventFlagRightMouseButton  = 1 << 6
+	EventFlagNumLockOn         = 1 << 8
+)
 
 // AssetRequest carries everything the glue needs to feed one CEF scheme
 // request into the wails asset server.

@@ -27,6 +27,13 @@ typedef int (*wcef_string_multimap_append_fn)(cef_string_multimap_t, const cef_s
 typedef size_t (*wcef_string_multimap_size_fn)(cef_string_multimap_t);
 
 typedef cef_process_message_t* (*wcef_process_message_create_fn)(const cef_string_t*, cef_process_id_t);
+typedef void (*wcef_host_show_dev_tools_fn)(cef_browser_host_t*, const cef_window_info_t*, cef_client_t*, const cef_browser_settings_t*, const cef_point_t*);
+typedef cef_string_list_t (*wcef_drag_get_file_paths_fn)(cef_drag_data_t*, cef_string_list_t);
+typedef cef_string_list_t (*wcef_string_list_alloc_fn)(void);
+typedef void (*wcef_string_list_free_fn)(cef_string_list_t);
+typedef size_t (*wcef_string_list_size_fn)(cef_string_list_t);
+typedef int (*wcef_string_list_value_fn)(cef_string_list_t, size_t, cef_string_t*);
+typedef void (*wcef_media_cb_cont_fn)(void*, uint32_t);
 typedef cef_v8_context_t* (*wcef_v8_context_get_current_fn)(void);
 typedef cef_v8_value_t* (*wcef_v8_value_create_object_fn)(cef_v8_accessor_t*, cef_v8_interceptor_t*);
 typedef cef_v8_value_t* (*wcef_v8_value_create_function_fn)(const cef_string_t*, cef_v8_handler_t*);
@@ -62,6 +69,13 @@ static wcef_v8_value_create_object_fn g_v8_create_object;
 static wcef_v8_value_create_function_fn g_v8_create_function;
 static wcef_v8_value_set_bykey_fn g_v8_set_bykey;
 static wcef_register_scheme_handler_factory_fn g_register_factory;
+static wcef_host_show_dev_tools_fn g_show_dev_tools;
+static wcef_drag_get_file_paths_fn g_drag_file_paths;
+static wcef_string_list_alloc_fn g_sl_alloc;
+static wcef_string_list_free_fn g_sl_free;
+static wcef_string_list_size_fn g_sl_size;
+static wcef_string_list_value_fn g_sl_value;
+static wcef_media_cb_cont_fn g_media_cont;
 
 // wcef_sym resolves a symbol, recording the first failure.
 static void* wcef_sym(const char* name) {
@@ -105,12 +119,37 @@ int wcef_load(const char* libcef_path) {
 
   g_register_factory = (wcef_register_scheme_handler_factory_fn)wcef_sym("cef_register_scheme_handler_factory");
   g_api_hash = (wcef_api_hash_fn)wcef_sym("cef_api_hash");
+  g_show_dev_tools = (wcef_host_show_dev_tools_fn)wcef_sym("cef_browser_host_show_dev_tools");
+  g_drag_file_paths = (wcef_drag_get_file_paths_fn)wcef_sym("cef_drag_data_get_file_paths");
+  g_sl_alloc = (wcef_string_list_alloc_fn)wcef_sym("cef_string_list_alloc");
+  g_sl_free = (wcef_string_list_free_fn)wcef_sym("cef_string_list_free");
+  g_sl_size = (wcef_string_list_size_fn)wcef_sym("cef_string_list_size");
+  g_sl_value = (wcef_string_list_value_fn)wcef_sym("cef_string_list_value");
+  g_media_cont = (wcef_media_cb_cont_fn)wcef_sym("cef_media_access_callback_cont");
 
   if (g_api_hash != NULL) {
     // Configure the API version from the vendored headers BEFORE any
     // other CEF call — CEF 139+ validates it when C API structs are
-    // first passed in (subsequent calls are a no-op).
-    g_api_hash(CEF_API_VERSION, 0);
+    // first passed in (subsequent calls are a no-op). The returned hash
+    // must match the vendored headers exactly, otherwise the runtime
+    // binary is a different CEF version than the binding was compiled
+    // against and every subsequent call would fail mysteriously.
+    const char* hash = g_api_hash(CEF_API_VERSION, 0);
+    if (hash == NULL) {
+      snprintf(g_error, sizeof(g_error),
+               "libcef.so does not support CEF API version %d; this binding "
+               "is built for CEF %d — provide a matching CEF runtime",
+               (int)CEF_API_VERSION, (int)CEF_API_VERSION);
+      return 0;
+    }
+    if (strcmp(hash, CEF_API_HASH_PLATFORM) != 0) {
+      snprintf(g_error, sizeof(g_error),
+               "libcef.so API hash mismatch: runtime is a different CEF build "
+               "than the vendored headers (expected %.12s..., got %.12s...) — "
+               "provide the matching CEF runtime",
+               CEF_API_HASH_PLATFORM, hash);
+      return 0;
+    }
   }
 
   if (g_execute_process == NULL || g_initialize == NULL || g_shutdown == NULL ||
@@ -334,6 +373,31 @@ void wcef_browser_stop_load(cef_browser_t* b) { b->stop_load(b); }
 double wcef_host_get_zoom_level(cef_browser_host_t* h) { return h->get_zoom_level(h); }
 
 void wcef_host_set_zoom_level(cef_browser_host_t* h, double zoom_level) { h->set_zoom_level(h, zoom_level); }
+
+void wcef_host_show_dev_tools(cef_browser_host_t* h) {
+  g_show_dev_tools(h, NULL, NULL, NULL, NULL);
+}
+
+cef_string_list_t wcef_drag_data_get_file_paths(cef_drag_data_t* d) {
+  cef_string_list_t list = g_sl_alloc();
+  g_drag_file_paths(d, list);
+  return list;
+}
+
+cef_string_list_t wcef_string_list_alloc(void) { return g_sl_alloc(); }
+
+void wcef_string_list_free(cef_string_list_t list) { g_sl_free(list); }
+
+size_t wcef_string_list_size(cef_string_list_t list) { return g_sl_size(list); }
+
+int wcef_string_list_value(cef_string_list_t list, size_t index, cef_string_t* value) {
+  return g_sl_value(list, index, value);
+}
+
+void wcef_media_callback_cont(void* cb, uint32_t allowed_permissions) {
+  cef_media_access_callback_t* c = (cef_media_access_callback_t*)cb;
+  c->cont(c, allowed_permissions);
+}
 
 void wcef_callback_cont(cef_callback_t* cb) { cb->cont(cb); }
 

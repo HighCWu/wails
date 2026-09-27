@@ -33,7 +33,7 @@
 // by hand. See the translator.README.txt file in the tools directory for
 // more information.
 //
-// $hash=9fc6b02b2ac78479f4a68f4c7a805229c54ebc8d$
+// $hash=6227ec1019357411bf4a404cbda4c4fecbfcd5b3$
 //
 
 #ifndef CEF_INCLUDE_CAPI_CEF_CLIENT_CAPI_H_
@@ -115,8 +115,7 @@ typedef struct _cef_client_t {
 
   ///
   /// Return the handler for download events. If no handler is returned
-  /// downloads will be canceled with Alloy style and will proceed with default
-  /// handling with Chrome style.
+  /// downloads will not be allowed.
   ///
   struct _cef_download_handler_t*(CEF_CALLBACK* get_download_handler)(
       struct _cef_client_t* self);

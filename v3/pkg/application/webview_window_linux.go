@@ -27,15 +27,15 @@ type dragInfo struct {
 }
 
 type linuxWebviewWindow struct {
-	id            uint
-	application   pointer
-	window        pointer
-	webview       pointer
-	parent        *WebviewWindow
+	id          uint
+	application pointer
+	window      pointer
+	webview     pointer
+	parent      *WebviewWindow
 
 	// cefEngine is non-nil when the window runs on the CEF backend
 	// (GTK3 variant only); webview-facing methods dispatch to it.
-	cefEngine cefEngineHooks
+	cefEngine     cefEngineHooks
 	menubar       pointer
 	vbox          pointer
 	accels        pointer
@@ -111,6 +111,9 @@ type cefEngineHooks interface {
 	setZoomFactor(zoom float64)
 	zoomFactor() float64
 	stopAndClose()
+	setBackgroundColour(colour RGBA)
+	queryPointerDragState() (button, x, y int)
+	openDevTools()
 }
 
 func (w *linuxWebviewWindow) endDrag(button uint, x, y int) {

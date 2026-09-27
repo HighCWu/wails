@@ -4,7 +4,7 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15200
 
 // Shims: thin C wrappers over the //export'ed Go callbacks in
 // handlers.go, with prototypes exactly matching the CEF struct fields.
@@ -139,6 +139,16 @@ func appOnCommandLine(processType *C.cef_string_t, commandLine *C.cef_command_li
 	}
 	// The Go runtime cannot serve as a zygote host.
 	appendSwitch("no-zygote")
+	// Embedded webviews are managed by the host toolkit: Chromium's
+	// native-window occlusion detection misjudges focus/stack changes on
+	// X11 (worst on compositors without a real screen, e.g. Xvfb) and
+	// stops painting, leaving a black window. Disable it.
+	appendSwitch("disable-backgrounding-occluded-windows")
+	// Chromium 132+ shows a first-run Terms-of-Service dialog on fresh
+	// profiles on Linux; an embedded webview must never do that.
+	appendSwitch("no-first-run")
+	appendSwitch("no-default-browser-check")
+	appendSwitch("disable-features=CalculateNativeWinOcclusion")
 	if initializeOptions.EnableSandbox {
 		// nothing extra; the sandbox helper must be setuid root
 	} else {

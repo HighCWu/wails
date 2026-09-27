@@ -4,7 +4,7 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15200
 */
 import "C"
 
@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"time"
 	"unsafe"
 )
 
@@ -180,11 +181,20 @@ func logHint(opts InitializeOptions) string {
 // Initialized reports whether the browser process CEF state is live.
 func Initialized() bool { return initialized.Load() }
 
-// Shutdown tears down CEF. All browsers must be closed first; call this
-// on the main thread after the host UI loop has stopped.
+// shutdownGracePeriod bounds how long CloseAllBrowsers may block when
+// tearing the browser process down.
+const shutdownGracePeriod = 3 * time.Second
+
+// Shutdown tears down CEF on the main thread after the host UI loop has
+// stopped: force-closes any browsers still alive (windows that never
+// closed) and waits for their destruction before cef_shutdown, which
+// hangs otherwise.
 func Shutdown() {
 	if !initialized.Swap(false) {
 		return
+	}
+	if remaining := CloseAllBrowsers(shutdownGracePeriod); remaining > 0 {
+		pkgLogger().Warn("CEF shutdown proceeding with live browsers", "count", remaining)
 	}
 	C.wcef_shutdown()
 }
@@ -242,7 +252,10 @@ func buildSettings(dir string, opts InitializeOptions) (*C.cef_settings_t, func(
 		}
 	}
 	if cache != "" {
-		owned = append(owned, setStr(&s.cache_path, cache))
+		// Layout required by CEF: cache_path must live INSIDE
+		// root_cache_path; root_cache_path scopes the process singleton.
+		owned = append(owned, setStr(&s.cache_path, filepath.Join(cache, "Cache")))
+		owned = append(owned, setStr(&s.root_cache_path, cache))
 	}
 
 	if opts.LogToFile {
