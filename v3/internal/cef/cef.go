@@ -1,0 +1,81 @@
+// Package cef provides a minimal, dependency-free cgo binding for the
+// Chromium Embedded Framework (CEF) C API, plus the Wails integration
+// pieces: process bootstrap, custom wails:// scheme serving and the
+// window.wails.invoke IPC bridge.
+//
+// libcef is loaded at runtime via dlopen from a CEF runtime directory
+// (never linked at build time), so binaries built with this package run
+// unchanged on machines without any CEF files. The vendored headers under
+// include/ are the official CEF headers matching the runtime this binding
+// was developed against (see include/LICENSE.txt); the C API is stable
+// across CEF versions but new struct fields may require a header refresh.
+//
+// The package is Linux-first; Windows support will be added behind the
+// same public surface.
+package cef
+
+import "sync/atomic"
+
+// CEF runtime layout (merged Release/ + Resources/ from a cef-builds
+// "minimal" distribution):
+//
+//	<dir>/libcef.so
+//	<dir>/icudtl.dat
+//	<dir>/v8_context_snapshot.bin
+//	<dir>/*.pak
+//	<dir>/locales/
+//
+// and, for subprocess execution, the host executable itself (CEF re-execs
+// the current binary with --type= switches for renderer/gpu/utility
+// processes).
+
+// State shared across the package. All fields are set by Initialize (or
+// ExecuteProcess for subprocesses) and are immutable afterwards, except
+// the browser table which is guarded by its own mutex.
+type State struct {
+	// Dir is the resolved CEF runtime directory.
+	Dir string
+
+	// MainThreadExecJS et al are installed by the platform glue before
+	// Initialize and are called from CEF threads. They marshal work onto
+	// the UI/main thread where required.
+	DispatchMain func(fn func())
+
+	// OnWindowMessage delivers a window.wails.invoke message from the
+	// renderer (windowID identifies the wails window, origin is the frame
+	// URL the message came from).
+	OnWindowMessage func(windowID uint, message string, origin string)
+
+	// OnWindowLoadEnd reports that the main frame finished loading.
+	OnWindowLoadEnd func(windowID uint)
+
+	// OnTitleChange reports a document title change.
+	OnTitleChange func(windowID uint, title string)
+
+	// OnBrowserClosed reports that a browser was destroyed (window closed).
+	OnBrowserClosed func(windowID uint)
+
+	// AssetRequest submits an asset request into the wails asset server.
+	// It must not block the calling CEF thread; the wails consumer runs
+	// the actual processing on its own goroutine. The ResponseWriter is
+	// written from that goroutine until Finish.
+	AssetRequest func(req *AssetRequest)
+
+	// WindowName resolves a wails window name from a wails window id.
+	WindowName func(windowID uint) string
+}
+
+// AssetRequest carries everything the glue needs to feed one CEF scheme
+// request into the wails asset server.
+type AssetRequest struct {
+	// Request implements the wails webview.Request interface on top of a
+	// CEF request object.
+	Request *assetRequest
+	// WindowID is the wails window id the request belongs to (0 unknown).
+	WindowID uint
+}
+
+var state atomic.Pointer[State]
+
+// Current returns the process-wide CEF state, or nil before Initialize.
+func Current() *State { return state.Load() }
