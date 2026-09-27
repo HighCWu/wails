@@ -457,6 +457,15 @@ type App struct {
 	runLock    sync.Mutex
 	pendingRun []runnable
 
+	// webviewBackend is the engine resolved by resolveWebviewBackend in
+	// init(); it decides which webview implementation windows are created
+	// with. It is fixed for the lifetime of the application.
+	webviewBackend WebviewBackend
+
+	// webviewBackendError, when non-nil, aborts the application at Run()
+	// with a descriptive message (e.g. forced CEF but no runtime present).
+	webviewBackendError error
+
 	bindings *Bindings
 
 	// platform app
@@ -585,6 +594,16 @@ func (a *App) init() {
 	a.pid = os.Getpid()
 	a.wailsEventListeners = make([]WailsEventListener, 0)
 
+	// Resolve the webview backend before any window can be created.
+	if backend, err := resolveWebviewBackend(a.options); err != nil {
+		// Defer the failure to Run() where the fatal handler is installed;
+		// New() has no error return and init() must not panic.
+		a.webviewBackendError = err
+		a.webviewBackend = WebviewBackendSystem
+	} else {
+		a.webviewBackend = backend
+	}
+
 	// Initialize managers
 	a.Window = newWindowManager(a)
 	a.ContextMenu = newContextMenuManager(a)
@@ -604,6 +623,14 @@ func (a *App) init() {
 
 func (a *App) Capabilities() capabilities.Capabilities {
 	return a.capabilities
+}
+
+// WebviewBackend returns the webview engine this application runs with:
+// WebviewBackendSystem or WebviewBackendCEF. The value is resolved once at
+// application creation from Options.WebviewBackend and the
+// WAILS_WEBVIEW_BACKEND environment variable.
+func (a *App) WebviewBackend() WebviewBackend {
+	return a.webviewBackend
 }
 
 func (a *App) GetPID() int {
@@ -651,6 +678,13 @@ func (a *App) Run() error {
 	// Block further service registrations.
 	a.starting = true
 	a.runLock.Unlock()
+
+	// A backend configuration failure (e.g. forced CEF without a usable
+	// runtime) surfaces here as a hard error before any platform startup.
+	if a.webviewBackendError != nil {
+		a.starting = false
+		return a.webviewBackendError
+	}
 
 	// Ensure application context is cancelled in case of failures.
 	defer a.cancel()

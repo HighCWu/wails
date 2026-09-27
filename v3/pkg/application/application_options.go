@@ -29,6 +29,16 @@ type Options struct {
 	// Linux is the Linux specific configuration for Linux builds
 	Linux LinuxOptions
 
+	// WebviewBackend selects the engine that renders web content inside
+	// windows: "auto" (default; system webview preferred, CEF when the
+	// system webview is unavailable or a CEF runtime directory is
+	// explicitly configured), "system" (always the platform system webview)
+	// or "cef" (always CEF; startup fails if the CEF runtime is unusable —
+	// no silent fallback). The WAILS_WEBVIEW_BACKEND environment variable
+	// overrides this value at runtime. The backend is resolved once, before
+	// the first window is created.
+	WebviewBackend WebviewBackend
+
 	// IOS is the iOS specific configuration for iOS builds
 	IOS IOSOptions
 
