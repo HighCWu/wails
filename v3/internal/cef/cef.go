@@ -49,6 +49,9 @@ type State struct {
 	// OnWindowLoadEnd reports that the main frame finished loading.
 	OnWindowLoadEnd func(windowID uint)
 
+	// OnWindowLoadStart reports that the main frame started loading.
+	OnWindowLoadStart func(windowID uint)
+
 	// OnTitleChange reports a document title change.
 	OnTitleChange func(windowID uint, title string)
 

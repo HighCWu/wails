@@ -32,6 +32,10 @@ type linuxWebviewWindow struct {
 	window        pointer
 	webview       pointer
 	parent        *WebviewWindow
+
+	// cefEngine is non-nil when the window runs on the CEF backend
+	// (GTK3 variant only); webview-facing methods dispatch to it.
+	cefEngine cefEngineHooks
 	menubar       pointer
 	vbox          pointer
 	accels        pointer
@@ -97,6 +101,17 @@ func changedLinuxWindowStateEvents(previous, current linuxWindowState, observed 
 var (
 	registered bool = false // avoid 'already registered message' about 'wails://'
 )
+
+// cefEngineHooks is the dispatch surface the GTK3 CEF engine implements;
+// linuxWebviewWindow webview-facing methods route to it when set.
+type cefEngineHooks interface {
+	execJS(js string)
+	loadURL(url string)
+	reload(ignoreCache bool)
+	setZoomFactor(zoom float64)
+	zoomFactor() float64
+	stopAndClose()
+}
 
 func (w *linuxWebviewWindow) endDrag(button uint, x, y int) {
 	w.drag.XRoot = 0.0
@@ -354,6 +369,7 @@ func (w *linuxWebviewWindow) run() {
 	}
 
 	w.window, w.webview, w.vbox = windowNew(app.application, w.gtkmenu, w.parent.options.Linux.MenuStyle, w.parent.id, w.parent.options.Linux.WebviewGpuPolicy)
+	w.attachCEFEngine()
 	app.registerWindow(w.window, w.parent.id) // record our mapping
 	w.connectSignals()
 	if w.parent.options.EnableFileDrop {

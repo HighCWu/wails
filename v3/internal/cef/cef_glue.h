@@ -92,8 +92,8 @@ cef_string_multimap_t wcef_string_multimap_alloc(void);
 void wcef_string_multimap_free(cef_string_multimap_t map);
 int wcef_string_multimap_append(cef_string_multimap_t map, const cef_string_t* key, const cef_string_t* value);
 size_t wcef_string_multimap_size(cef_string_multimap_t map);
-int wcef_string_multimap_enumerate_key(cef_string_multimap_t map, size_t which, size_t index, cef_string_t* out);
-int wcef_string_multimap_enumerate_value(cef_string_multimap_t map, size_t which, size_t index, cef_string_t* out);
+int wcef_string_multimap_key(cef_string_multimap_t map, size_t index, cef_string_t* key);
+int wcef_string_multimap_value(cef_string_multimap_t map, size_t index, cef_string_t* value);
 
 // Custom schemes.
 int wcef_register_scheme_handler_factory(const cef_string_t* scheme_name,
@@ -103,11 +103,13 @@ int wcef_register_scheme_handler_factory(const cef_string_t* scheme_name,
 // Process messages (renderer ↔ browser IPC).
 cef_process_message_t* wcef_process_message_create(const cef_string_t* name, cef_process_id_t target);
 
-// V8 (render process only).
-int wcef_register_extension(const cef_string_t* extension_name,
-                            const cef_string_t* javascript_code,
-                            cef_v8_handler_t* handler);
+// V8 (render process only). CefRegisterExtension was removed in CEF API
+// 15400; bindings are installed per-context from on_context_created.
 cef_v8_context_t* wcef_v8_context_get_current(void);
+cef_v8_value_t* wcef_v8_value_create_object(void);
+cef_v8_value_t* wcef_v8_value_create_function(const cef_string_t* name, cef_v8_handler_t* handler);
+int wcef_v8_value_set_bykey(cef_v8_value_t* obj, const cef_string_t* key, cef_v8_value_t* value);
+cef_v8_value_t* wcef_v8ctx_get_global(cef_v8_context_t* ctx);
 
 // ---------------------------------------------------------------------------
 // Method-call wrappers. Go cannot call C struct function pointers, so
@@ -177,6 +179,18 @@ void wcef_response_set_status(cef_response_t* r, int status);
 void wcef_response_set_status_text(cef_response_t* r, const cef_string_t* text);
 void wcef_response_set_mime_type(cef_response_t* r, const cef_string_t* mime);
 void wcef_response_set_header_map(cef_response_t* r, cef_string_multimap_t map);
+
+// cef_frame_t (continued)
+void wcef_frame_load_url(cef_frame_t* f, const cef_string_t* url);
+
+// cef_browser_t (continued)
+void wcef_browser_reload(cef_browser_t* b);
+void wcef_browser_reload_ignore_cache(cef_browser_t* b);
+void wcef_browser_stop_load(cef_browser_t* b);
+
+// cef_browser_host_t (continued)
+double wcef_host_get_zoom_level(cef_browser_host_t* h);
+void wcef_host_set_zoom_level(cef_browser_host_t* h, double zoom_level);
 
 // cef_callback_t
 void wcef_callback_cont(cef_callback_t* cb);

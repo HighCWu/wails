@@ -4,42 +4,49 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR}
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
 */
 import "C"
 
-// IPC message names exchanged between the renderer V8 extension and the
+import "unsafe"
+
+// IPC message names exchanged between the renderer binding and the
 // browser process.
 const (
 	ipcMessageInvoke = "wails.invoke"
-	v8FunctionName   = "wailsInvoke"
-	extensionName    = "wails"
+	v8FunctionName   = "invoke"
 )
 
-// v8ExtensionSource is registered in every renderer at WebKit init. It
-// exposes window.wails.invoke(msg) — the exact surface the wails runtime
-// already uses on Android (see @wailsio/runtime system.ts), so the
-// frontend needs no CEF-specific code path.
-const v8ExtensionSource = `
-var wails;
-if (!wails) { wails = {}; }
-(function() {
-  native function wailsInvoke();
-  wails.invoke = function(msg) {
-    if (typeof msg !== 'string') { msg = JSON.stringify(msg); }
-    wailsInvoke(msg);
-  };
-})();
-`
-
-// registerWailsV8Extension installs the window.wails.invoke extension.
-// Runs in every renderer process (renderWebKitInitialized).
-func registerWailsV8Extension() {
-	name := newCefString(extensionName)
+// installWailsV8Binding exposes window.wails.invoke(msg) in a JS context —
+// the exact surface the wails runtime already uses on Android (see
+// @wailsio/runtime system.ts), so the frontend needs no CEF-specific code
+// path. Runs from on_context_created in every renderer context.
+func installWailsV8Binding(context *C.cef_v8_context_t) {
+	if context == nil || theApp == nil {
+		return
+	}
+	global := C.wcef_v8ctx_get_global(context)
+	if global == nil {
+		return
+	}
+	obj := C.wcef_v8_value_create_object()
+	if obj == nil {
+		return
+	}
+	defer C.wcef_obj_release(unsafe.Pointer(obj))
+	name := newCefString(v8FunctionName)
 	defer name.Clear()
-	code := newCefString(v8ExtensionSource)
-	defer code.Clear()
-	C.wcef_register_extension(name.ptr(), code.ptr(), theApp.v8)
+	fn := C.wcef_v8_value_create_function(name.ptr(), theApp.v8)
+	if fn == nil {
+		return
+	}
+	defer C.wcef_obj_release(unsafe.Pointer(fn))
+	if C.wcef_v8_value_set_bykey(obj, name.ptr(), fn) != 1 {
+		return
+	}
+	wailsKey := newCefString("wails")
+	defer wailsKey.Clear()
+	C.wcef_v8_value_set_bykey(global, wailsKey.ptr(), obj)
 }
 
 // v8Execute implements cef_v8_handler_t.execute in the renderer process:

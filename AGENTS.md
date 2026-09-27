@@ -112,6 +112,36 @@ CEF 后端的设计目标之一是**不改前端 runtime**（RPC 走 fetch、inv
   注意：CEF 自定义 scheme 不支持 WebSocket 升级，stream 在 CEF 后端必须走
   HTTP 轮询传输——相关改动先确认这个约束。
 
+## 当前实现状态（2026-09-27）
+
+**Linux GTK3 变体的 CEF 后端已端到端跑通**（CEF 154、`-tags gtk3` 构建）：
+
+- 窗口创建/渲染 ✓（CEF windowed browser 嵌入 GTK3 drawing area 的 X11 窗口）
+- 资产服务 ✓（`http://wails.localhost` 域级 scheme factory → resource handler →
+  wails assetserver，**不是** `wails://`——Chromium M130+ 限制 non-special scheme，
+  且与 Windows WebView2 同模式）
+- RPC ✓（前端 runtime.js 的默认 fetch transport 直达 Go 绑定，实测 HTTP 200）
+- `window.wails.invoke` 桥 ✓（render 进程 `on_context_created` 用 V8 C API 注入；
+  `CefRegisterExtension` 已在 CEF API 15400 移除，勿再尝试）
+- 后端选择 ✓（`WAILS_WEBVIEW_BACKEND=cef` 强制；强制但运行时缺失 → 启动报错）
+
+关键教训（勿重蹈）：
+- libcef 版本协商：加载后先 `cef_api_hash(CEF_API_VERSION, 0)`；编译绑定时显式
+  `-DCEF_API_VERSION=15400`（release 版 libcef 不含 experimental 分支）。
+- CEF wrapper 生命周期净消耗 1 个底层引用（Wrap 构造 +1/立即 -1，析构再 -1），
+  所以自建结构体引用计数必须从 1 起始；进程级对象用 anchored（clamp 在 1），
+  请求级对象到 0 释放。
+- Go cgo 导出函数不能直接赋给 CEF 结构体函数指针字段，也不能从 Go 调 CEF
+  对象方法——一切经 `cef_capi.c` 的静态包装函数。
+- GPU 子进程在部分环境崩溃（exit 139），用 `WAILS_CEF_SWITCHES=disable-gpu` 绕过；
+  待排查。
+
+已知限制（后续工作）：
+- DevTools 打开、frameless 窗口 CSS 拖拽（无 GTK 按钮事件捕获）、外部文件拖放、
+  背景色/透明窗口、编辑命令（cut/copy/paste）未实现或为 no-op。
+- GTK4 变体不支持 CEF（报错引导用 `-tags gtk3`）；Windows 变体待开发。
+- `cef.Shutdown` 在子进程存活时可能挂起（当前靠进程退出兜底）。
+
 ## 常用命令
 
 ```bash

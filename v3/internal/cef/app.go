@@ -4,16 +4,12 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR}
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
 
 // Shims: thin C wrappers over the //export'ed Go callbacks in
 // handlers.go, with prototypes exactly matching the CEF struct fields.
 
 // cef_app_t
-void wailsCEFAppRegisterSchemes(struct _cef_app_t* self, struct _cef_scheme_registrar_t* registrar);
-static void wails_cef_app_register_schemes(struct _cef_app_t* self, struct _cef_scheme_registrar_t* registrar) {
-  wailsCEFAppRegisterSchemes(self, registrar);
-}
 void wailsCEFAppOnCommandLine(struct _cef_app_t* self, const cef_string_t* process_type, struct _cef_command_line_t* command_line);
 static void wails_cef_app_on_command_line(struct _cef_app_t* self, const cef_string_t* process_type, struct _cef_command_line_t* command_line) {
   wailsCEFAppOnCommandLine(self, process_type, command_line);
@@ -34,9 +30,9 @@ static void wails_cef_bph_context_initialized(struct _cef_browser_process_handle
 }
 
 // cef_render_process_handler_t
-void wailsCEFRPHWebKitInitialized(struct _cef_render_process_handler_t* self);
-static void wails_cef_rph_webkit_initialized(struct _cef_render_process_handler_t* self) {
-  wailsCEFRPHWebKitInitialized(self);
+void wailsCEFRPHContextCreated(struct _cef_render_process_handler_t* self, struct _cef_browser_t* browser, struct _cef_frame_t* frame, struct _cef_v8_context_t* context);
+static void wails_cef_rph_context_created(struct _cef_render_process_handler_t* self, struct _cef_browser_t* browser, struct _cef_frame_t* frame, struct _cef_v8_context_t* context) {
+  wailsCEFRPHContextCreated(self, browser, frame, context);
 }
 int wailsCEFRPHProcessMessage(struct _cef_render_process_handler_t* self, struct _cef_browser_t* browser, struct _cef_frame_t* frame, cef_process_id_t source_process, struct _cef_process_message_t* message);
 static int wails_cef_rph_process_message(struct _cef_render_process_handler_t* self, struct _cef_browser_t* browser, struct _cef_frame_t* frame, cef_process_id_t source_process, struct _cef_process_message_t* message) {
@@ -53,7 +49,6 @@ static int wails_cef_v8_execute(struct _cef_v8_handler_t* self, const cef_string
 // *[0]byte, so callback fields must be wired from C.
 static void wcef_init_app(void* p) {
   cef_app_t* a = (cef_app_t*)p;
-  a->on_register_custom_schemes = wails_cef_app_register_schemes;
   a->on_before_command_line_processing = wails_cef_app_on_command_line;
   a->get_browser_process_handler = wails_cef_app_get_bph;
   a->get_render_process_handler = wails_cef_app_get_rph;
@@ -64,7 +59,7 @@ static void wcef_init_bph(void* p) {
 }
 static void wcef_init_rph(void* p) {
   cef_render_process_handler_t* h = (cef_render_process_handler_t*)p;
-  h->on_web_kit_initialized = wails_cef_rph_webkit_initialized;
+  h->on_context_created = wails_cef_rph_context_created;
   h->on_process_message_received = wails_cef_rph_process_message;
 }
 static void wcef_init_v8handler(void* p) {
@@ -115,25 +110,19 @@ func buildApp() *C.cef_app_t {
 	return a
 }
 
-// SchemeName is the custom scheme the asset server is served under,
-// matching the system webview backends (wails://localhost/...).
-const SchemeName = "wails"
+// AssetScheme and AssetHost form the origin the CEF backend serves the
+// asset server from. It deliberately matches the Windows WebView2 backend
+// (http://wails.localhost) instead of the Linux WebKit backends' custom
+// wails:// scheme: Chromium restricts non-special schemes, while a
+// domain-scoped http factory behaves exactly like any web origin for
+// fetch/XHR/CORS.
+const (
+	AssetScheme = "http"
+	AssetHost   = "wails.localhost"
+)
 
-// schemeOptions mirrors what the WebKit backends get by registering the
-// scheme: a standard, secure, fetchable scheme with CORS support so the
-// runtime's default HTTP fetch transport works against it.
-const schemeOptions = C.CEF_SCHEME_OPTION_STANDARD |
-	C.CEF_SCHEME_OPTION_SECURE |
-	C.CEF_SCHEME_OPTION_CORS_ENABLED |
-	C.CEF_SCHEME_OPTION_FETCH_ENABLED
-
-// appRegisterSchemes implements cef_app_t.on_register_custom_schemes,
-// invoked in every process before command line processing.
-func appRegisterSchemes(registrar *C.cef_scheme_registrar_t) {
-	scheme := newCefString(SchemeName)
-	defer scheme.Clear()
-	C.wcef_registrar_add_custom_scheme(registrar, scheme.ptr(), schemeOptions)
-}
+// AssetOrigin is the URL prefix serving the wails asset server.
+const AssetOrigin = "http://" + AssetHost
 
 // appOnCommandLine implements cef_app_t.on_before_command_line_processing:
 // appends the switches the Go runtime and unsandboxed layout require.
@@ -184,11 +173,12 @@ func extraSwitchesFromEnv() []string {
 // future early-singleton work.
 func browserProcessContextInitialized() {}
 
-// renderWebKitInitialized implements
-// cef_render_process_handler_t.on_web_kit_initialized: installs the
-// window.wails.invoke V8 extension in every renderer.
-func renderWebKitInitialized() {
-	registerWailsV8Extension()
+// renderContextCreated implements
+// cef_render_process_handler_t.on_context_created: installs the
+// window.wails.invoke binding in every JS context (the replacement for
+// CefRegisterExtension, which was removed in CEF API 15400).
+func renderContextCreated(context *C.cef_v8_context_t) {
+	installWailsV8Binding(context)
 }
 
 // renderProcessMessage implements
@@ -202,14 +192,16 @@ func renderProcessMessage(browser *C.cef_browser_t, frame *C.cef_frame_t, source
 	return 0
 }
 
-// registerSchemeFactory wires wails:// requests to the factory in
-// scheme.go. Called from Initialize (browser process only).
+// registerSchemeFactory wires http://wails.localhost requests to the
+// factory in scheme.go. Called from Initialize (browser process only).
 func registerSchemeFactory() bool {
 	if !Loaded() {
 		return false
 	}
 	factory := buildSchemeFactory()
-	scheme := newCefString(SchemeName)
+	scheme := newCefString(AssetScheme)
 	defer scheme.Clear()
-	return C.wcef_register_scheme_handler_factory(scheme.ptr(), nil, factory) == 1
+	domain := newCefString(AssetHost)
+	defer domain.Clear()
+	return C.wcef_register_scheme_handler_factory(scheme.ptr(), domain.ptr(), factory) == 1
 }

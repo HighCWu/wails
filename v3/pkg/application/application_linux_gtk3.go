@@ -115,6 +115,12 @@ func (a *linuxApp) setApplicationMenu(menu *Menu) {
 
 func (a *linuxApp) run() error {
 
+	// Start the CEF browser process (no-op for the system webview
+	// backend) before the GTK main loop takes over the main thread.
+	if err := initCEFBackend(a.parent); err != nil {
+		return err
+	}
+
 	if len(os.Args) == 2 { // Case: program + 1 argument
 		arg1 := os.Args[1]
 		// Check if the argument is likely a URL from a custom protocol invocation

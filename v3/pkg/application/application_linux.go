@@ -71,6 +71,11 @@ func (a *linuxApp) name() string {
 }
 
 func (a *linuxApp) run() error {
+	// CEF is not available in this build variant; this returns an error
+	// only when the CEF backend was explicitly forced.
+	if err := initCEFBackend(a.parent); err != nil {
+		return err
+	}
 	if len(os.Args) == 2 {
 		arg1 := os.Args[1]
 		if strings.Contains(arg1, "://") {

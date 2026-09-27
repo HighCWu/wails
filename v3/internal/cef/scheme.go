@@ -4,7 +4,7 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR}
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
 
 // Shims over the //export'ed callbacks in scheme_handlers.go.
 
@@ -127,9 +127,9 @@ type resourceHandler struct {
 
 func newResourceHandler() *resourceHandler {
 	h := &resourceHandler{}
-	h.c = (*C.cef_resource_handler_t)(allocStruct(C.sizeof_cef_resource_handler_t))
+	h.c = (*C.cef_resource_handler_t)(allocStructUnanchored(C.sizeof_cef_resource_handler_t))
 	C.wcef_init_resource_handler(unsafe.Pointer(h.c))
-	registerObject(unsafe.Pointer(h.c), func(p unsafe.Pointer) {
+	registerObject(unsafe.Pointer(h.c), false, func(p unsafe.Pointer) {
 		handlerRegistry.Delete(p)
 		h.releaseCEFRefs()
 	})
@@ -388,12 +388,13 @@ func (r *assetRequest) Header() (http.Header, error) {
 	size := int(C.wcef_string_multimap_size(multimap))
 	var key, val C.cef_string_t
 	for i := 0; i < size; i++ {
-		if C.wcef_string_multimap_enumerate_key(multimap, C.size_t(i), 0, &key) != 1 {
+		if C.wcef_string_multimap_key(multimap, C.size_t(i), &key) != 1 {
 			continue
 		}
-		for j := 0; C.wcef_string_multimap_enumerate_value(multimap, C.size_t(i), C.size_t(j), &val) == 1; j++ {
-			header.Add(goString(&key), goString(&val))
+		if C.wcef_string_multimap_value(multimap, C.size_t(i), &val) != 1 {
+			continue
 		}
+		header.Add(goString(&key), goString(&val))
 	}
 	return header, nil
 }

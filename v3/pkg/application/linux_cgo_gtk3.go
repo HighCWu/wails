@@ -5,6 +5,7 @@ package application
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -646,6 +647,9 @@ func appRun(app pointer) error {
 	// worker goroutine runs inline instead of blocking on a loop that is gone.
 	// See #5631.
 	webview.DisableMainThreadDispatch()
+	// Tear down the CEF browser process after the loop (and all browsers)
+	// have stopped; no-op for the system webview backend.
+	shutdownCEFBackend()
 	C.g_application_release(application)
 	C.g_object_unref(C.gpointer(app))
 
@@ -1157,6 +1161,12 @@ func widgetSetVisible(widget pointer, hidden bool) {
 }
 
 func (w *linuxWebviewWindow) close() {
+	if w.cefEngine != nil {
+		w.cefEngine.stopAndClose()
+		C.gtk_widget_destroy(w.gtkWidget())
+		getNativeApplication().unregisterWindow(windowPointer(w.window))
+		return
+	}
 	// Stop active loads before destroying the view so outstanding custom
 	// scheme requests release their native references and cancel their handlers.
 	C.webkit_web_view_stop_loading(C.webkit_web_view((*C.GtkWidget)(w.webview)))
@@ -1165,17 +1175,29 @@ func (w *linuxWebviewWindow) close() {
 }
 
 func (w *linuxWebviewWindow) enableDND() {
+	if w.cefEngine != nil {
+		// CEF handles HTML5 drag-and-drop internally; external drops route
+		// through the OS to the native browser window.
+		return
+	}
 	// Pass the window ID as the gpointer user_data value itself (not a pointer
 	// to it) using an integer type, so the Go GC never scans it. See #5631.
 	C.enableDND((*C.GtkWidget)(w.webview), C.uintptr_t(w.parent.id))
 }
 
 func (w *linuxWebviewWindow) disableDND() {
+	if w.cefEngine != nil {
+		return
+	}
 	// Block external file drops while allowing internal HTML5 drag-and-drop
 	C.disableDND((*C.GtkWidget)(w.webview), C.uintptr_t(w.parent.id))
 }
 
 func (w *linuxWebviewWindow) execJS(js string) {
+	if w.cefEngine != nil {
+		w.cefEngine.execJS(js)
+		return
+	}
 	InvokeAsync(func() {
 		value := C.CString(js)
 		C.webkit_web_view_evaluate_javascript(w.webKitWebView(),
@@ -1198,6 +1220,10 @@ var emptyWorldName = C.CString("")
 // execJSDragOver executes JS for drag-over events with zero Go allocations.
 // It directly writes to a preallocated C buffer. Must be called from main thread.
 func (w *linuxWebviewWindow) execJSDragOver(x, y int) {
+	if w.cefEngine != nil {
+		w.execJS(fmt.Sprintf("window._wails.handleDragOver(%d,%d)", x, y))
+		return
+	}
 	// Format: "window._wails.handleDragOver(X,Y)"
 	// Write directly to C buffer
 	buf := (*[64]byte)(unsafe.Pointer(dragOverJSBuffer))
@@ -1285,15 +1311,20 @@ func getMousePosition() (int, int, *Screen) {
 
 func (w *linuxWebviewWindow) destroy() {
 	w.parent.markAsDestroyed()
+	if w.cefEngine != nil {
+		w.cefEngine.stopAndClose()
+	}
 	// Free menu
 	if w.gtkmenu != nil {
 		C.gtk_widget_destroy((*C.GtkWidget)(w.gtkmenu))
 		w.gtkmenu = nil
 	}
 	// Free window
-	// Stop active loads before destroying the view so outstanding custom
-	// scheme requests release their native references and cancel their handlers.
-	C.webkit_web_view_stop_loading(C.webkit_web_view((*C.GtkWidget)(w.webview)))
+	if w.cefEngine == nil {
+		// Stop active loads before destroying the view so outstanding custom
+		// scheme requests release their native references and cancel their handlers.
+		C.webkit_web_view_stop_loading(C.webkit_web_view((*C.GtkWidget)(w.webview)))
+	}
 	C.gtk_widget_destroy(w.gtkWidget())
 }
 
@@ -1483,7 +1514,11 @@ func (w *linuxWebviewWindow) minimise() {
 func windowNew(application pointer, menu pointer, _ LinuxMenuStyle, windowId uint, gpuPolicy WebviewGpuPolicy) (window, webview, vbox pointer) {
 	window = pointer(C.gtk_application_window_new((*C.GtkApplication)(application)))
 	C.g_object_ref_sink(C.gpointer(window))
-	webview = windowNewWebview(windowId, gpuPolicy)
+	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendCEF {
+		webview = windowNewCEFWebview(windowId)
+	} else {
+		webview = windowNewWebview(windowId, gpuPolicy)
+	}
 	vbox = pointer(C.gtk_box_new(C.GTK_ORIENTATION_VERTICAL, 0))
 	name := C.CString("webview-box")
 	defer C.free(unsafe.Pointer(name))
@@ -1606,6 +1641,10 @@ func (w *linuxWebviewWindow) setDefaultSize(width int, height int) {
 }
 
 func (w *linuxWebviewWindow) setBackgroundColour(colour RGBA) {
+	if w.cefEngine != nil {
+		// TODO(v3/cef): map onto CEF background_color (browser settings)
+		return
+	}
 	rgba := C.GdkRGBA{C.double(colour.Red) / 255.0, C.double(colour.Green) / 255.0, C.double(colour.Blue) / 255.0, C.double(colour.Alpha) / 255.0}
 	C.webkit_web_view_set_background_color((*C.WebKitWebView)(w.webview), &rgba)
 
@@ -1709,6 +1748,12 @@ func (w *linuxWebviewWindow) setFrameless(frameless bool) {
 
 // TODO: confirm this is working properly
 func (w *linuxWebviewWindow) setHTML(html string) {
+	if w.cefEngine != nil {
+		// Serve the HTML through the asset server so it keeps the
+		// wails:// origin the runtime expects.
+		w.cefEngine.execJS(`document.open(); document.write(` + strconv.Quote(html) + `); document.close();`)
+		return
+	}
 	cHTML := C.CString(html)
 	uri := C.CString("wails://")
 	empty := C.CString("")
@@ -1762,6 +1807,10 @@ func (w *linuxWebviewWindow) setTransparent() {
 }
 
 func (w *linuxWebviewWindow) setURL(uri string) {
+	if w.cefEngine != nil {
+		w.cefEngine.loadURL(uri)
+		return
+	}
 	target := C.CString(uri)
 	C.webkit_web_view_load_uri(w.webKitWebView(), target)
 	C.free(unsafe.Pointer(target))
@@ -1873,9 +1922,18 @@ func (w *linuxWebviewWindow) setupSignalHandlers(emit func(e events.WindowEventT
 	wv := unsafe.Pointer(w.webview)
 	C.signal_connect(unsafe.Pointer(w.window), c.String("delete-event"), C.handleDeleteEvent, winID)
 	C.signal_connect(unsafe.Pointer(w.window), c.String("focus-out-event"), C.handleFocusEvent, winID)
+	C.signal_connect(unsafe.Pointer(w.window), c.String("configure-event"), C.handleConfigureEvent, winID)
+
+	if w.cefEngine != nil {
+		// WebKit-level signals have CEF client-handler equivalents
+		// (load events, IPC, permissions). Window-level button capture
+		// for frameless drag is not available across a native child
+		// window — known CEF-backend limitation.
+		return
+	}
+
 	C.signal_connect(wv, c.String("load-changed"), C.handleLoadChanged, winID)
 	C.signal_connect(wv, c.String("permission-request"), C.handlePermissionRequest, winID)
-	C.signal_connect(unsafe.Pointer(w.window), c.String("configure-event"), C.handleConfigureEvent, winID)
 
 	contentManager := C.webkit_web_view_get_user_content_manager(w.webKitWebView())
 	C.signal_connect(unsafe.Pointer(contentManager), c.String("script-message-received::external"), C.sendMessageToBackend, 0)
@@ -1962,6 +2020,9 @@ func (w *linuxWebviewWindow) unmaximise() {
 }
 
 func (w *linuxWebviewWindow) getZoom() float64 {
+	if w.cefEngine != nil {
+		return w.cefEngine.zoomFactor()
+	}
 	return float64(C.webkit_web_view_get_zoom_level(w.webKitWebView()))
 }
 
@@ -1980,6 +2041,10 @@ func (w *linuxWebviewWindow) zoomReset() {
 }
 
 func (w *linuxWebviewWindow) reload() {
+	if w.cefEngine != nil {
+		w.cefEngine.reload(false)
+		return
+	}
 	uri := C.CString("wails://")
 	C.webkit_web_view_load_uri(w.webKitWebView(), uri)
 	C.free(unsafe.Pointer(uri))
@@ -1988,6 +2053,10 @@ func (w *linuxWebviewWindow) reload() {
 func (w *linuxWebviewWindow) setZoom(zoom float64) {
 	if zoom < 1 { // 1.0 is the smallest allowable
 		zoom = 1
+	}
+	if w.cefEngine != nil {
+		w.cefEngine.setZoomFactor(zoom)
+		return
 	}
 	C.webkit_web_view_set_zoom_level(w.webKitWebView(), C.double(zoom))
 }

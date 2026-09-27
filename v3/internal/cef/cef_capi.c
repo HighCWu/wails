@@ -25,11 +25,15 @@ typedef cef_string_multimap_t (*wcef_string_multimap_alloc_fn)(void);
 typedef void (*wcef_string_multimap_free_fn)(cef_string_multimap_t);
 typedef int (*wcef_string_multimap_append_fn)(cef_string_multimap_t, const cef_string_t*, const cef_string_t*);
 typedef size_t (*wcef_string_multimap_size_fn)(cef_string_multimap_t);
-typedef int (*wcef_string_multimap_enumerate_fn)(cef_string_multimap_t, size_t, size_t, cef_string_t*);
+
 typedef cef_process_message_t* (*wcef_process_message_create_fn)(const cef_string_t*, cef_process_id_t);
-typedef int (*wcef_register_extension_fn)(const cef_string_t*, const cef_string_t*, cef_v8_handler_t*);
 typedef cef_v8_context_t* (*wcef_v8_context_get_current_fn)(void);
+typedef cef_v8_value_t* (*wcef_v8_value_create_object_fn)(cef_v8_accessor_t*, cef_v8_interceptor_t*);
+typedef cef_v8_value_t* (*wcef_v8_value_create_function_fn)(const cef_string_t*, cef_v8_handler_t*);
+typedef int (*wcef_v8_value_set_bykey_fn)(cef_v8_value_t*, const cef_string_t*, cef_v8_value_t*, cef_v8_propertyattribute_t);
 typedef int (*wcef_register_scheme_handler_factory_fn)(const cef_string_t*, const cef_string_t*, cef_scheme_handler_factory_t*);
+typedef const char* (*wcef_api_hash_fn)(int, int);
+static wcef_api_hash_fn g_api_hash;
 
 static void* g_lib = NULL;
 static char g_error[192];
@@ -49,11 +53,14 @@ static wcef_string_multimap_alloc_fn g_mm_alloc;
 static wcef_string_multimap_free_fn g_mm_free;
 static wcef_string_multimap_append_fn g_mm_append;
 static wcef_string_multimap_size_fn g_mm_size;
-static wcef_string_multimap_enumerate_fn g_mm_enum_key;
-static wcef_string_multimap_enumerate_fn g_mm_enum_value;
+typedef int (*wcef_string_multimap_kv_fn)(cef_string_multimap_t, size_t, cef_string_t*);
+static wcef_string_multimap_kv_fn g_mm_key;
+static wcef_string_multimap_kv_fn g_mm_value;
 static wcef_process_message_create_fn g_msg_create;
-static wcef_register_extension_fn g_register_extension;
 static wcef_v8_context_get_current_fn g_v8_current;
+static wcef_v8_value_create_object_fn g_v8_create_object;
+static wcef_v8_value_create_function_fn g_v8_create_function;
+static wcef_v8_value_set_bykey_fn g_v8_set_bykey;
 static wcef_register_scheme_handler_factory_fn g_register_factory;
 
 // wcef_sym resolves a symbol, recording the first failure.
@@ -89,20 +96,31 @@ int wcef_load(const char* libcef_path) {
   g_mm_free = (wcef_string_multimap_free_fn)wcef_sym("cef_string_multimap_free");
   g_mm_append = (wcef_string_multimap_append_fn)wcef_sym("cef_string_multimap_append");
   g_mm_size = (wcef_string_multimap_size_fn)wcef_sym("cef_string_multimap_size");
-  g_mm_enum_key = (wcef_string_multimap_enumerate_fn)wcef_sym("cef_string_multimap_enumerate_key");
-  g_mm_enum_value = (wcef_string_multimap_enumerate_fn)wcef_sym("cef_string_multimap_enumerate_value");
+  g_mm_key = (wcef_string_multimap_kv_fn)wcef_sym("cef_string_multimap_key");
+  g_mm_value = (wcef_string_multimap_kv_fn)wcef_sym("cef_string_multimap_value");
   g_msg_create = (wcef_process_message_create_fn)wcef_sym("cef_process_message_create");
-  g_register_extension = (wcef_register_extension_fn)wcef_sym("cef_register_extension");
   g_v8_current = (wcef_v8_context_get_current_fn)wcef_sym("cef_v8_context_get_current_context");
+  g_v8_create_object = (wcef_v8_value_create_object_fn)wcef_sym("cef_v8_value_create_object");
+  g_v8_create_function = (wcef_v8_value_create_function_fn)wcef_sym("cef_v8_value_create_function");
+
   g_register_factory = (wcef_register_scheme_handler_factory_fn)wcef_sym("cef_register_scheme_handler_factory");
+  g_api_hash = (wcef_api_hash_fn)wcef_sym("cef_api_hash");
+
+  if (g_api_hash != NULL) {
+    // Configure the API version from the vendored headers BEFORE any
+    // other CEF call — CEF 139+ validates it when C API structs are
+    // first passed in (subsequent calls are a no-op).
+    g_api_hash(CEF_API_VERSION, 0);
+  }
 
   if (g_execute_process == NULL || g_initialize == NULL || g_shutdown == NULL ||
       g_get_exit_code == NULL || g_create_browser == NULL || g_str_u8u16 == NULL ||
       g_str_u16u8 == NULL || g_str_u8clear == NULL || g_str_u16clear == NULL ||
       g_uf_alloc == NULL || g_uf_free == NULL || g_mm_alloc == NULL ||
       g_mm_free == NULL || g_mm_append == NULL || g_mm_size == NULL ||
-      g_mm_enum_key == NULL || g_mm_enum_value == NULL || g_msg_create == NULL ||
-      g_register_extension == NULL || g_v8_current == NULL || g_register_factory == NULL) {
+      g_mm_key == NULL || g_mm_value == NULL || g_msg_create == NULL ||
+      g_v8_current == NULL || g_v8_create_object == NULL || g_v8_create_function == NULL ||
+      g_register_factory == NULL) {
     return 0;
   }
   return 1;
@@ -153,12 +171,12 @@ int wcef_string_multimap_append(cef_string_multimap_t map, const cef_string_t* k
 
 size_t wcef_string_multimap_size(cef_string_multimap_t map) { return g_mm_size(map); }
 
-int wcef_string_multimap_enumerate_key(cef_string_multimap_t map, size_t which, size_t index, cef_string_t* out) {
-  return g_mm_enum_key(map, which, index, out);
+int wcef_string_multimap_key(cef_string_multimap_t map, size_t index, cef_string_t* key) {
+  return g_mm_key(map, index, key);
 }
 
-int wcef_string_multimap_enumerate_value(cef_string_multimap_t map, size_t which, size_t index, cef_string_t* out) {
-  return g_mm_enum_value(map, which, index, out);
+int wcef_string_multimap_value(cef_string_multimap_t map, size_t index, cef_string_t* value) {
+  return g_mm_value(map, index, value);
 }
 
 int wcef_register_scheme_handler_factory(const cef_string_t* scheme_name, const cef_string_t* domain_name,
@@ -170,12 +188,19 @@ cef_process_message_t* wcef_process_message_create(const cef_string_t* name, cef
   return g_msg_create(name, target);
 }
 
-int wcef_register_extension(const cef_string_t* extension_name, const cef_string_t* javascript_code,
-                            cef_v8_handler_t* handler) {
-  return g_register_extension(extension_name, javascript_code, handler);
+cef_v8_context_t* wcef_v8_context_get_current(void) { return g_v8_current(); }
+
+cef_v8_value_t* wcef_v8_value_create_object(void) { return g_v8_create_object(NULL, NULL); }
+
+cef_v8_value_t* wcef_v8_value_create_function(const cef_string_t* name, cef_v8_handler_t* handler) {
+  return g_v8_create_function(name, handler);
 }
 
-cef_v8_context_t* wcef_v8_context_get_current(void) { return g_v8_current(); }
+int wcef_v8_value_set_bykey(cef_v8_value_t* obj, const cef_string_t* key, cef_v8_value_t* value) {
+  return obj->set_value_bykey(obj, key, value, V8_PROPERTY_ATTRIBUTE_NONE);
+}
+
+cef_v8_value_t* wcef_v8ctx_get_global(cef_v8_context_t* ctx) { return ctx->get_global(ctx); }
 
 // ---------------------------------------------------------------------------
 // Method-call wrappers.
@@ -297,6 +322,18 @@ void wcef_response_set_mime_type(cef_response_t* r, const cef_string_t* mime) {
 void wcef_response_set_header_map(cef_response_t* r, cef_string_multimap_t map) {
   r->set_header_map(r, map);
 }
+
+void wcef_frame_load_url(cef_frame_t* f, const cef_string_t* url) { f->load_url(f, url); }
+
+void wcef_browser_reload(cef_browser_t* b) { b->reload(b); }
+
+void wcef_browser_reload_ignore_cache(cef_browser_t* b) { b->reload_ignore_cache(b); }
+
+void wcef_browser_stop_load(cef_browser_t* b) { b->stop_load(b); }
+
+double wcef_host_get_zoom_level(cef_browser_host_t* h) { return h->get_zoom_level(h); }
+
+void wcef_host_set_zoom_level(cef_browser_host_t* h, double zoom_level) { h->set_zoom_level(h, zoom_level); }
 
 void wcef_callback_cont(cef_callback_t* cb) { cb->cont(cb); }
 

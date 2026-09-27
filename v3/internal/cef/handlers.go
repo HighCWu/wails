@@ -4,7 +4,7 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR}
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
 */
 import "C"
 
@@ -16,11 +16,6 @@ import "unsafe"
 // handlers next to the code that owns the struct.
 
 // --- cef_app_t ---
-
-//export wailsCEFAppRegisterSchemes
-func wailsCEFAppRegisterSchemes(self *C.cef_app_t, registrar *C.cef_scheme_registrar_t) {
-	appRegisterSchemes(registrar)
-}
 
 //export wailsCEFAppOnCommandLine
 func wailsCEFAppOnCommandLine(self *C.cef_app_t, processType *C.cef_string_t, commandLine *C.cef_command_line_t) {
@@ -46,9 +41,9 @@ func wailsCEFBPHContextInitialized(self *C.cef_browser_process_handler_t) {
 
 // --- cef_render_process_handler_t ---
 
-//export wailsCEFRPHWebKitInitialized
-func wailsCEFRPHWebKitInitialized(self *C.cef_render_process_handler_t) {
-	renderWebKitInitialized()
+//export wailsCEFRPHContextCreated
+func wailsCEFRPHContextCreated(self *C.cef_render_process_handler_t, browser *C.cef_browser_t, frame *C.cef_frame_t, context *C.cef_v8_context_t) {
+	renderContextCreated(context)
 }
 
 //export wailsCEFRPHProcessMessage
@@ -148,6 +143,13 @@ func wailsCEFLSHBeforeClose(self *C.cef_life_span_handler_t, browser *C.cef_brow
 }
 
 // --- cef_load_handler_t ---
+
+//export wailsCEFLoadHOnLoadStart
+func wailsCEFLoadHOnLoadStart(self *C.cef_load_handler_t, browser *C.cef_browser_t, frame *C.cef_frame_t, transitionType C.int) {
+	if bc := clientByHandlerPtr(unsafe.Pointer(self)); bc != nil {
+		loadStart(browser, frame, bc)
+	}
+}
 
 //export wailsCEFLoadHOnLoadEnd
 func wailsCEFLoadHOnLoadEnd(self *C.cef_load_handler_t, browser *C.cef_browser_t, frame *C.cef_frame_t, httpCode C.int) {

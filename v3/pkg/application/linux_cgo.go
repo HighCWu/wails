@@ -165,6 +165,8 @@ func appRun(app pointer) error {
 	defer C.free(unsafe.Pointer(signal))
 	C.signal_connect(unsafe.Pointer(application), signal, C.activateLinux, 0)
 	status := C.g_application_run(application, 0, nil)
+	// No-op unless a CEF-enabled variant links it in.
+	shutdownCEFBackend()
 	// The GTK main loop has stopped. Tell the asset-server webview layer to stop
 	// marshalling WebKit calls onto it, so any request still being completed on a
 	// worker goroutine runs inline instead of blocking on a loop that is gone.

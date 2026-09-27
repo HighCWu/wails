@@ -4,7 +4,7 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR}
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
 
 // Shims over the //export'ed callbacks in handlers.go.
 
@@ -70,8 +70,13 @@ static void wcef_init_lsh(void* p) {
   h->do_close = wails_cef_lsh_do_close;
   h->on_before_close = wails_cef_lsh_before_close;
 }
+void wailsCEFLoadHOnLoadStart(struct _cef_load_handler_t* self, struct _cef_browser_t* browser, struct _cef_frame_t* frame, int transition_type);
+static void wails_cef_loadh_on_load_start(struct _cef_load_handler_t* self, struct _cef_browser_t* browser, struct _cef_frame_t* frame, cef_transition_type_t transition_type) {
+  wailsCEFLoadHOnLoadStart(self, browser, frame, (int)transition_type);
+}
 static void wcef_init_loadh(void* p) {
   cef_load_handler_t* h = (cef_load_handler_t*)p;
+  h->on_load_start = wails_cef_loadh_on_load_start;
   h->on_load_end = wails_cef_loadh_on_load_end;
   h->on_load_error = wails_cef_loadh_on_load_error;
 }
@@ -84,6 +89,7 @@ import "C"
 
 import (
 	"log/slog"
+	"math"
 	"os"
 	"sync"
 	"unsafe"
@@ -281,6 +287,18 @@ func lifeSpanBeforeClose(browser *C.cef_browser_t, client *browserClient) {
 	}
 }
 
+// loadStart implements cef_load_handler_t.on_load_start for the main
+// frame: maps to the wails WindowLoadStarted event.
+func loadStart(browser *C.cef_browser_t, frame *C.cef_frame_t, client *browserClient) {
+	if frame == nil || C.wcef_frame_is_main(frame) != 1 {
+		return
+	}
+	st := state.Load()
+	if st != nil && st.OnWindowLoadStart != nil {
+		st.OnWindowLoadStart(client.windowID)
+	}
+}
+
 // loadEnd implements cef_load_handler_t.on_load_end for the main frame:
 // maps to the wails WindowLoadFinished event.
 func loadEnd(browser *C.cef_browser_t, frame *C.cef_frame_t, httpCode int, client *browserClient) {
@@ -297,7 +315,6 @@ func loadEnd(browser *C.cef_browser_t, frame *C.cef_frame_t, httpCode int, clien
 // loadError implements cef_load_handler_t.on_load_error (main frame only;
 // subframe errors are ignored).
 func loadError(browser *C.cef_browser_t, frame *C.cef_frame_t, errorCode int, errorText *C.cef_string_t, failedURL *C.cef_string_t, client *browserClient) {
-	_ = browser
 	_ = client
 	if frame != nil && C.wcef_frame_is_main(frame) != 1 {
 		return
@@ -327,9 +344,52 @@ func (b *Browser) ExecJS(js string) {
 	}
 	code := newCefString(js)
 	defer code.Clear()
-	url := newCefString("wails://localhost/wails/exec")
+	url := newCefString(AssetOrigin + "/wails/exec")
 	defer url.Clear()
 	C.wcef_frame_exec_js(frame, code.ptr(), url.ptr(), 1)
+}
+
+// LoadURL navigates the main frame to the given URL.
+func (b *Browser) LoadURL(url string) {
+	if b == nil || b.c == nil || C.wcef_browser_is_valid(b.c) != 1 {
+		return
+	}
+	frame := C.wcef_browser_get_main_frame(b.c)
+	if frame == nil || C.wcef_frame_is_valid(frame) != 1 {
+		return
+	}
+	u := newCefString(url)
+	defer u.Clear()
+	C.wcef_frame_load_url(frame, u.ptr())
+}
+
+// Reload reloads the page, optionally bypassing the cache.
+func (b *Browser) Reload(ignoreCache bool) {
+	if b == nil || b.c == nil || C.wcef_browser_is_valid(b.c) != 1 {
+		return
+	}
+	if ignoreCache {
+		C.wcef_browser_reload_ignore_cache(b.c)
+	} else {
+		C.wcef_browser_reload(b.c)
+	}
+}
+
+// SetZoomFactor maps a wails zoom factor (1.0 = 100%) onto CEF's
+// logarithmic zoom level (level 0 = 100%).
+func (b *Browser) SetZoomFactor(factor float64) {
+	if b == nil || b.host == nil {
+		return
+	}
+	C.wcef_host_set_zoom_level(b.host, C.double(math.Log2(factor)))
+}
+
+// ZoomFactor returns the current zoom as a wails zoom factor.
+func (b *Browser) ZoomFactor() float64 {
+	if b == nil || b.host == nil {
+		return 1
+	}
+	return math.Pow(2, float64(C.wcef_host_get_zoom_level(b.host)))
 }
 
 // Close destroys the browser. The native child window is removed

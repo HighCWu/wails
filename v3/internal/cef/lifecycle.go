@@ -4,7 +4,7 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR}
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
 */
 import "C"
 
@@ -189,22 +189,19 @@ func Shutdown() {
 	C.wcef_shutdown()
 }
 
-// initState installs the package-level State with glue hooks.
+// initState installs the package-level State. Glue hooks are optional in
+// subprocesses (only the V8 IPC extension runs there); the browser
+// process glue must set them before Initialize.
 func initState(dir string) error {
 	if state.Load() != nil {
 		return nil
-	}
-	if defaultStateHooks == nil {
-		return fmt.Errorf("cef: glue hooks not installed (internal error)")
 	}
 	st := &State{}
 	if defaultStateHooks != nil {
 		*st = *defaultStateHooks
 	}
 	st.Dir = dir
-	if !state.CompareAndSwap(nil, st) {
-		return nil
-	}
+	state.CompareAndSwap(nil, st)
 	return nil
 }
 
