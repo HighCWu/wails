@@ -220,6 +220,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: python v3/examples/cef/native_smoke.py --suite "$RUNNER_TEMP/cef-smoke.exe" --runtime "$RUNNER_TEMP/cef-native/runtime" --output "$RUNNER_TEMP/cef-native-results"
+      - name: Suppress first-run system prompts
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # A fresh runner account shows "Do you want to enable Dictation?"
+          # over the app the first time a text field gets focus after the
+          # microphone permission was granted. Enable dictation up front so
+          # the prompt never appears; the suite also dismisses stragglers.
+          defaults write com.apple.assistant.support "Dictation Enabled" -bool true || true
+          defaults write com.apple.HIToolbox dictationAutoEnable -bool true || true
+          defaults write com.apple.HIToolbox AppleDictationAutoTrigger -bool false || true
+          killall cfprefsd 2>/dev/null || true
       - name: Test macOS CEF interaction
         if: runner.os == 'macOS'
         shell: bash

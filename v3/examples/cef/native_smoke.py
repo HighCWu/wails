@@ -497,7 +497,9 @@ with log.open("w") as output:
             def dismiss_mac_alerts():
                 # Fresh runner accounts raise first-run prompts (Dictation
                 # after the media scenario granted the microphone) that
-                # steal focus mid-scenario. Escape picks their safe default.
+                # steal focus mid-scenario. The alert window itself has no
+                # CGWindowName; UserNotificationCenter/CoreServicesUIAgent
+                # own them, and Escape picks their safe default.
                 if sys.platform != "darwin":
                     return False
                 import Quartz
@@ -506,8 +508,9 @@ with log.open("w") as output:
                     Quartz.kCGWindowListOptionOnScreenOnly,
                     Quartz.kCGNullWindowID)
                 for w in windows:
-                    name = str(w.get(Quartz.kCGWindowName) or "")
-                    if "Dictation" in name or "enable Dictation" in name:
+                    owner = str(w.get(Quartz.kCGWindowOwnerName) or "")
+                    if owner in ("UserNotificationCenter", "CoreServicesUIAgent",
+                                 "TextInputMenuAgent"):
                         ui.press("escape")
                         time.sleep(0.5)
                         return True
