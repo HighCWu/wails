@@ -12,6 +12,7 @@ import (
 
 	"github.com/wailsapp/wails/v3/internal/assetserver"
 	"github.com/wailsapp/wails/v3/internal/cef"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 var desktopCEFEngines = map[uint]*desktopCEFEngine{}
