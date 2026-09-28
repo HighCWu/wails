@@ -75,7 +75,11 @@ static wcef_string_list_value_fn g_sl_value;
 
 // wcef_sym resolves a symbol, recording the first failure.
 static void* wcef_sym(const char* name) {
+  #if defined(OS_WIN)
+  void* s = (void*)GetProcAddress((HMODULE)g_lib, name);
+#else
   void* s = dlsym(g_lib, name);
+#endif
   if (s == NULL) {
     snprintf(g_error, sizeof(g_error),
              "libcef.so does not export %s (runtime does not match the "
@@ -86,7 +90,15 @@ static void* wcef_sym(const char* name) {
 }
 
 int wcef_load(const char* libcef_path) {
+  #if defined(OS_WIN)
+  int n = MultiByteToWideChar(CP_UTF8, 0, libcef_path, -1, NULL, 0);
+  wchar_t* path = calloc(n, sizeof(wchar_t));
+  MultiByteToWideChar(CP_UTF8, 0, libcef_path, -1, path, n);
+  g_lib = LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+  free(path);
+#else
   g_lib = dlopen(libcef_path, RTLD_LAZY | RTLD_GLOBAL);
+#endif
   if (g_lib == NULL) {
     snprintf(g_error, sizeof(g_error), "cannot dlopen %s", libcef_path);
     return 0;
@@ -432,3 +444,22 @@ void wcef_media_callback_cont(void* cb, uint32_t allowed_permissions) {
 void wcef_callback_cont(cef_callback_t* cb) { cb->cont(cb); }
 
 void wcef_callback_cancel(cef_callback_t* cb) { cb->cancel(cb); }
+
+void wcef_main_args(cef_main_args_t* args, int argc, char** argv) {
+#if defined(OS_WIN)
+ args->instance = GetModuleHandleW(NULL);
+#else
+ args->argc = argc; args->argv = argv;
+#endif
+}
+void wcef_window_parent(cef_window_info_t* info, uintptr_t parent) {
+#if defined(OS_MAC)
+ info->parent_view = (cef_window_handle_t)parent;
+#elif defined(OS_WIN)
+ info->parent_window = (cef_window_handle_t)parent;
+ info->style = WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+#else
+ info->parent_window = (cef_window_handle_t)parent;
+#endif
+}
+uintptr_t wcef_native_handle(cef_browser_host_t* host) { return (uintptr_t)host->get_window_handle(host); }

@@ -1,4 +1,4 @@
-//go:build linux && wails_cef
+//go:build (linux || windows || darwin) && cgo && wails_cef && !android && !ios
 
 package cef
 

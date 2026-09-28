@@ -5,6 +5,10 @@ package application
 import "github.com/wailsapp/wails/v3/internal/webview2/pkg/edge"
 
 func (w *windowsWebviewWindow) openDevTools() {
+	if w.cefEngine != nil {
+		w.cefEngine.openDevTools()
+		return
+	}
 	w.chromium.OpenDevToolsWindow()
 }
 

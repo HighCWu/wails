@@ -1,4 +1,4 @@
-//go:build linux && wails_cef
+//go:build (linux || windows || darwin) && cgo && wails_cef && !android && !ios
 
 package cef
 
@@ -153,6 +153,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -351,7 +352,7 @@ func CreateBrowser(opts CreateBrowserOptions) (*Browser, error) {
 	wi.bounds.y = C.int(0)
 	wi.bounds.width = C.int(opts.Width)
 	wi.bounds.height = C.int(opts.Height)
-	wi.parent_window = C.cef_window_handle_t(opts.ParentXWindow)
+	C.wcef_window_parent(wi, C.uintptr_t(opts.ParentXWindow))
 	wi.windowless_rendering_enabled = 0
 	wi.runtime_style = C.CEF_RUNTIME_STYLE_ALLOY
 	defer C.free(unsafe.Pointer(wi))
@@ -498,7 +499,11 @@ func keyEvent(browser *C.cef_browser_t, event *C.cef_key_event_t, client *browse
 	if st == nil || st.OnKeyEvent == nil {
 		return 0
 	}
-	consumed := st.OnKeyEvent(client.windowID, uint32(event.native_key_code), uint32(event.modifiers))
+	key := uint32(event.native_key_code)
+	if runtime.GOOS == "windows" {
+		key = uint32(event.windows_key_code)
+	}
+	consumed := st.OnKeyEvent(client.windowID, key, uint32(event.modifiers))
 	if consumed {
 		return 1
 	}
@@ -688,7 +693,7 @@ func (b *Browser) XWindow() uintptr {
 	if b == nil || b.host == nil {
 		return 0
 	}
-	return uintptr(C.wcef_host_get_window_handle(b.host))
+	return uintptr(C.wcef_native_handle(b.host))
 }
 
 func gtkBoolC(v bool) C.int {

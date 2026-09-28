@@ -134,7 +134,11 @@ void* windowNew(unsigned int id, int width, int height, bool fraudulentWebsiteWa
 		[window setTitleVisibility:NSWindowTitleHidden];
 	}
 
-	// Embed wkwebview in window
+	#ifdef WAILS_CEF
+ extern int wails_cef_enabled(void);
+ if (wails_cef_enabled()) return window;
+#endif
+ // Embed wkwebview in window
 	NSRect frame = NSMakeRect(0, 0, width, height);
 	WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
 	[config autorelease];
@@ -1150,8 +1154,9 @@ import (
 )
 
 type macosWebviewWindow struct {
-	nsWindow unsafe.Pointer
-	parent   *WebviewWindow
+	cefEngine cefDesktopEngine
+	nsWindow  unsafe.Pointer
+	parent    *WebviewWindow
 }
 
 func (w *macosWebviewWindow) handleKeyEvent(acceleratorString string) {
@@ -1208,10 +1213,17 @@ func (w *macosWebviewWindow) openContextMenu(menu *Menu, data *ContextMenuData) 
 }
 
 func (w *macosWebviewWindow) getZoom() float64 {
+	if w.cefEngine != nil {
+		return w.cefEngine.zoomFactor()
+	}
 	return float64(C.windowZoomGet(w.nsWindow))
 }
 
 func (w *macosWebviewWindow) setZoom(zoom float64) {
+	if w.cefEngine != nil {
+		w.cefEngine.setZoomFactor(zoom)
+		return
+	}
 	if zoom < 1.0 {
 		zoom = 1.0
 	}
@@ -1326,6 +1338,10 @@ func (w *macosWebviewWindow) windowZoom() {
 }
 
 func (w *macosWebviewWindow) close() {
+	if w.cefEngine != nil {
+		w.cefEngine.close()
+		return
+	}
 	globalApplication.debug("Window close() called - setting unconditionallyClose flag", "windowId", w.parent.id, "title", w.parent.options.Title)
 	// Set the unconditionallyClose flag to allow the window to close
 	atomic.StoreUint32(&w.parent.unconditionallyClose, 1)
@@ -1335,18 +1351,34 @@ func (w *macosWebviewWindow) close() {
 }
 
 func (w *macosWebviewWindow) zoomIn() {
+	if w.cefEngine != nil {
+		w.cefEngine.setZoomFactor(w.cefEngine.zoomFactor() + 0.1)
+		return
+	}
 	C.windowZoomIn(w.nsWindow)
 }
 
 func (w *macosWebviewWindow) zoomOut() {
+	if w.cefEngine != nil {
+		w.cefEngine.setZoomFactor(w.cefEngine.zoomFactor() - 0.1)
+		return
+	}
 	C.windowZoomOut(w.nsWindow)
 }
 
 func (w *macosWebviewWindow) zoomReset() {
+	if w.cefEngine != nil {
+		w.cefEngine.setZoomFactor(1)
+		return
+	}
 	C.windowZoomReset(w.nsWindow)
 }
 
 func (w *macosWebviewWindow) reload() {
+	if w.cefEngine != nil {
+		w.cefEngine.reload(false)
+		return
+	}
 	globalApplication.debug("reload called on WebviewWindow", "parentID", w.parent.id)
 	InvokeAsync(func() {
 		C.windowReload(w.nsWindow)
@@ -1416,6 +1448,10 @@ func (w *macosWebviewWindow) setEnabled(enabled bool) {
 }
 
 func (w *macosWebviewWindow) execJS(js string) {
+	if w.cefEngine != nil {
+		w.cefEngine.execJS(js)
+		return
+	}
 	InvokeAsync(func() {
 		globalApplication.shutdownLock.Lock()
 		performingShutdown := globalApplication.performingShutdown
@@ -1443,6 +1479,10 @@ func (w *macosWebviewWindow) execJSDragOver(buffer []byte) {
 }
 
 func (w *macosWebviewWindow) setURL(uri string) {
+	if w.cefEngine != nil {
+		w.cefEngine.loadURL(uri)
+		return
+	}
 	C.navigationLoadURL(w.nsWindow, C.CString(uri))
 }
 
@@ -1651,6 +1691,7 @@ func (w *macosWebviewWindow) run() {
 			C.int(notchContentHeight),
 			cNotchScreenID,
 		)
+		attachCEFDarwin(w)
 		if macOptions.DisableEscapeExitsFullscreen {
 			C.windowSetDisableEscapeExitsFullscreen(w.nsWindow, C.bool(true))
 		}
@@ -1887,6 +1928,10 @@ func (w *macosWebviewWindow) setPhysicalBounds(physicalBounds Rect) {
 }
 
 func (w *macosWebviewWindow) destroy() {
+	if w.cefEngine != nil {
+		w.cefEngine.close()
+		return
+	}
 	if w.nsWindow == nil {
 		return
 	}

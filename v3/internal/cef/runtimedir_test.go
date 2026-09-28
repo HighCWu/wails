@@ -1,4 +1,4 @@
-//go:build linux && wails_cef
+//go:build (linux || windows || darwin) && cgo && wails_cef && !android && !ios
 
 package cef
 
@@ -12,8 +12,15 @@ import (
 func fakeRuntimeDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	for _, f := range append([]string{"libcef.so"}, requiredFiles...) {
-		if err := os.WriteFile(filepath.Join(dir, f), []byte{0}, 0o644); err != nil {
+	files := []string{libraryPath(dir)}
+	for _, f := range requiredFiles {
+		files = append(files, filepath.Join(resourcesDir(dir), f))
+	}
+	for _, f := range files {
+		if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte{0}, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -695,7 +695,14 @@ func (a *App) Run() error {
 		return err
 	}
 
+	if err := preparePlatformCEF(a); err != nil {
+		return err
+	}
 	a.impl = newPlatformApp(a)
+	if err := startPlatformCEF(a); err != nil {
+		return err
+	}
+	defer stopPlatformCEF()
 
 	// Ensure services are shut down in case of failures.
 	defer a.shutdownServices()

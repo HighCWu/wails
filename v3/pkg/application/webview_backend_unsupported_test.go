@@ -1,4 +1,4 @@
-//go:build !linux || !wails_cef
+//go:build !wails_cef || !cgo
 
 package application
 

@@ -23,6 +23,10 @@ void windowEnableDevTools(void *window) {
 import "C"
 
 func (w *macosWebviewWindow) openDevTools() {
+	if w.cefEngine != nil {
+		w.cefEngine.openDevTools()
+		return
+	}
 	C.wailsPrivateOpenWebInspector(w.nsWindow)
 }
 

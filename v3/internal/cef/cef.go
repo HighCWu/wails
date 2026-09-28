@@ -1,4 +1,4 @@
-//go:build linux && wails_cef
+//go:build (linux || windows || darwin) && cgo && wails_cef && !android && !ios
 
 // Package cef provides a minimal, dependency-free cgo binding for the
 // Chromium Embedded Framework (CEF) C API, plus the Wails integration

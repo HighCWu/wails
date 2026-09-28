@@ -39,6 +39,7 @@ var edgeMap = map[string]uintptr{
 }
 
 type windowsWebviewWindow struct {
+	cefEngine                cefDesktopEngine
 	requestCancellation      *windowsRequestCancellation
 	windowImpl               unsafe.Pointer
 	parent                   *WebviewWindow
@@ -378,6 +379,10 @@ func (w *windowsWebviewWindow) setAlwaysOnTop(alwaysOnTop bool) {
 }
 
 func (w *windowsWebviewWindow) setURL(url string) {
+	if w.cefEngine != nil {
+		w.cefEngine.loadURL(url)
+		return
+	}
 	// Navigate to the given URL in the webview
 	w.webviewNavigationCompleted = false
 	w.lastNavigatedURL = url
@@ -400,6 +405,10 @@ func (w *windowsWebviewWindow) setMaxSize(width, height int) {
 }
 
 func (w *windowsWebviewWindow) execJS(js string) {
+	if w.cefEngine != nil {
+		w.cefEngine.execJS(js)
+		return
+	}
 	if w.chromium == nil {
 		return
 	}
@@ -409,6 +418,10 @@ func (w *windowsWebviewWindow) execJS(js string) {
 }
 
 func (w *windowsWebviewWindow) setBackgroundColour(color RGBA) {
+	if w.cefEngine != nil {
+		w32.SetBackgroundColour(w.hwnd, color.Red, color.Green, color.Blue)
+		return
+	}
 	switch w.parent.options.BackgroundType {
 	case BackgroundTypeSolid:
 		w32.SetBackgroundColour(w.hwnd, color.Red, color.Green, color.Blue)
@@ -925,6 +938,10 @@ func (w *windowsWebviewWindow) setRelativePosition(x int, y int) {
 }
 
 func (w *windowsWebviewWindow) destroy() {
+	if w.cefEngine != nil {
+		w.cefEngine.close()
+		return
+	}
 	w.requestCancellation.close()
 	// Re-enable parent window if this was a modal window
 	if w.parentHWND != 0 {
@@ -942,6 +959,10 @@ func (w *windowsWebviewWindow) reload() {
 }
 
 func (w *windowsWebviewWindow) forceReload() {
+	if w.cefEngine != nil {
+		w.cefEngine.reload(true)
+		return
+	}
 	// noop
 }
 
@@ -974,6 +995,9 @@ func (w *windowsWebviewWindow) zoomOut() {
 }
 
 func (w *windowsWebviewWindow) getZoom() float64 {
+	if w.cefEngine != nil {
+		return w.cefEngine.zoomFactor()
+	}
 	controller := w.chromium.GetController()
 	factor, err := controller.GetZoomFactor()
 	if err != nil {
@@ -983,6 +1007,10 @@ func (w *windowsWebviewWindow) getZoom() float64 {
 }
 
 func (w *windowsWebviewWindow) setZoom(zoom float64) {
+	if w.cefEngine != nil {
+		w.cefEngine.setZoomFactor(zoom)
+		return
+	}
 	if zoom < 1.0 {
 		zoom = 1.0
 	}
@@ -1166,6 +1194,11 @@ func (w *windowsWebviewWindow) isVisible() bool {
 }
 
 func (w *windowsWebviewWindow) focus() {
+	if w.cefEngine != nil {
+		w32.SetForegroundWindow(w.hwnd)
+		w.cefEngine.focus()
+		return
+	}
 	w32.SetForegroundWindow(w.hwnd)
 
 	if w.isDisabled() {
@@ -1350,6 +1383,10 @@ func (w *windowsWebviewWindow) show() {
 	w.windowShown = true
 	w.showRequested = true
 	w.updateContentProtection()
+
+	if w.cefEngine != nil {
+		return
+	}
 
 	// Show WebView if navigation has completed
 	if w.webviewNavigationCompleted {
@@ -1717,6 +1754,10 @@ func (w *windowsWebviewWindow) WndProc(msg uint32, wparam, lparam uintptr) uintp
 			return 0
 		}
 
+		if w.cefEngine != nil {
+			w.cefEngine.close()
+			return 0
+		}
 		defer func() {
 			// Re-enable parent window if this was a modal window
 			if w.parentHWND != 0 {
@@ -2443,6 +2484,9 @@ func (w *windowsWebviewWindow) processRequest(
 }
 
 func (w *windowsWebviewWindow) setupChromium(recovering bool) bool {
+	if attachCEFWindows(w) {
+		return true
+	}
 	chromium := w.chromium
 	debugMode := globalApplication.isDebugMode
 

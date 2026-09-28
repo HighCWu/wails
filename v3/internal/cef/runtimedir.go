@@ -1,4 +1,4 @@
-//go:build linux && wails_cef
+//go:build (linux || windows || darwin) && cgo && wails_cef && !android && !ios
 
 package cef
 
@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // DirEnvVar names the environment variable pointing at the CEF runtime
@@ -18,7 +19,7 @@ const DirEnvVar = "WAILS_CEF_DIR"
 // checked separately so error messages can name the actual problem.
 var requiredFiles = []string{
 	"icudtl.dat",
-	"v8_context_snapshot.bin",
+	snapshotFile(),
 }
 
 // RuntimeDir resolves the CEF runtime directory:
@@ -64,11 +65,11 @@ func checkRuntimeDir(dir string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("CEF runtime path %q is not a directory", dir)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "libcef.so")); err != nil {
-		return fmt.Errorf("CEF runtime directory %q has no libcef.so", dir)
+	if _, err := os.Stat(libraryPath(dir)); err != nil {
+		return fmt.Errorf("CEF runtime library missing: %s", libraryPath(dir))
 	}
 	for _, f := range requiredFiles {
-		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+		if _, err := os.Stat(filepath.Join(resourcesDir(dir), f)); err != nil {
 			return fmt.Errorf("CEF runtime directory %q has no %s", dir, f)
 		}
 	}
@@ -83,4 +84,37 @@ func Probe() error {
 		return err
 	}
 	return checkRuntimeDir(dir)
+}
+
+func frameworkDir(dir string) string {
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(dir, "Chromium Embedded Framework.framework")
+	}
+	return dir
+}
+func resourcesDir(dir string) string {
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(frameworkDir(dir), "Resources")
+	}
+	return dir
+}
+func libraryPath(dir string) string {
+	switch runtime.GOOS {
+	case "windows":
+		return filepath.Join(dir, "libcef.dll")
+	case "darwin":
+		return filepath.Join(frameworkDir(dir), "Chromium Embedded Framework")
+	default:
+		return filepath.Join(dir, "libcef.so")
+	}
+}
+
+func snapshotFile() string {
+	if runtime.GOOS == "darwin" {
+		if runtime.GOARCH == "arm64" {
+			return "v8_context_snapshot.arm64.bin"
+		}
+		return "v8_context_snapshot.x86_64.bin"
+	}
+	return "v8_context_snapshot.bin"
 }

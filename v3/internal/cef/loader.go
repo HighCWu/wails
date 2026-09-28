@@ -1,4 +1,4 @@
-//go:build linux && wails_cef
+//go:build (linux || windows || darwin) && cgo && wails_cef && !android && !ios
 
 package cef
 
@@ -18,7 +18,7 @@ import (
 // loadLibrary dlopens libcef.so from the given runtime directory and
 // resolves the C-side symbol table (see cef_capi.c).
 func loadLibrary(dir string) error {
-	cpath := C.CString(dir + "/libcef.so")
+	cpath := C.CString(libraryPath(dir))
 	defer C.free(unsafe.Pointer(cpath))
 	if C.wcef_load(cpath) != 1 {
 		return fmt.Errorf("%s", C.GoString(C.wcef_load_error()))

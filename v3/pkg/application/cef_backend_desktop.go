@@ -1,0 +1,202 @@
+//go:build cgo && wails_cef && (windows || (darwin && !ios)) && !server
+
+package application
+
+import (
+	"fmt"
+	"os"
+	"runtime"
+	"sync/atomic"
+	"time"
+
+	"github.com/wailsapp/wails/v3/internal/assetserver"
+	"github.com/wailsapp/wails/v3/internal/cef"
+)
+
+var desktopCEFEngines = map[uint]*desktopCEFEngine{}
+var desktopCEFPumping atomic.Bool
+
+func init() {
+	runtime.LockOSThread()
+	if cef.IsSubprocess() {
+		if err := cef.ExecuteSubprocess(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+	probeCEFRuntime = cef.Probe
+	startPlatformCEF = startDesktopCEF
+	stopPlatformCEF = func() {
+		if desktopCEFPumping.Swap(false) {
+			cef.Shutdown()
+		}
+	}
+}
+
+func startDesktopCEF(app *App) error {
+	if app.webviewBackend != WebviewBackendCEF {
+		return nil
+	}
+	cef.SetStateHooks(&cef.State{
+		DispatchMain: func(fn func()) { InvokeAsync(fn) },
+		PumpHostLoop: pumpCEFHost,
+		OnWindowMessage: func(id uint, message, origin string) {
+			windowMessageBuffer <- &windowMessage{windowId: id, message: message, originInfo: &OriginInfo{Origin: origin}}
+		},
+		AssetRequest: func(req *cef.AssetRequest) {
+			name := ""
+			if w, ok := app.Window.GetByID(req.WindowID); ok {
+				name = w.Name()
+			}
+			webviewRequests <- &webViewAssetRequest{Request: req.Request, windowId: req.WindowID, windowName: name}
+		},
+		OnWindowLoadEnd: func(id uint) {
+			if e := desktopCEFEngines[id]; e != nil && e.loaded != nil {
+				e.loaded()
+			}
+		},
+		OnTitleChange: func(id uint, title string) {
+			if w, ok := app.Window.GetByID(id); ok {
+				w.SetTitle(title)
+			}
+		},
+		OnBrowserClosed: func(id uint) {
+			InvokeAsync(func() {
+				if e := desktopCEFEngines[id]; e != nil {
+					delete(desktopCEFEngines, id)
+					e.finishClose()
+				}
+			})
+		},
+		OnKeyEvent: func(id uint, key, modifiers uint32) bool {
+			var acc accelerator
+			if modifiers&cef.EventFlagControlDown != 0 {
+				acc.Modifiers = append(acc.Modifiers, ControlKey)
+			}
+			if modifiers&cef.EventFlagShiftDown != 0 {
+				acc.Modifiers = append(acc.Modifiers, ShiftKey)
+			}
+			if modifiers&cef.EventFlagAltDown != 0 {
+				acc.Modifiers = append(acc.Modifiers, OptionOrAltKey)
+			}
+			if modifiers&(1<<7) != 0 {
+				acc.Modifiers = append(acc.Modifiers, SuperKey)
+			}
+			var ok bool
+			acc.Key, ok = VirtualKeyCodes[uint(key)]
+			if !ok {
+				return false
+			}
+			windowKeyEvents <- &windowKeyEvent{windowId: id, acceleratorString: acc.String()}
+			return false
+		},
+		OnMediaPermission: func(id uint, audio, video bool) bool {
+			w, ok := app.Window.GetByID(id)
+			if !ok {
+				return false
+			}
+			window, ok := w.(*WebviewWindow)
+			if !ok {
+				return false
+			}
+			permissions := window.options.Permissions
+			return (!audio || permissions[PermissionMicrophone] == PermissionAllow) && (!video || permissions[PermissionCamera] == PermissionAllow)
+		},
+	})
+	assetserver.SetBaseURL(cef.AssetScheme, cef.AssetHost)
+	if err := cef.Initialize(cef.InitializeOptions{LogToFile: os.Getenv("WAILS_CEF_LOG_TO_FILE") == "1"}); err != nil {
+		return err
+	}
+	desktopCEFPumping.Store(true)
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			if !desktopCEFPumping.Load() {
+				return
+			}
+			InvokeAsync(func() {
+				if !desktopCEFPumping.Load() {
+					return
+				}
+				cef.DoMessageLoopWork()
+				for _, e := range desktopCEFEngines {
+					if !e.closing && e.syncNative != nil {
+						e.syncNative()
+					}
+				}
+			})
+		}
+	}()
+	return nil
+}
+
+type desktopCEFEngine struct {
+	browser       *cef.Browser
+	id            uint
+	native        uintptr
+	width, height int
+	background    uint32
+	closing       bool
+	finishClose   func()
+	loaded        func()
+	syncNative    func()
+}
+
+func (e *desktopCEFEngine) loadURL(url string) {
+	if e.browser != nil {
+		e.browser.LoadURL(url)
+		return
+	}
+	b, err := cef.CreateBrowser(cef.CreateBrowserOptions{WindowID: e.id, ParentXWindow: e.native, Width: e.width, Height: e.height, URL: url, BackgroundColor: e.background})
+	if err != nil {
+		globalApplication.handleFatalError(err)
+		return
+	}
+	e.browser = b
+}
+func (e *desktopCEFEngine) execJS(js string) {
+	InvokeAsync(func() {
+		if e.browser != nil && !e.closing {
+			e.browser.ExecJS(js)
+		}
+	})
+}
+func (e *desktopCEFEngine) reload(ignore bool) {
+	if e.browser != nil {
+		e.browser.Reload(ignore)
+	}
+}
+func (e *desktopCEFEngine) setZoomFactor(zoom float64) {
+	if e.browser != nil {
+		e.browser.SetZoomFactor(zoom)
+	}
+}
+func (e *desktopCEFEngine) zoomFactor() float64 {
+	if e.browser != nil {
+		return e.browser.ZoomFactor()
+	}
+	return 1
+}
+func (e *desktopCEFEngine) focus() {
+	if e.browser != nil {
+		e.browser.Focus()
+	}
+}
+func (e *desktopCEFEngine) openDevTools() {
+	if e.browser != nil {
+		e.browser.OpenDevTools()
+	}
+}
+func (e *desktopCEFEngine) close() {
+	if e.closing {
+		return
+	}
+	e.closing = true
+	if e.browser != nil {
+		e.browser.Close(true)
+	} else {
+		delete(desktopCEFEngines, e.id)
+		e.finishClose()
+	}
+}

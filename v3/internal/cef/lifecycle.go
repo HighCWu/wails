@@ -1,4 +1,4 @@
-//go:build linux && wails_cef
+//go:build (linux || windows || darwin) && cgo && wails_cef && !android && !ios
 
 package cef
 
@@ -45,7 +45,7 @@ type mainArgs struct {
 
 func newMainArgs() *mainArgs {
 	ma := &mainArgs{}
-	ma.c.argc = C.int(len(os.Args))
+
 	argv := (**C.char)(C.calloc(C.size_t(len(os.Args)+1), C.size_t(unsafe.Sizeof((*C.char)(nil)))))
 	base := unsafe.Pointer(argv)
 	for i, arg := range os.Args {
@@ -53,7 +53,7 @@ func newMainArgs() *mainArgs {
 		ma.ptrs = append(ma.ptrs, unsafe.Pointer(cs))
 		*(**C.char)(unsafe.Add(base, unsafe.Sizeof((*C.char)(nil))*uintptr(i))) = cs
 	}
-	ma.c.argv = argv
+	C.wcef_main_args(&ma.c, C.int(len(os.Args)), argv)
 	ma.ptrs = append(ma.ptrs, base)
 	return ma
 }
@@ -252,9 +252,13 @@ func buildSettings(dir string, opts InitializeOptions) (*C.cef_settings_t, func(
 	var owned []*cefString
 	exe, _ := os.Executable()
 
-	owned = append(owned, setStr(&s.browser_subprocess_path, exe))
-	owned = append(owned, setStr(&s.framework_dir_path, dir))
-	owned = append(owned, setStr(&s.resources_dir_path, dir))
+	subprocessPath := os.Getenv("WAILS_CEF_SUBPROCESS_PATH")
+	if subprocessPath == "" {
+		subprocessPath = exe
+	}
+	owned = append(owned, setStr(&s.browser_subprocess_path, subprocessPath))
+	owned = append(owned, setStr(&s.framework_dir_path, frameworkDir(dir)))
+	owned = append(owned, setStr(&s.resources_dir_path, resourcesDir(dir)))
 	owned = append(owned, setStr(&s.locales_dir_path, filepath.Join(dir, "locales")))
 
 	cache := opts.CachePath

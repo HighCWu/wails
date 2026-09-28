@@ -14,7 +14,11 @@
 #include "include/capi/cef_v8_capi.h"
 #include "include/internal/cef_string_multimap.h"
 
+#if defined(OS_WIN)
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -215,3 +219,7 @@ void wcef_callback_cont(cef_callback_t* cb);
 void wcef_callback_cancel(cef_callback_t* cb);
 
 #endif  // WAILS_CEF_GLUE_H
+
+void wcef_main_args(cef_main_args_t* args, int argc, char** argv);
+void wcef_window_parent(cef_window_info_t* info, uintptr_t parent);
+uintptr_t wcef_native_handle(cef_browser_host_t* host);

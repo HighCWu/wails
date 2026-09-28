@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || windows || (darwin && !ios)
 
 // This example exercises the CEF backend and can also run with the system webview.
 package main
@@ -6,12 +6,12 @@ package main
 import (
 	"embed"
 	"fmt"
-	"github.com/wailsapp/wails/v3/pkg/events"
 	"log"
 	"os"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 //go:embed assets
@@ -26,6 +26,22 @@ func (*ProbeService) Greet(name string) string {
 
 func (*ProbeService) Report(message string) {
 	fmt.Printf("CEF_SMOKE_REPORT %s\n", message)
+}
+
+func (*ProbeService) Quit() {
+	go func() {
+		delay := 200 * time.Millisecond
+		if os.Getenv("CEF_SMOKE_DELAY_QUIT") == "1" {
+			delay = 5 * time.Second
+		}
+		time.Sleep(delay)
+		application.Get().Quit()
+	}()
+}
+func (*ProbeService) Resize() {
+	if w, ok := application.Get().Window.GetByName("main"); ok {
+		w.SetSize(1000, 700)
+	}
 }
 
 func (*ProbeService) NewWindow() {

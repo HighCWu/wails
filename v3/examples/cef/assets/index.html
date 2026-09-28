@@ -9,13 +9,13 @@ section { padding: 24px; }
 input, button { font: inherit; padding: 8px; }
 #size { position: fixed; right: 16px; bottom: 12px; }
 </style>
-<h1>Wails + CEF: native GTK embedding</h1>
+<h1>Wails + CEF: native embedding</h1>
 <section>
 <input id="name" placeholder="Type a name" aria-label="Name">
 <button id="greet">Call Go</button>
 <button id="red">Red</button>
 <button id="tools">DevTools</button>
-<p><button id="media">Media</button> <button id="new">New window</button></p>
+<p><button id="media">Media</button> <button id="new">New window</button> <button id="resize">Resize</button> <button id="quit">Quit</button></p>
 <div id="drop" data-file-drop-target style="padding:20px;border:2px dashed #555">Drop files here</div>
 <p id="output">Loading runtime…</p>
 <p>Type a name and call Go. Ctrl+M tests Go → JavaScript.</p>
@@ -28,13 +28,15 @@ const report = message => Call.ByName('main.ProbeService.Report', role + ':' + m
 const output = document.getElementById('output');
 const size = document.getElementById('size');
 function resized() { size.textContent = `${innerWidth} × ${innerHeight}`; }
-addEventListener('resize', resized); resized();
+addEventListener('resize', () => {resized(); report(`size:${innerWidth}x${innerHeight}`);}); resized();
 output.textContent = `Runtime ready; invoke bridge: ${typeof window.chrome?.webview?.postMessage === 'function'}`;
 document.title = role === 'main' ? 'CEF smoke ready' : 'CEF smoke secondary ready';
 report('ready');
 if (new URLSearchParams(location.search).get('passive') === '1') {
  setTimeout(async () => { output.textContent = await Call.ByName('main.ProbeService.Greet', 'PASSIVE'); document.body.style.background = 'lime'; report('passive:green'); }, 1800);
 }
+document.getElementById('resize').onclick = () => Call.ByName('main.ProbeService.Resize');
+document.getElementById('quit').onclick = () => Call.ByName('main.ProbeService.Quit');
 document.getElementById('new').onclick = () => Call.ByName('main.ProbeService.NewWindow');
 document.getElementById('media').onclick = async () => {
  try {
