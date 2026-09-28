@@ -10,6 +10,9 @@ import sys
 import shutil
 import re
 import json
+import socket
+import urllib.request
+import websocket
 import pyautogui as ui
 
 p = argparse.ArgumentParser(description=__doc__)
@@ -45,6 +48,14 @@ if a.hardware_media:
         )
 else:
     env["WAILS_CEF_SWITCHES"] = "use-fake-device-for-media-stream"
+# CDP covers Chromium's composition/preedit/commit path. This is deliberately
+# distinct from the native OS IME frontend exercised by the Linux IBus suite.
+with socket.socket() as probe:
+    probe.bind(("127.0.0.1", 0))
+    debug_port = probe.getsockname()[1]
+env["WAILS_CEF_SWITCHES"] = (
+    env.get("WAILS_CEF_SWITCHES", "") + f",remote-debugging-port={debug_port}"
+)
 log = a.output / "application.log"
 source = None
 
@@ -69,6 +80,24 @@ def control(role, name):
         re.escape(role) + r":controls:(\{[^\n]+\})", log.read_text(errors="replace")
     )
     return json.loads(matches[-1])[name]
+
+
+def window_position(title):
+    if sys.platform == "darwin":
+        import Quartz
+
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
+        )
+        for w in windows:
+            if w.get(Quartz.kCGWindowName) == title:
+                bounds = w[Quartz.kCGWindowBounds]
+                return bounds["X"], bounds["Y"]
+    else:
+        windows = ui.getWindowsWithTitle(title)
+        if windows:
+            return windows[0].left, windows[0].top
+    raise AssertionError("Missing native window " + title)
 
 
 def wait_log(text, timeout=40):
@@ -127,6 +156,50 @@ with log.open("w") as output:
         ui.press("m")
         ui.keyUp("ctrl")
         wait_log("CEF_SMOKE_EXECJS main")
+        click(*control("main", "name"))
+        ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
+        ui.press("backspace")
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{debug_port}/json/list", timeout=10
+        ) as response:
+            pages = json.load(response)
+        page = next(
+            p
+            for p in pages
+            if p.get("type") == "page" and "role=main" in p.get("url", "")
+        )
+        ws = websocket.create_connection(
+            page["webSocketDebuggerUrl"], suppress_origin=True, timeout=10
+        )
+        message_id = 0
+
+        def cdp(method, params):
+            global message_id
+            message_id += 1
+            ws.send(json.dumps(dict(id=message_id, method=method, params=params)))
+            while True:
+                response = json.loads(ws.recv())
+                if response.get("id") == message_id:
+                    assert "error" not in response, response
+                    return response.get("result")
+
+        try:
+            cdp(
+                "Input.imeSetComposition",
+                dict(text="中文输入", selectionStart=0, selectionEnd=4),
+            )
+            wait_log("main:compositionupdate:中文输入")
+            screenshot("composition")
+            cdp("Input.insertText", dict(text="中文输入"))
+            wait_log("main:compositionend:中文输入")
+            click(*control("main", "greet"))
+            wait_log('CEF_SMOKE_GREET "中文输入"')
+        finally:
+            ws.close()
+        print(
+            "PASS: Chromium composition/preedit/commit and Unicode RPC (CDP, not native OS IME)",
+            flush=True,
+        )
         click(260, 223)
         # Wails SetSize is the outer window size on Windows. Account for native
         # frame decorations instead of requiring a 1000x700 browser viewport.
@@ -179,6 +252,38 @@ with log.open("w") as output:
             "PASS: independent windows, shortcuts, permission denial, close and restored focus",
             flush=True,
         )
+        click(*control("main", "overlay"))
+        wait_log("overlay:ready")
+        time.sleep(1)
+        # The overlay is placed inside the main viewport, over its header. Its
+        # mouse policy must route a real OS click to the underlying main window.
+        tx, ty = left + 120, top + 90
+        before = log.read_text(errors="replace").count("main:pointer:")
+        ui.click(tx, ty)
+        time.sleep(0.5)
+        assert log.read_text(errors="replace").count("main:pointer:") > before
+        click(*control("main", "capture"))
+        time.sleep(0.5)
+        before = log.read_text(errors="replace").count("overlay:pointer:")
+        ui.click(tx, ty)
+        time.sleep(0.5)
+        assert log.read_text(errors="replace").count("overlay:pointer:") > before
+        screenshot("mouse-policy")
+        ox, oy = window_position("CEF smoke overlay ready")
+        ui.moveTo(tx, ty)
+        ui.mouseDown()
+        time.sleep(0.2)
+        ui.moveTo(tx + 5, ty, duration=0.2)
+        time.sleep(0.3)
+        ui.moveTo(tx + 95, ty + 35, duration=1)
+        ui.mouseUp()
+        time.sleep(0.5)
+        nx, ny = window_position("CEF smoke overlay ready")
+        assert 75 <= nx - ox <= 110 and 25 <= ny - oy <= 45, (ox, oy, nx, ny)
+        print("PASS: dragging opaque frameless content", flush=True)
+        click(*control("main", "close-overlay"))
+        time.sleep(0.5)
+        print("PASS: whole-window mouse passthrough and restored capture", flush=True)
         dropped = a.output / "拖放测试.txt"
         dropped.write_text("CEF native file drop probe")
         source_position = a.output / "source-position.json"

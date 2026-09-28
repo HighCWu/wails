@@ -19,7 +19,7 @@ input, button { font: inherit; padding: 8px; }
 <div id="drop" data-file-drop-target style="padding:20px;border:2px dashed #555">Drop files here</div>
 <p id="output">Loading runtime…</p>
 <p>Type a name and call Go. Ctrl+M tests Go → JavaScript.</p>
-<p><button id="dialog">Dialog</button> <button id="attached">Attached dialog</button> <button id="close">Close window</button></p>
+<p><button id="dialog">Dialog</button> <button id="attached">Attached dialog</button> <button id="close">Close window</button> <button id="overlay">Passthrough overlay</button> <button id="capture">Capture overlay</button> <button id="close-overlay">Close overlay</button></p>
 </section>
 <div id="size"></div>
 <script type="module">
@@ -31,8 +31,12 @@ const size = document.getElementById('size');
 function resized() { size.textContent = `${innerWidth} × ${innerHeight}`; }
 addEventListener('resize', () => {resized(); report(`size:${innerWidth}x${innerHeight}`);}); resized();
 output.textContent = `Runtime ready; invoke bridge: ${typeof window.chrome?.webview?.postMessage === 'function'}`;
-document.title = role === 'main' ? 'CEF smoke ready' : 'CEF smoke secondary ready';
+document.title = role === 'main' ? 'CEF smoke ready' : `CEF smoke ${role} ready`;
 report('ready');
+document.addEventListener('pointerdown', e => report(`pointer:${e.clientX},${e.clientY}`));
+document.getElementById('overlay').onclick = () => Call.ByName('main.ProbeService.Overlay', true);
+document.getElementById('capture').onclick = () => Call.ByName('main.ProbeService.Overlay', false);
+document.getElementById('close-overlay').onclick = () => Call.ByName('main.ProbeService.CloseOverlay');
 const controls = () => report('controls:' + JSON.stringify(Object.fromEntries(
  [...document.querySelectorAll('button,input')].map(e => {const r=e.getBoundingClientRect();return [e.id,[r.x+r.width/2,r.y+r.height/2]];}))));
 controls(); addEventListener('resize', controls);

@@ -49,6 +49,28 @@ func (*ProbeService) NewWindow() {
 	w.SetPosition(20, 40)
 }
 
+// Overlay probes whole-window mouse passthrough, independently of alpha rendering.
+func (*ProbeService) Overlay(ignore bool) {
+	app := application.Get()
+	if w, ok := app.Window.GetByName("overlay"); ok {
+		w.SetIgnoreMouseEvents(ignore)
+		return
+	}
+	w := app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name: "overlay", Title: "CEF smoke overlay", URL: "/?role=overlay", Width: 400, Height: 260,
+		Frameless: true, AlwaysOnTop: true, IgnoreMouseEvents: ignore,
+	})
+	if main, ok := app.Window.GetByName("main"); ok {
+		x, y := main.Position()
+		w.SetPosition(x+40, y+60)
+	}
+}
+func (*ProbeService) CloseOverlay() {
+	if w, ok := application.Get().Window.GetByName("overlay"); ok {
+		w.Close()
+	}
+}
+
 // Dialog exercises both a top-level native dialog and an attached sheet/modal.
 func (*ProbeService) Dialog(attached bool) {
 	d := application.Get().Dialog.Question().SetTitle("CEF smoke dialog").SetMessage("CEF native dialog probe")
