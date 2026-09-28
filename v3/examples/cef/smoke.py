@@ -122,8 +122,12 @@ try:
         result = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "^" + re.escape(args.binary.name) + "$" if args.extended else "^CEF smoke (ready|main)$"],
                                 env=env, capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
-            window = result.stdout.splitlines()[0]
-            break
+            for candidate in result.stdout.splitlines():
+                if "window state:" in run("xprop", "-id", candidate, "WM_STATE"):
+                    window = candidate
+                    break
+            if window:
+                break
         if app.poll() is not None:
             raise RuntimeError("Application exited before runtime was ready")
         time.sleep(.1)
@@ -276,8 +280,14 @@ try:
         dropped.write_text("CEF native file drop probe")
         start(["/usr/bin/python3", str(Path(__file__).with_name("drop_source.py")), str(dropped)],
               "drop-source", stdout=subprocess.DEVNULL)
-        time.sleep(.6)
-        source = run("xdotool", "search", "--name", "^CEF smoke file source$").splitlines()[0]
+        source = None
+        for _ in range(100):
+            found = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "^CEF smoke file source$"], env=env, capture_output=True, text=True)
+            if found.returncode == 0:
+                source = found.stdout.splitlines()[0]
+                break
+            time.sleep(.1)
+        assert source, "File drag source never became ready; see drop-source.log"
         run("xdotool", "windowmove", source, "1100", "5", "windowactivate", "--sync", source)
         geometry = run("xwininfo", "-id", source)
         dx = int(re.search(r"Absolute upper-left X:\s+(-?\d+)", geometry)[1]) + 60

@@ -264,6 +264,14 @@ void wcef_install_webview_bridge(cef_v8_value_t* global, cef_v8_value_t* fn) {
   }
   cef_v8_value_t* webview = g_v8_create_object(NULL, NULL);
   wcef_v8_value_set_bykey(webview, &post_key, fn);
+#if !defined(OS_LINUX)
+  // Reuse the runtime's file-drop transport; OS paths come from OnDragEnter,
+  // never from JS File names or a file:// navigation.
+  cef_string_t drop_key = {0};
+  g_str_u8u16("postMessageWithAdditionalObjects", 32, &drop_key);
+  wcef_v8_value_set_bykey(webview, &drop_key, fn);
+  g_str_u16clear(&drop_key);
+#endif
   wcef_v8_value_set_bykey(chrome, &webview_key, webview);
   wcef_v8_value_set_bykey(global, &chrome_key, chrome);
   webview->base.release(&webview->base);

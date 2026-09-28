@@ -267,6 +267,7 @@ func (e *linuxCEFWebview) finishClose() {
 	}
 	e.nativeClosed = true
 	cefEngines.Delete(unsafe.Pointer(e.widget))
+	C.wails_cef_release_host((*C.GtkWidget)(e.widget))
 	C.gtk_widget_destroy((*C.GtkWidget)(e.parent.window))
 	getNativeApplication().unregisterWindow(windowPointer(e.parent.window))
 }

@@ -78,6 +78,9 @@ type State struct {
 	// the host consumed the event (it must not reach the renderer).
 	OnKeyEvent func(windowID uint, nativeKeyCode uint32, modifiers uint32) bool
 
+	// OnFileDrop delivers OS-resolved paths for a completed main-frame drop.
+	OnFileDrop func(windowID uint, files []string, x, y int)
+
 	// OnMediaPermission decides a getUserMedia request; mirrors the
 	// system webview permission handling.
 	OnMediaPermission func(windowID uint, needAudio, needVideo bool) bool

@@ -3,7 +3,7 @@
 package application
 
 /*
-#cgo CFLAGS: -DWAILS_CEF
+#cgo CFLAGS: -DWAILS_CEF -DStatusItemController=WailsCEFStatusItemController
 #include <stdint.h>
 void wails_cef_prepare_app(void);
 void wails_cef_pump_host(void);

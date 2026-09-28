@@ -91,6 +91,18 @@ func startDesktopCEF(app *App) error {
 			windowKeyEvents <- &windowKeyEvent{windowId: id, acceleratorString: acc.String()}
 			return false
 		},
+		OnFileDrop: func(id uint, files []string, x, y int) {
+			InvokeAsync(func() {
+				w, ok := app.Window.GetByID(id)
+				if !ok {
+					return
+				}
+				window, ok := w.(*WebviewWindow)
+				if ok && window.options.EnableFileDrop {
+					window.InitiateFrontendDropProcessing(files, x, y)
+				}
+			})
+		},
 		OnMediaPermission: func(id uint, audio, video bool) bool {
 			w, ok := app.Window.GetByID(id)
 			if !ok {

@@ -58,7 +58,7 @@ static void wails_cef_displayh_on_title_change(struct _cef_display_handler_t* se
 
 // cef_keyboard_handler_t
 int wailsCEFKeyboardOnKeyEvent(struct _cef_keyboard_handler_t* self, struct _cef_browser_t* browser, const cef_key_event_t* event, cef_event_handle_t os_event);
-static int wails_cef_kb_on_key_event(struct _cef_keyboard_handler_t* self, struct _cef_browser_t* browser, const cef_key_event_t* event, cef_event_handle_t os_event) {
+static int wails_cef_kb_on_pre_key_event(struct _cef_keyboard_handler_t* self, struct _cef_browser_t* browser, const cef_key_event_t* event, cef_event_handle_t os_event, int* is_keyboard_shortcut) {
   return wailsCEFKeyboardOnKeyEvent(self, browser, event, os_event);
 }
 
@@ -78,6 +78,11 @@ static int wails_cef_drag_on_enter(struct _cef_drag_handler_t* self, struct _cef
 int wailsCEFRequestOnBeforeBrowse(struct _cef_request_handler_t* self, struct _cef_browser_t* browser, struct _cef_frame_t* frame, struct _cef_request_t* request, int user_gesture, int is_redirect);
 static int wails_cef_req_on_before_browse(struct _cef_request_handler_t* self, struct _cef_browser_t* browser, struct _cef_frame_t* frame, struct _cef_request_t* request, int user_gesture, int is_redirect) {
   return wailsCEFRequestOnBeforeBrowse(self, browser, frame, request, user_gesture, is_redirect);
+}
+
+void wailsCEFRenderTerminated(int status, int error_code, const cef_string_t* error_string);
+static void wails_cef_render_terminated(struct _cef_request_handler_t* self, struct _cef_browser_t* browser, cef_termination_status_t status, int error_code, const cef_string_t* error_string) {
+ wailsCEFRenderTerminated((int)status,error_code,error_string);
 }
 
 // client getters for the new handlers
@@ -112,7 +117,7 @@ static void wcef_init_client(void* p) {
 }
 static void wcef_init_keyboardh(void* p) {
   cef_keyboard_handler_t* h = (cef_keyboard_handler_t*)p;
-  h->on_key_event = wails_cef_kb_on_key_event;
+  h->on_pre_key_event = wails_cef_kb_on_pre_key_event;
 }
 static void wcef_init_permissionh(void* p) {
   cef_permission_handler_t* h = (cef_permission_handler_t*)p;
@@ -125,6 +130,7 @@ static void wcef_init_dragh(void* p) {
 static void wcef_init_requesth(void* p) {
   cef_request_handler_t* h = (cef_request_handler_t*)p;
   h->on_before_browse = wails_cef_req_on_before_browse;
+ h->on_render_process_terminated = wails_cef_render_terminated;
 }
 static void wcef_init_lsh(void* p) {
   cef_life_span_handler_t* h = (cef_life_span_handler_t*)p;
@@ -492,7 +498,7 @@ func keyEvent(browser *C.cef_browser_t, event *C.cef_key_event_t, client *browse
 	if event == nil {
 		return 0
 	}
-	if event._type != C.KEYEVENT_RAWKEYDOWN {
+	if event._type != C.KEYEVENT_RAWKEYDOWN && event._type != C.KEYEVENT_KEYDOWN {
 		return 0
 	}
 	st := state.Load()

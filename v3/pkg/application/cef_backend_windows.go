@@ -21,7 +21,9 @@ static void cef_size_child(uintptr_t parent,uintptr_t child) {
 import "C"
 
 import (
+	"fmt"
 	"github.com/wailsapp/wails/v3/internal/assetserver"
+	wailsruntime "github.com/wailsapp/wails/v3/internal/runtime"
 	"github.com/wailsapp/wails/v3/pkg/events"
 	"github.com/wailsapp/wails/v3/pkg/w32"
 )
@@ -54,7 +56,13 @@ func attachWindowsCEF(w *windowsWebviewWindow) bool {
 	}
 	e.loaded = func() {
 		w.webviewNavigationCompleted = true
-		e.execJS(w.parent.options.JS)
+		js := wailsruntime.Core(globalApplication.impl.GetFlags(globalApplication.options))
+		js += fmt.Sprintf("window._wails.flags.enableFileDrop=%v;window._wails.flags.frameless=%v;", w.parent.options.EnableFileDrop, w.parent.options.Frameless)
+		js += w.parent.options.JS
+		if w.parent.options.CSS != "" {
+			js += fmt.Sprintf(";document.head.appendChild(document.createElement('style')).textContent=%q;", w.parent.options.CSS)
+		}
+		e.execJS(js)
 		if !w.parent.options.Hidden {
 			w.show()
 		}

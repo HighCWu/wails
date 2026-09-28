@@ -8,7 +8,11 @@ package cef
 */
 import "C"
 
-import "unsafe"
+import (
+	"strconv"
+	"strings"
+	"unsafe"
+)
 
 // IPC message names exchanged between the renderer binding and the
 // browser process.
@@ -127,6 +131,23 @@ func browserProcessMessage(browser *C.cef_browser_t, frame *C.cef_frame_t, sourc
 
 	st := state.Load()
 	b := lookupBrowserByCefID(int(C.wcef_browser_get_identifier(browser)))
+	if st != nil && b != nil && strings.HasPrefix(msg, "file:drop:") && st.OnFileDrop != nil {
+		parts := strings.Split(msg, ":")
+		if len(parts) == 4 && frame != nil && C.wcef_frame_is_main(frame) == 1 {
+			x, xe := strconv.Atoi(parts[2])
+			y, ye := strconv.Atoi(parts[3])
+			if xe == nil && ye == nil {
+				b.client.dragMu.Lock()
+				files := b.client.dragPending
+				b.client.dragPending = nil
+				b.client.dragMu.Unlock()
+				if len(files) > 0 {
+					st.OnFileDrop(b.windowID, files, x, y)
+				}
+			}
+		}
+		return 1
+	}
 	if st != nil && st.OnWindowMessage != nil && b != nil {
 		st.OnWindowMessage(b.windowID, msg, origin)
 	}

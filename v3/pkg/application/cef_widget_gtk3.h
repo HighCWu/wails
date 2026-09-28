@@ -169,3 +169,5 @@ extern void wailsCEFOnSizeAllocate(GtkWidget* widget, GdkRectangle* allocation, 
 static void wails_cef_connect_size_allocate(GtkWidget* widget, gpointer user_data) {
   g_signal_connect(widget, "size-allocate", G_CALLBACK(wailsCEFOnSizeAllocate), user_data);
 }
+
+static void wails_cef_release_host(GtkWidget* widget) {}
