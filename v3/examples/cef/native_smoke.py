@@ -480,17 +480,22 @@ with log.open("w") as output:
                     ui.keyUp(k)
 
             def fd_paste(text):
+                # macOS: type directly into the focused Go-to-sheet field —
+                # the runner paths are ASCII and the pbcopy+cmd+v chain
+                # silently produced an empty sheet field on runners. The
+                # only Unicode paste (中文文件.txt) happens on Windows.
+                if sys.platform == "darwin":
+                    ui.write(text, interval=0.02)
+                    time.sleep(.3)
+                    return
                 # Unicode-safe clipboard: clip.exe decodes stdin as the
                 # ANSI codepage, which mangles non-ASCII names on en-US
-                # runners; Set-Clipboard and pbcopy take proper Unicode.
-                if sys.platform == "darwin":
-                    subprocess.run(["pbcopy"], input=text.encode(), check=True)
-                else:
-                    quoted = "'" + text.replace("'", "''") + "'"
-                    subprocess.run(
-                        ["powershell", "-NoProfile", "-Command",
-                         "Set-Clipboard -Value " + quoted], check=True)
-                ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "v")
+                # runners; Set-Clipboard takes proper Unicode.
+                quoted = "'" + text.replace("'", "''") + "'"
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command",
+                     "Set-Clipboard -Value " + quoted], check=True)
+                ui.hotkey("ctrl", "v")
                 time.sleep(.4)
 
             def fd_is_open():
