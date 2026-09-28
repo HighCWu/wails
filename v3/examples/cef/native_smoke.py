@@ -53,17 +53,20 @@ if os.environ.get("GITHUB_ACTIONS") != "true":
 a.output.mkdir(parents=True, exist_ok=True)
 if a.suite:
     results = {}
+    # file-dialogs runs LAST: its prompt/panel dance is the one flow
+    # that can leave the mac input pipeline wedged, and this order keeps
+    # any fallout contained to itself.
     for scenario in [
         "core",
         "composition",
         "media",
         "crash",
         "dialogs",
-        "file-dialogs",
         "multiwindow",
         "mouse",
         "drop",
         "upstream",
+        "file-dialogs",
     ]:
         command = [
             sys.executable,
@@ -172,9 +175,10 @@ def dismiss_mac_alerts():
     # Fresh runner accounts raise a "Do you want to enable Dictation?"
     # prompt the first time a text field gets focus after the microphone
     # permission was granted. It swallows typing and shortcuts, and macOS
-    # re-raises it at every later focus until it is answered — "Not Now"
-    # does not stick. Accept it (OK) instead: enabling dictation on a
-    # disposable runner is harmless and ends the cycle. Try the button
+    # re-raises it at every later focus until it is answered. Accepting
+    # (OK) correlated with the synthetic keyboard pipeline going dead for
+    # the rest of the suite, so prefer Not Now here and lean on the
+    # per-case verification + scenario retry to ride out repeats. Try
     # through System Events; if scripting is unavailable, click the
     # prompt's fixed on-screen spot — with no prompt present that point
     # is empty app content, which is why there is deliberately NO Escape
@@ -186,8 +190,8 @@ def dismiss_mac_alerts():
                 tell application process (pname as text)
                     repeat with w in windows
                         try
-                            if exists button "OK" of w then
-                                click button "OK" of w
+                            if exists button "Not Now" of w then
+                                click button "Not Now" of w
                                 return "clicked"
                             end if
                         end try
@@ -199,8 +203,8 @@ def dismiss_mac_alerts():
             try
                 repeat with w in (every window of p)
                     try
-                        if exists button "OK" of w then
-                            click button "OK" of w
+                        if exists button "Not Now" of w then
+                            click button "Not Now" of w
                             return "clicked"
                         end if
                     end try
@@ -219,7 +223,7 @@ def dismiss_mac_alerts():
     # it is the OK button, and with no alert up it is empty app content.
     # Callers re-type afterwards, so a stray click is harmless either way.
     width, height = ui.size()
-    ui.click(int(width * 0.598), int(height * 0.330))
+    ui.click(int(width * 0.545), int(height * 0.330))
     time.sleep(0.5)
     return True
 
@@ -596,12 +600,19 @@ with log.open("w") as output:
             def type_text(text, via_clipboard):
                 # The mac runner intermittently truncates ui.write bursts
                 # after a couple of characters; the clipboard path bypasses
-                # the keyboard pipeline entirely.
+                # the keyboard pipeline entirely. Confirm the pasteboard
+                # actually took the text before trusting cmd+v.
                 if via_clipboard and sys.platform == "darwin":
                     subprocess.run(["pbcopy"], input=text.encode(), check=True)
-                    ui.hotkey("command", "v")
-                else:
-                    ui.write(text, interval=0.05)
+                    board = subprocess.run(["pbpaste"], capture_output=True,
+                                           text=True).stdout
+                    if board == text:
+                        ui.hotkey("command", "a")
+                        ui.hotkey("command", "v")
+                        return
+                    print("type_text: pasteboard mismatch, typing",
+                          flush=True)
+                ui.write(text, interval=0.05)
 
             def type_case(case):
                 """Type the case name and verify it landed, re-typing via
