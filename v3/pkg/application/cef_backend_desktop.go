@@ -143,6 +143,12 @@ func startDesktopCEF(app *App) error {
 			permissions := window.options.Permissions
 			return (!audio || permissions[PermissionMicrophone] == PermissionAllow) && (!video || permissions[PermissionCamera] == PermissionAllow)
 		},
+		OnRenderCrash: func(id uint, status int) {
+			if w, ok := app.Window.GetByID(id); ok {
+				w.EmitEvent(events.Common.WindowRenderCrash)
+			}
+			app.warning("CEF renderer process crashed (status %d)", status)
+		},
 	})
 	assetserver.SetBaseURL(cef.AssetScheme, cef.AssetHost)
 	if err := cef.Initialize(cef.InitializeOptions{LogToFile: os.Getenv("WAILS_CEF_LOG_TO_FILE") == "1"}); err != nil {

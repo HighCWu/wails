@@ -88,6 +88,11 @@ type State struct {
 	// OnMediaPermission decides a getUserMedia request; mirrors the
 	// system webview permission handling.
 	OnMediaPermission func(windowID uint, needAudio, needVideo bool) bool
+
+	// OnRenderCrash reports that the renderer process behind a browser
+	// died (status: 0 crash, 1 OOM, 2 killed). The browser object remains
+	// valid; the host may navigate it again to recover.
+	OnRenderCrash func(windowID uint, status int)
 }
 
 // cef_key_event_t modifier flags (cef_types.h).

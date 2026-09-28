@@ -239,6 +239,9 @@ func wailsCEFDisplayHOnTitleChange(self *C.cef_display_handler_t, browser *C.cef
 }
 
 //export wailsCEFRenderTerminated
-func wailsCEFRenderTerminated(status C.int, code C.int, message *C.cef_string_t) {
+func wailsCEFRenderTerminated(self *C.cef_request_handler_t, browser *C.cef_browser_t, status C.int, code C.int, message *C.cef_string_t) {
 	pkgLogger().Error("CEF renderer terminated", "status", int(status), "code", int(code), "reason", goString(message))
+	if bc := clientByHandlerPtr(unsafe.Pointer(self)); bc != nil {
+		renderCrash(browser, int(status), bc)
+	}
 }

@@ -187,6 +187,10 @@ type Browser struct {
 	client         *browserClient
 	devToolsClient *browserClient
 	closeRequested bool
+
+	// lastCrash gates the single automatic reload after a renderer crash.
+	lastCrash time.Time
+	crashMu   sync.Mutex
 }
 
 var (
@@ -504,6 +508,60 @@ func titleChange(browser *C.cef_browser_t, title *C.cef_string_t, client *browse
 	if st != nil && st.OnTitleChange != nil {
 		st.OnTitleChange(client.windowID, goString(title))
 	}
+}
+
+// renderCrash handles a renderer death for one browser: notifies the
+// host and schedules exactly one automatic reload of the main frame so
+// a crashed page returns to its URL. Repeated crashes within the cool
+// down are surfaced to the host without further automatic attempts, so
+// a permanently crashing page cannot create an infinite reload loop.
+func renderCrash(browser *C.cef_browser_t, status int, client *browserClient) {
+	id := int(C.wcef_browser_get_identifier(browser))
+	b := lookupBrowserByCefID(id)
+	if b == nil {
+		return
+	}
+	now := time.Now()
+	b.crashMu.Lock()
+	recovered := false
+	if now.Sub(b.lastCrash) > crashCoolDown {
+		b.lastCrash = now
+		recovered = true
+	}
+	b.crashMu.Unlock()
+	if recovered {
+		// Reload runs on CEF's UI thread via the host pump, not inside
+		// this termination callback (CEF forbids re-entry here).
+		st := state.Load()
+		if st != nil && st.DispatchMain != nil {
+			url := b.currentURL()
+			st.DispatchMain(func() {
+				if bb := lookupBrowserByCefID(id); bb != nil {
+					bb.Reload(true)
+					_ = url
+				}
+			})
+		}
+	}
+	st := state.Load()
+	if st != nil && st.OnRenderCrash != nil {
+		st.OnRenderCrash(client.windowID, status)
+	}
+}
+
+// crashCoolDown bounds automatic reload: one attempt per interval.
+const crashCoolDown = 10 * time.Second
+
+// currentURL snapshots the main frame URL for recovery logging.
+func (b *Browser) currentURL() string {
+	if b.c == nil || C.wcef_browser_is_valid(b.c) != 1 {
+		return ""
+	}
+	frame := C.wcef_browser_get_main_frame(b.c)
+	if frame == nil {
+		return ""
+	}
+	return userfreeToString(C.wcef_frame_get_url(frame))
 }
 
 // keyEvent implements cef_keyboard_handler_t.on_key_event: forwards raw
