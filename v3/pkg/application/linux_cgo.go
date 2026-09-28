@@ -4,6 +4,7 @@ package application
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -861,6 +862,10 @@ func widgetSetVisible(widget pointer, hidden bool) {
 }
 
 func (w *linuxWebviewWindow) close() {
+	if w.cefEngine != nil {
+		w.cefEngine.stopAndClose()
+		return
+	}
 	// Stop active loads before destroying the view so outstanding custom
 	// scheme requests release their native references and cancel their handlers.
 	C.webkit_web_view_stop_loading(C.webkit_web_view((*C.GtkWidget)(w.webview)))
@@ -877,6 +882,10 @@ func (w *linuxWebviewWindow) disableDND() {
 }
 
 func (w *linuxWebviewWindow) execJS(js string) {
+	if w.cefEngine != nil {
+		w.cefEngine.execJS(js)
+		return
+	}
 	InvokeAsync(func() {
 		value := C.CString(js)
 		defer C.free(unsafe.Pointer(value))
@@ -897,6 +906,10 @@ var dragOverJSBuffer = C.CString(strings.Repeat(" ", 64))
 var emptyWorldName = C.CString("")
 
 func (w *linuxWebviewWindow) execJSDragOver(x, y int) {
+	if w.cefEngine != nil {
+		w.execJS(fmt.Sprintf("window._wails.handleDragOver(%d,%d)", x, y))
+		return
+	}
 	buf := (*[64]byte)(unsafe.Pointer(dragOverJSBuffer))
 	n := copy(buf[:], "window._wails.handleDragOver(")
 	n += writeInt(buf[n:], x)
@@ -1025,6 +1038,11 @@ func getMousePosition() (int, int, *Screen) {
 }
 
 func (w *linuxWebviewWindow) destroy() {
+	if w.cefEngine != nil {
+		w.parent.markAsDestroyed()
+		w.cefEngine.stopAndClose()
+		return
+	}
 	w.parent.markAsDestroyed()
 	if w.gtkmenu != nil {
 		// GTK4: Different menu destruction
@@ -1196,13 +1214,16 @@ func (w *linuxWebviewWindow) minimise() {
 	C.gtk_window_minimize(w.gtkWindow())
 }
 
+var createWindowWebview = windowNewWebview
+var cefEngineForWidget = func(webview pointer) cefEngineHooks { return nil }
+
 func windowNew(application pointer, menu pointer, menuStyle LinuxMenuStyle, windowId uint, gpuPolicy WebviewGpuPolicy) (window, webview, vbox pointer) {
 	window = pointer(C.gtk_application_window_new((*C.GtkApplication)(application)))
 	C.g_object_ref_sink(C.gpointer(window))
 
 	C.attach_action_group_to_widget((*C.GtkWidget)(window))
 
-	webview = windowNewWebview(windowId, gpuPolicy)
+	webview = createWindowWebview(windowId, gpuPolicy)
 	vbox = pointer(C.gtk_box_new(C.GTK_ORIENTATION_VERTICAL, 0))
 	name := C.CString("webview-box")
 	defer C.free(unsafe.Pointer(name))
@@ -1422,6 +1443,10 @@ func (w *linuxWebviewWindow) setTransparent() {
 }
 
 func (w *linuxWebviewWindow) setBackgroundColour(colour RGBA) {
+	if w.cefEngine != nil {
+		w.cefEngine.setBackgroundColour(colour)
+		return
+	}
 	rgba := C.GdkRGBA{C.float(colour.Red) / 255.0, C.float(colour.Green) / 255.0, C.float(colour.Blue) / 255.0, C.float(colour.Alpha) / 255.0}
 	C.webkit_web_view_set_background_color(w.webKitWebView(), &rgba)
 }
@@ -1475,10 +1500,17 @@ func (w *linuxWebviewWindow) startResize(border string) error {
 }
 
 func (w *linuxWebviewWindow) getZoom() float64 {
+	if w.cefEngine != nil {
+		return w.cefEngine.zoomFactor()
+	}
 	return float64(C.webkit_web_view_get_zoom_level(w.webKitWebView()))
 }
 
 func (w *linuxWebviewWindow) setZoom(zoom float64) {
+	if w.cefEngine != nil {
+		w.cefEngine.setZoomFactor(zoom)
+		return
+	}
 	if zoom < 1 {
 		zoom = 1
 	}
@@ -1498,18 +1530,30 @@ func (w *linuxWebviewWindow) zoomReset() {
 }
 
 func (w *linuxWebviewWindow) reload() {
+	if w.cefEngine != nil {
+		w.cefEngine.reload(false)
+		return
+	}
 	uri := C.CString("wails://")
 	C.webkit_web_view_load_uri(w.webKitWebView(), uri)
 	C.free(unsafe.Pointer(uri))
 }
 
 func (w *linuxWebviewWindow) setURL(uri string) {
+	if w.cefEngine != nil {
+		w.cefEngine.loadURL(uri)
+		return
+	}
 	target := C.CString(uri)
 	C.webkit_web_view_load_uri(w.webKitWebView(), target)
 	C.free(unsafe.Pointer(target))
 }
 
 func (w *linuxWebviewWindow) setHTML(html string) {
+	if w.cefEngine != nil {
+		w.cefEngine.execJS(`document.open(); document.write(` + strconv.Quote(html) + `); document.close();`)
+		return
+	}
 	cHTML := C.CString(html)
 	uri := C.CString("wails://")
 	empty := C.CString("")
@@ -1565,6 +1609,9 @@ func (w *linuxWebviewWindow) setupSignalHandlers(emit func(e events.WindowEventT
 
 	C.setupWindowEventControllers(w.gtkWindow(), (*C.GtkWidget)(w.webview), winID)
 
+	if w.cefEngine != nil {
+		return
+	}
 	wv := unsafe.Pointer(w.webview)
 	C.signal_connect(wv, c.String("load-changed"), C.handleLoadChanged, winID)
 	C.signal_connect(wv, c.String("permission-request"), C.handlePermissionRequest, winID)
@@ -2241,11 +2288,18 @@ func getPrimaryScreen() (*Screen, error) {
 }
 
 func openDevTools(wv pointer) {
+	if e := cefEngineForWidget(wv); e != nil {
+		e.openDevTools()
+		return
+	}
 	inspector := C.webkit_web_view_get_inspector((*C.WebKitWebView)(wv))
 	C.webkit_web_inspector_show(inspector)
 }
 
 func enableDevTools(wv pointer) {
+	if cefEngineForWidget(wv) != nil {
+		return
+	}
 	settings := C.webkit_web_view_get_settings((*C.WebKitWebView)(wv))
 	enabled := C.webkit_settings_get_enable_developer_extras(settings)
 	if enabled == 0 {

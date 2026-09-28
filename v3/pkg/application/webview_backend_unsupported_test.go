@@ -1,4 +1,4 @@
-//go:build !linux || !gtk3 || !wails_cef
+//go:build !linux || !wails_cef
 
 package application
 

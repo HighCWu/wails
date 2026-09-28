@@ -58,10 +58,15 @@ jobs:
           fi
 
   linux_cef:
-    name: CEF 154 GTK3 integration
+    name: CEF 154 Linux (${{ matrix.toolkit }})
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        toolkit: [gtk3, gtk4]
     env:
+      CEF_BUILD_TAGS: ${{ matrix.toolkit == 'gtk3' && 'gtk3,wails_cef' || 'wails_cef' }}
       CEF_ARCHIVE: cef_binary_154.0.28+g564dd6c+chromium-154.0.8037.58_linux64_minimal
       # Published linux64 minimal checksum from cef-builds.spotifycdn.com/index.json.
       CEF_SHA1: 5dfe49d73b0d3635354c705938e26074f287b1de
@@ -77,7 +82,7 @@ jobs:
         run: |
           ./.github/scripts/prune-runner-apt-sources.sh
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config libnss3 libasound2t64 libgbm1 libgl1-mesa-dri xvfb openbox xdotool x11-utils imagemagick xclip python3-pil python3-gi gir1.2-gtk-3.0 gir1.2-ibus-1.0 ibus dbus-x11
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev libgtk-4-dev libwebkitgtk-6.0-dev libwayland-dev build-essential pkg-config libnss3 libasound2t64 libgbm1 libgl1-mesa-dri xvfb openbox xdotool x11-utils imagemagick xclip python3-pil python3-gi gir1.2-gtk-3.0 gir1.2-ibus-1.0 ibus dbus-x11
       - name: Cache pinned CEF archive
         uses: actions/cache@v4
         with:
@@ -98,14 +103,14 @@ jobs:
       - name: Build and unit test CEF configuration
         working-directory: v3
         run: |
-          go build -tags 'gtk3 wails_cef' -o "$RUNNER_TEMP/cef-smoke" ./examples/cef
-          dbus-run-session -- xvfb-run -a go test -tags 'gtk3 wails_cef' ./pkg/application ./internal/cef -timeout 5m -skip TestService
+          go build -tags "$CEF_BUILD_TAGS" -o "$RUNNER_TEMP/cef-smoke" ./examples/cef
+          dbus-run-session -- xvfb-run -a go test -tags "$CEF_BUILD_TAGS" ./pkg/application ./internal/cef -timeout 5m -skip TestService
       - name: Test interaction, permissions, file drops and DevTools shutdown
         working-directory: v3
-        run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --runtime "$RUNNER_TEMP/cef-runtime" --extended --devtools --output "$RUNNER_TEMP/cef-results/extended"
+        run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --runtime "$RUNNER_TEMP/cef-runtime" --switches "use-gl=angle,use-angle=swiftshader,enable-unsafe-swiftshader" --extended --devtools --output "$RUNNER_TEMP/cef-results/extended"
       - name: Test Chinese IME composition
         working-directory: v3
-        run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --runtime "$RUNNER_TEMP/cef-runtime" --ime --output "$RUNNER_TEMP/cef-results/ime"
+        run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --runtime "$RUNNER_TEMP/cef-runtime" --switches "use-gl=angle,use-angle=swiftshader,enable-unsafe-swiftshader" --ime --output "$RUNNER_TEMP/cef-results/ime"
       - name: Test system backend in CEF build
         working-directory: v3
         run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --backend system --output "$RUNNER_TEMP/cef-results/system"
@@ -113,10 +118,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cef-gtk3-results
+          name: cef-${{ matrix.toolkit }}-results
           retention-days: 7
           if-no-files-found: ignore
           path: |
-            ${{ runner.temp }}/cef-results/**/*.log
-            ${{ runner.temp }}/cef-results/**/*.png
-            ${{ runner.temp }}/cef-results/**/*.txt
+            ${{ runner.temp }}/cef-results/*/*.log
+            ${{ runner.temp }}/cef-results/*/*.png
+            ${{ runner.temp }}/cef-results/*/*.txt
+            ${{ runner.temp }}/cef-runtime/debug.log

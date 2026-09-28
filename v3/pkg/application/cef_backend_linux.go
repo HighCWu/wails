@@ -1,9 +1,10 @@
-//go:build linux && cgo && gtk3 && wails_cef && !android && !server
+//go:build linux && cgo && wails_cef && !android && !server
 
 package application
 
 /*
-#cgo linux pkg-config: gtk+-3.0 webkit2gtk-4.1 gdk-3.0
+#cgo gtk3 pkg-config: gtk+-3.0 gdk-3.0
+#cgo !gtk3 pkg-config: gtk4
 #include <gtk/gtk.h>
 unsigned int wails_cef_keyval(unsigned int keycode);
 
@@ -122,7 +123,7 @@ func initCEFBackend(app *App) error {
 				edge := strings.TrimPrefix(message, "wails:resize:")
 				if message == "wails:drag" {
 					edge = ""
-				} else if _, valid := gdkEdgeForBorder[edge]; !valid {
+				} else if !validCEFResizeEdge(edge) {
 					return
 				}
 				InvokeAsync(func() {
@@ -250,4 +251,12 @@ func cefAccelerator(nativeKeyCode, modifiers uint32) (string, bool) {
 	}
 	acc.Key = keyString
 	return acc.String(), true
+}
+
+func validCEFResizeEdge(edge string) bool {
+	switch edge {
+	case "n-resize", "ne-resize", "e-resize", "se-resize", "s-resize", "sw-resize", "w-resize", "nw-resize":
+		return true
+	}
+	return false
 }

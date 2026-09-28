@@ -1,4 +1,4 @@
-//go:build linux && gtk3
+//go:build linux
 
 // This example exercises the CEF backend and can also run with the system webview.
 package main

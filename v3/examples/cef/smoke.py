@@ -24,6 +24,7 @@ parser.add_argument("--output", type=Path)
 parser.add_argument("--devtools", action="store_true")
 parser.add_argument("--extended", action="store_true")
 parser.add_argument("--ime", action="store_true")
+parser.add_argument("--switches", default="", help="Additional comma-separated Chromium switches")
 args = parser.parse_args()
 if args.backend == "cef" and not args.runtime:
     parser.error("--runtime is required for CEF")
@@ -35,10 +36,11 @@ logs = []
 env = dict(os.environ, WAILS_WEBVIEW_BACKEND=args.backend,
            GTK_IM_MODULE="gtk-im-context-simple", XMODIFIERS="@im=none",
            XDG_CACHE_HOME=str(out / "cache"))
-env.pop("WAILS_CEF_SWITCHES", None)
+env["WAILS_CEF_SWITCHES"] = args.switches
+env["WAILS_CEF_LOG_TO_FILE"] = "1"
 if args.extended:
     env["CEF_SMOKE_FRAMELESS"] = "1"
-    env["WAILS_CEF_SWITCHES"] = "use-fake-device-for-media-stream"
+    env["WAILS_CEF_SWITCHES"] += ",use-fake-device-for-media-stream"
 if args.runtime:
     env["WAILS_CEF_DIR"] = str(args.runtime.resolve())
 
@@ -145,7 +147,10 @@ try:
             break
         time.sleep(.1)
     assert "main:ready" in (out / "application.log").read_text(), "Runtime readiness timed out"
-    colors = screenshot("initial")
+    for _ in range(30):
+        colors = screenshot("initial")
+        if colors[(30, 102, 245)] > 50000 and colors[(255, 255, 255)] > 200000:
+            break
     assert colors[(30, 102, 245)] > 50000 and colors[(255, 255, 255)] > 200000
     run("xdotool", "windowactivate", "--sync", window)
     click(100, 164)
@@ -242,8 +247,12 @@ try:
             result = subprocess.run(["xdotool", "search", "--name", "^CEF smoke secondary ready$"],
                                     env=env, text=True, capture_output=True)
             if result.returncode == 0:
-                second = result.stdout.splitlines()[0]
-                break
+                for candidate in result.stdout.splitlines():
+                    if "window state:" in run("xprop", "-id", candidate, "WM_STATE"):
+                        second = candidate
+                        break
+                if second:
+                    break
             time.sleep(.1)
         assert second, "Second window did not become ready"
         run("xdotool", "windowmove", second, "30", "30", "windowactivate", "--sync", second)
