@@ -36,28 +36,13 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
                     key('alt', 'n')
                     paste(' '.join('"' + str(p) + '"' for p in expected))
                 elif platform == 'darwin':
-                    # Exactly two selectable fixture files: click the first
-                    # row, then extend to the last row.
-                    x, y, w, h = rect
-                    key('click', x + w * .5, y + h * .21)
-                    time.sleep(.3)
-                    key('command', 'shift', 'down')
+                    key('command', 'a')
                 else:
-                    # GTK list: click the first file row, then shift+Down
-                    # extends the selection to the next (last) row. Window-
-                    # relative coordinates inside this dialog are unstable;
-                    # row-height arithmetic repeatedly misfired, so the
-                    # runner's click adapter also accepts a row offset: click
-                    # at the measured first-row Y from the rect, then a
-                    # keyboard-only extension which cannot miss.
-                    x, y, w, h = rect
-                    key('click', x + w * .5, y + h * .128)
-                    time.sleep(.5)
-                    # Ctrl+click the second row: GTK multi-select toggle.
-                    # Keyboard extensions (End/shift+Home) do not reach the
-                    # list because the chooser keeps keyboard focus on its
-                    # location bar after programmatic activation.
-                    key('ctrl-shift-click', x + w * .5, y + h * .155)
+                    # The chooser opens with the file list focused (the
+                    # first row is highlighted on open), so select-all in
+                    # the list needs no pointer interaction. The fixture
+                    # directory holds exactly the two expected files.
+                    key('ctrl', 'a')
             else:
                 filename = {'save':'saved.txt', 'save-attached':'attached.txt',
                             'overwrite':'existing.txt', 'directory':'目录'}.get(case, '中文文件.txt')

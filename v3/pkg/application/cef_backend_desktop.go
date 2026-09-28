@@ -146,7 +146,11 @@ func startDesktopCEF(app *App) error {
 		},
 		OnRenderCrash: func(id uint, status int) {
 			if w, ok := app.Window.GetByID(id); ok {
-				w.emit(events.Common.WindowRenderCrash)
+				if ww, ok := w.(*WebviewWindow); ok {
+					// The typed internal event goes through the window
+					// event pipeline (same as every native window event).
+					ww.emit(events.Common.WindowRenderCrash)
+				}
 			}
 			app.warning("CEF renderer process crashed (status %d)", status)
 		},

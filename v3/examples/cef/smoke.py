@@ -440,8 +440,15 @@ try:
 
         def fd_key(*args):
             # Supports key("ctrl", "a"), key("esc"), key("enter") and the
-            # file-list click form key("click", x, y) used to focus the
-            # multiple-selection list before ctrl+a.
+            # file-list click form key("click", x, y). Modifier + key pairs
+            # MUST go through one xdotool invocation ("key ctrl+a"): a
+            # separate keydown leaves ctrl logically held, turning the
+            # following Return into ctrl+Return (enter-folder) and every
+            # later keystroke into an accidental chord.
+            if args[0] in ("ctrl", "command") and len(args) == 2:
+                mod = "ctrl" if args[0] == "ctrl" else "meta"
+                run("xdotool", "key", mod + "+" + args[1])
+                return
             i = 0
             while i < len(args):
                 k = args[i]
@@ -450,24 +457,10 @@ try:
                         str(int(args[i + 1])), str(int(args[i + 2])), "click", "1")
                     i += 3
                     continue
-                if k == "ctrl-shift-click" and i + 2 < len(args):
-                    # One xdotool invocation keeps modifiers held across
-                    # the move+click; splitting into separate processes
-                    # races GTK's modifier tracking on this list.
-                    run("xdotool", "keydown", "ctrl",
-                        "mousemove", str(int(args[i + 1])),
-                        str(int(args[i + 2])), "click", "1",
-                        "keyup", "ctrl")
-                    i += 3
-                    continue
                 if k == "esc":
                     run("xdotool", "key", "Escape")
                 elif k == "enter":
                     run("xdotool", "key", "Return")
-                elif k == "ctrl":
-                    run("xdotool", "keydown", "ctrl")
-                elif k == "command":
-                    pass  # darwin-only
                 else:
                     run("xdotool", "key", k)
                 i += 1
