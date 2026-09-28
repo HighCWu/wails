@@ -362,7 +362,15 @@ with log.open("w") as output:
         greet_attempts = 3 if sys.platform == "darwin" else 1
         for attempt in range(greet_attempts):
             click(100, 164)
-            ui.write("CEF154", interval=0.1)
+            if sys.platform == "darwin":
+                # Same truncation workaround as type_case: paste instead
+                # of typing, and select-all first so retries replace the
+                # previous attempt's fragments.
+                subprocess.run(["pbcopy"], input=b"CEF154", check=True)
+                ui.hotkey("command", "a")
+                ui.hotkey("command", "v")
+            else:
+                ui.write("CEF154", interval=0.1)
             click(290, 164)
             try:
                 wait_log('CEF_SMOKE_GREET "CEF154"', timeout=8)
@@ -585,30 +593,39 @@ with log.open("w") as output:
                        "directory": "dirs", "multiple": "multiple",
                        "save": ".", "save-attached": ".", "overwrite": "."}
 
+            def type_text(text, via_clipboard):
+                # The mac runner intermittently truncates ui.write bursts
+                # after a couple of characters; the clipboard path bypasses
+                # the keyboard pipeline entirely.
+                if via_clipboard and sys.platform == "darwin":
+                    subprocess.run(["pbcopy"], input=text.encode(), check=True)
+                    ui.hotkey("command", "v")
+                else:
+                    ui.write(text, interval=0.05)
+
             def type_case(case):
-                """Type the case name and verify it landed, re-typing on
-                dropped or mangled keystrokes (the mac runner truncates
-                input bursts now and then)."""
-                click(*control("main", "name"))
-                ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
-                ui.press("backspace")
-                ui.write(case, interval=0.05)
-                for _ in range(4):
-                    time.sleep(0.3)
-                    # Newline suffix (with \r\n normalised): "open" must
-                    # not match a report of "open-attached".
-                    marker = "main:input:" + case + "\n"
-                    if marker in log.read_text(encoding="utf-8",
-                                               errors="replace"
-                                               ).replace("\r\n", "\n"):
-                        return
-                    if sys.platform == "darwin":
-                        dismiss_mac_alerts()
-                        activate_mac_app()
+                """Type the case name and verify it landed, re-typing via
+                the other input path when keystrokes were dropped or
+                mangled."""
+                methods = (["paste", "write", "paste", "write"]
+                           if sys.platform == "darwin" else ["write"] * 4)
+                for method in methods:
                     click(*control("main", "name"))
                     ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
                     ui.press("backspace")
-                    ui.write(case, interval=0.05)
+                    type_text(case, method == "paste")
+                    for _ in range(2):
+                        time.sleep(0.3)
+                        # Newline suffix (with \r\n normalised): "open" must
+                        # not match a report of "open-attached".
+                        marker = "main:input:" + case + "\n"
+                        if marker in log.read_text(encoding="utf-8",
+                                                   errors="replace"
+                                                   ).replace("\r\n", "\n"):
+                            return
+                    if sys.platform == "darwin":
+                        dismiss_mac_alerts()
+                        activate_mac_app()
                 raise AssertionError(
                     f"input field never received {case!r}")
 
