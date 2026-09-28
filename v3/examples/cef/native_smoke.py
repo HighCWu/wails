@@ -494,6 +494,39 @@ with log.open("w") as output:
                        "directory": "dirs", "multiple": "multiple",
                        "save": ".", "save-attached": ".", "overwrite": "."}
 
+            def dismiss_mac_alerts():
+                # Fresh runner accounts raise a "Do you want to enable
+                # Dictation?" prompt the first time a text field gets focus
+                # after the microphone permission was granted. It swallows
+                # typing and shortcuts; click its "Not Now" button through
+                # System Events, falling back to Escape.
+                script = '''
+                tell application "System Events"
+                    repeat with p in (application processes whose visible is true)
+                        try
+                            repeat with w in (every window of p)
+                                try
+                                    if exists button "Not Now" of w then
+                                        click button "Not Now" of w
+                                        return "clicked"
+                                    end if
+                                end try
+                            end repeat
+                        end try
+                    end repeat
+                end tell
+                return "none"
+                '''
+                result = subprocess.run(
+                    ["osascript", "-e", script], capture_output=True,
+                    text=True, timeout=20)
+                if "clicked" in result.stdout:
+                    time.sleep(0.5)
+                    return True
+                ui.press("escape")
+                time.sleep(0.5)
+                return False
+
             def fd_request(case):
                 if sys.platform == "darwin" and bundle_id and case in fd_dirs:
                     # NSOpenPanel/NSSavePanel reopen at their remembered
@@ -516,21 +549,21 @@ with log.open("w") as output:
                 ui.press("backspace")
                 ui.write(case, interval=0.05)
                 time.sleep(0.3)
-                if sys.platform == "darwin":
-                    # Fresh runner accounts raise first-run prompts
-                    # (Dictation, after the media scenario granted the
-                    # microphone) that steal focus mid-typing. They have no
-                    # matchable window name or owner, so just press Escape
-                    # — the alert's safe default — and re-type to undo any
-                    # mangled input. Escape is harmless in the text field.
-                    ui.press("escape")
-                    time.sleep(0.5)
+                if sys.platform == "darwin" and dismiss_mac_alerts():
+                    # The prompt stole focus mid-typing; redo the input
+                    # with the alert gone.
                     click(*control("main", "name"))
                     ui.hotkey("command", "a")
                     ui.press("backspace")
                     ui.write(case, interval=0.05)
                     time.sleep(0.3)
                 ui.press("f9")
+                if sys.platform == "darwin":
+                    # The prompt can also appear between typing and F9,
+                    # swallowing the shortcut; dismiss and retry once.
+                    time.sleep(2)
+                    if dismiss_mac_alerts():
+                        ui.press("f9")
 
             def fd_opened(case):
                 # The native chooser steals focus. On Windows read the
