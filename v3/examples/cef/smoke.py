@@ -229,6 +229,9 @@ try:
                 if expected in (out / "application.log").read_text():
                     return
                 time.sleep(.1)
+            # Keep evidence of what the desktop looked like when the marker
+            # never arrived (e.g. a lost click) before failing.
+            screenshot("missing-" + re.sub(r"[^A-Za-z0-9]+", "-", expected)[:48])
             raise AssertionError("Missing log: " + expected)
 
         if args.upstream:
