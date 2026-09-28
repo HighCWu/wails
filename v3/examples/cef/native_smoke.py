@@ -429,7 +429,12 @@ with log.open("w") as output:
                 raise AssertionError("File dialog for case " + case + " never appeared")
 
             def fd_key(*args):
+                # Modifier chords ("ctrl","a" / "command","shift","g") are
+                # pressed and RELEASED here: a keyDown without its keyUp
+                # latches the modifier system-wide and turns every later
+                # keystroke in subsequent scenarios into a shortcut.
                 i = 0
+                held = []
                 while i < len(args):
                     k = args[i]
                     if k == "click" and i + 2 < len(args):
@@ -437,20 +442,24 @@ with log.open("w") as output:
                         i += 3
                         continue
                     if k == "ctrl-shift-click" and i + 2 < len(args):
-                        ui.keyDown("ctrl" if sys.platform == "win32" else "command")
+                        mod = "ctrl" if sys.platform == "win32" else "command"
+                        ui.keyDown(mod)
                         ui.click(int(args[i + 1]), int(args[i + 2]))
-                        ui.keyUp("ctrl" if sys.platform == "win32" else "command")
+                        ui.keyUp(mod)
                         i += 3
                         continue
                     if k == "esc":
                         ui.press("escape")
                     elif k == "enter":
                         ui.press("enter")
-                    elif k in ("ctrl", "command", "shift"):
+                    elif k in ("ctrl", "command", "shift", "alt"):
                         ui.keyDown(k)
+                        held.append(k)
                     else:
                         ui.press(k)
                     i += 1
+                for k in reversed(held):
+                    ui.keyUp(k)
 
             def fd_paste(text):
                 # Unicode-safe clipboard: clip.exe decodes stdin as the
