@@ -45,10 +45,24 @@ func (*ProbeService) Resize() {
 }
 
 func (*ProbeService) NewWindow() {
-	newWindow(application.Get(), "secondary", false, application.PermissionDeny)
+	w := newWindow(application.Get(), "secondary", false, application.PermissionDeny)
+	w.SetPosition(20, 40)
 }
 
-func newWindow(app *application.App, name string, frameless bool, permission application.Permission) {
+// Dialog exercises both a top-level native dialog and an attached sheet/modal.
+func (*ProbeService) Dialog(attached bool) {
+	d := application.Get().Dialog.Question().SetTitle("CEF smoke dialog").SetMessage("CEF native dialog probe")
+	if attached {
+		if w, ok := application.Get().Window.GetByName("main"); ok {
+			d.AttachToWindow(w)
+		}
+	}
+	d.AddButton("OK").SetAsDefault().OnClick(func() { fmt.Printf("CEF_SMOKE_DIALOG accepted attached=%t\n", attached) })
+	fmt.Printf("CEF_SMOKE_DIALOG opened attached=%t\n", attached)
+	d.Show()
+}
+
+func newWindow(app *application.App, name string, frameless bool, permission application.Permission) *application.WebviewWindow {
 	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name: name, Title: "CEF smoke " + name, URL: "/?role=" + name + "&passive=" + os.Getenv("CEF_SMOKE_PASSIVE"), Width: 900, Height: 640,
 		Frameless: frameless, EnableFileDrop: name == "main", DevToolsEnabled: true,
@@ -65,6 +79,7 @@ func newWindow(app *application.App, name string, frameless bool, permission app
 	win.OnWindowEvent(events.Common.WindowFilesDropped, func(event *application.WindowEvent) {
 		fmt.Printf("CEF_SMOKE_DROP %s %q %#v\n", name, event.Context().DroppedFiles(), event.Context().DropTargetDetails())
 	})
+	return win
 }
 
 func main() {

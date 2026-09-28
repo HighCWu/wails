@@ -19,6 +19,7 @@ input, button { font: inherit; padding: 8px; }
 <div id="drop" data-file-drop-target style="padding:20px;border:2px dashed #555">Drop files here</div>
 <p id="output">Loading runtime…</p>
 <p>Type a name and call Go. Ctrl+M tests Go → JavaScript.</p>
+<p><button id="dialog">Dialog</button> <button id="attached">Attached dialog</button> <button id="close">Close window</button></p>
 </section>
 <div id="size"></div>
 <script type="module">
@@ -32,6 +33,12 @@ addEventListener('resize', () => {resized(); report(`size:${innerWidth}x${innerH
 output.textContent = `Runtime ready; invoke bridge: ${typeof window.chrome?.webview?.postMessage === 'function'}`;
 document.title = role === 'main' ? 'CEF smoke ready' : 'CEF smoke secondary ready';
 report('ready');
+const controls = () => report('controls:' + JSON.stringify(Object.fromEntries(
+ [...document.querySelectorAll('button,input')].map(e => {const r=e.getBoundingClientRect();return [e.id,[r.x+r.width/2,r.y+r.height/2]];}))));
+controls(); addEventListener('resize', controls);
+document.getElementById('dialog').onclick = () => Call.ByName('main.ProbeService.Dialog', false);
+document.getElementById('attached').onclick = () => Call.ByName('main.ProbeService.Dialog', true);
+document.getElementById('close').onclick = () => Window.Close();
 if (new URLSearchParams(location.search).get('passive') === '1') {
  setTimeout(async () => { output.textContent = await Call.ByName('main.ProbeService.Greet', 'PASSIVE'); document.body.style.background = 'lime'; report('passive:green'); }, 1800);
 }
@@ -42,8 +49,13 @@ document.getElementById('media').onclick = async () => {
  try {
   const stream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
   const tracks = stream.getTracks();
-  report('media:allowed:' + tracks.map(t => t.kind).sort().join(','));
-  tracks.forEach(t => t.stop());
+  try {
+   const video = document.createElement('video'); video.muted = true; video.srcObject = stream;
+   await video.play();
+   await Promise.race([new Promise(resolve => video.requestVideoFrameCallback(resolve)), new Promise((_,reject)=>setTimeout(()=>reject(Error('frame timeout')),5000))]);
+   report(`media:frame:${video.videoWidth}x${video.videoHeight}`);
+   report('media:allowed:' + tracks.map(t => t.kind).sort().join(','));
+  } finally { tracks.forEach(t => t.stop()); }
  } catch(e) { report('media:' + e.name); }
 };
 for (const name of ['compositionstart', 'compositionupdate', 'compositionend']) {

@@ -1,4 +1,4 @@
-//go:build !wails_cef || !cgo
+//go:build !wails_cef || !cgo || android || ios
 
 package application
 

@@ -4,6 +4,7 @@
 Requires Xvfb, openbox, xdotool, ImageMagick import, and Python Pillow.
 """
 import argparse
+import json
 from collections import Counter
 import os
 from pathlib import Path
@@ -237,6 +238,17 @@ try:
         click(65, 223)
         wait_log("main:media:allowed:audio,video")
         print("PASS: media allow with fake devices (real permission handler)", flush=True)
+        wait_log("main:media:frame:")
+        for name, attached in [("dialog", "false"), ("attached", "true")]:
+            controls = re.findall(r'main:controls:(\{[^\n]+\})', (out / "application.log").read_text())
+            cx, cy = json.loads(controls[-1])[name]
+            click(int(cx), int(cy))
+            wait_log("CEF_SMOKE_DIALOG opened attached=" + attached)
+            time.sleep(1)
+            screenshot(name)
+            run("xdotool", "key", "Return")
+            wait_log("CEF_SMOKE_DIALOG accepted attached=" + attached)
+        print("PASS: native top-level and attached dialogs", flush=True)
         # Clipboard path checks Unicode separately from composition/IME.
         subprocess.run(["xclip", "-selection", "clipboard"], input="中文输入验证".encode(), env=env,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)

@@ -78,6 +78,8 @@ else:
                     CFBundlePackageType="APPL",
                     CFBundleVersion="1",
                     NSHighResolutionCapable=True,
+                    NSCameraUsageDescription="CEF capture regression test",
+                    NSMicrophoneUsageDescription="CEF capture regression test",
                     LSUIElement=background,
                 ),
                 f,

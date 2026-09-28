@@ -12,6 +12,12 @@ on:
       - 'v3/**'
       - '.github/workflows/cef-test-v3.yml'
   workflow_dispatch:
+    inputs:
+      hardware_platform:
+        description: 'Use a dedicated cef-hardware self-hosted runner with real camera and microphone'
+        type: choice
+        default: none
+        options: [none, windows64, macosarm64]
 
 permissions:
   contents: read
@@ -132,7 +138,9 @@ jobs:
 
   native_cef:
     name: CEF 154 native (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.hardware_platform == matrix.platform && fromJSON(format('["self-hosted","cef-hardware","{0}"]', matrix.runner_label)) || matrix.os }}
+    env:
+      CEF_HARDWARE_MEDIA: ${{ github.event_name == 'workflow_dispatch' && inputs.hardware_platform == matrix.platform }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -140,9 +148,11 @@ jobs:
         include:
           - os: windows-latest
             platform: windows64
+            runner_label: Windows
             executable: cef-smoke.exe
           - os: macos-14
             platform: macosarm64
+            runner_label: macOS
             executable: cef-smoke
     steps:
       - uses: actions/checkout@v4
@@ -156,7 +166,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install native interaction test dependencies
-        run: python -m pip install PyAutoGUI==0.9.54 Pillow==11.3.0
+        run: python -m pip install PyAutoGUI==0.9.54 Pillow==11.3.0 tkinterdnd2==0.6.3
       - name: Build CEF example and test native binding
         working-directory: v3
         shell: bash
