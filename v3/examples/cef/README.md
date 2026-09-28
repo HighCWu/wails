@@ -145,6 +145,36 @@ hosted-runner pass must not be reported as physical-device validation.
   and manual dialog/window examples. Its normal v3 CI builds examples and runs
   Go/JS tests; it does not drive the entire feature set above in a real webview.
 
+### Reusing upstream tests and examples
+
+The compatibility matrix runs **the same unmodified upstream tests**, with the
+default backend and with `wails_cef`. `upstream_tests.py` uses `go list` to select
+the native platform's test files, discovers their test names, and rejects failed,
+skipped or missing tests. Each job uploads the source/test inventory and Go JSON
+events as `upstream-window-dialog-*` artifacts. These are shared host/API unit
+tests; passing them alone does not demonstrate a running CEF browser.
+
+| Upstream source | CEF coverage |
+| --- | --- |
+| `pkg/application/webview_window_test.go`, `webview_window_options_test.go`, `webview_window_linux_test.go`, `webview_window_titlebar_doubleclick_test.go` | Reuse original option, size-constraint, window-state and titlebar unit assertions. |
+| `pkg/application/dialogs*_test.go` | Reuse original button callbacks/default/cancel configuration, file-dialog options, Windows path and icon/button flag tests. |
+| `pkg/application/mainthread_darwin_test.go` | Reuse the real AppKit nested-run-loop dispatch regression, including its existing timing budget. A skipped AppKit test fails this CI check. |
+| `examples/window-api`, `examples/window`, `examples/hide-window` | Native `upstream` scenario exercises maximise/unmaximise, toggle/restore, fullscreen/unfullscreen, minimise/restore and hide/show through the browser runtime and Go bindings, asserting actual native state. |
+| `examples/dialogs`: default button, attached window and custom icon cases | Native `upstream` scenario selects the second (`No`) default button via Enter, checks its callback, and supplies a custom icon. Existing `dialogs` coverage checks the first (`Yes`) default. Both require a main-thread callback to run while the dialog is still open. |
+
+The original `window`, `window-api` and `dialogs` examples are also built in both
+configurations, without edits. Linux runs the native replay with
+`smoke.py --extended --upstream --devtools`; Windows/macOS include an independent
+`upstream` scenario in `native_smoke.py --suite`.
+
+This is not exhaustive automation of every manual-example menu item. File
+picker selection/save/filters, platform-specific decoration/menu options and
+custom icon appearance remain manual checks (file-picker **option unit tests**
+and native **file drag/drop** are different coverage). WebView2-specific process
+recovery tests are not relabelled as CEF tests. Upstream Windows Question dialogs
+use fixed Yes/No buttons, so this suite does not claim custom Cancel/Escape
+behaviour unsupported by that implementation.
+
 
 Headless Linux runners select ANGLE SwiftShader explicitly; they do not use
 `disable-gpu`. The system-WebKit regression disables its bubblewrap sandbox

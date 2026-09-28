@@ -12,6 +12,7 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
+	"github.com/wailsapp/wails/v3/pkg/icons"
 )
 
 //go:embed assets
@@ -44,6 +45,40 @@ func (*ProbeService) Resize() {
 	if w, ok := application.Get().Window.GetByName("main"); ok {
 		w.SetSize(1000, 700)
 	}
+}
+
+// WindowLifecycle follows the minimise/restore and hide/show examples. Drive
+// restoration from Go so an occluded renderer's timer cannot make it pass.
+func (*ProbeService) WindowLifecycle() error {
+	w, ok := application.Get().Window.GetByName("main")
+	if !ok {
+		return fmt.Errorf("main window missing")
+	}
+	wait := func(name string, query func() bool, expected bool) error {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if query() == expected {
+				fmt.Printf("CEF_SMOKE_WINDOW %s\n", name)
+				return nil
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		return fmt.Errorf("%s did not reach %t", name, expected)
+	}
+	w.Minimise()
+	if err := wait("minimised", w.IsMinimised, true); err != nil {
+		return err
+	}
+	w.UnMinimise()
+	if err := wait("restored", w.IsMinimised, false); err != nil {
+		return err
+	}
+	w.Hide()
+	if err := wait("hidden", w.IsVisible, false); err != nil {
+		return err
+	}
+	w.Show()
+	return wait("shown", w.IsVisible, true)
 }
 
 func (*ProbeService) NewWindow() {
@@ -81,9 +116,20 @@ func (*ProbeService) Dialog(attached bool) {
 			d.AttachToWindow(w)
 		}
 	}
-	d.AddButton("Yes").SetAsDefault().OnClick(func() { fmt.Printf("CEF_SMOKE_DIALOG accepted attached=%t\n", attached) })
-	d.AddButton("No").SetAsCancel()
+	yes := d.AddButton("Yes").OnClick(func() { fmt.Printf("CEF_SMOKE_DIALOG accepted attached=%t\n", attached) })
+	no := d.AddButton("No").SetAsCancel().OnClick(func() { fmt.Printf("CEF_SMOKE_DIALOG rejected attached=%t\n", attached) })
+	if os.Getenv("CEF_SMOKE_UPSTREAM") == "1" {
+		// Mirrors examples/dialogs: a non-first default and custom icon.
+		no.SetAsDefault()
+		d.SetIcon(icons.ApplicationDarkMode256)
+	} else {
+		yes.SetAsDefault()
+	}
 	fmt.Printf("CEF_SMOKE_DIALOG opened attached=%t\n", attached)
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		application.InvokeAsync(func() { fmt.Printf("CEF_SMOKE_DIALOG dispatch attached=%t\n", attached) })
+	}()
 	d.Show()
 }
 
@@ -95,6 +141,9 @@ func newWindow(app *application.App, name string, frameless bool, permission app
 			application.PermissionCamera: permission, application.PermissionMicrophone: permission,
 		},
 		KeyBindings: map[string]func(application.Window){
+			"F8": func(window application.Window) {
+				window.ExecJS("window.cefCheckUpstreamWindowAPI()")
+			},
 			"Ctrl+M": func(window application.Window) {
 				fmt.Printf("CEF_SMOKE_EXECJS %s\n", name)
 				window.ExecJS(`document.getElementById("output").textContent = "Go ExecJS OK"; document.title = "CEF smoke ExecJS OK"`)

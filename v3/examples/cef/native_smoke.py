@@ -28,6 +28,7 @@ p.add_argument(
         "multiwindow",
         "mouse",
         "drop",
+        "upstream",
     ],
     default="all",
 )
@@ -57,6 +58,7 @@ if a.suite:
         "multiwindow",
         "mouse",
         "drop",
+        "upstream",
     ]:
         command = [
             sys.executable,
@@ -90,6 +92,8 @@ env = dict(
     CEF_SMOKE_DELAY_QUIT="1",
     CEF_SMOKE_TRACE_CRASH="1",
 )
+if a.scenario == "upstream":
+    env["CEF_SMOKE_UPSTREAM"] = "1"
 if a.helper:
     env["WAILS_CEF_SUBPROCESS_PATH"] = str(a.helper.resolve())
 if a.hardware_media:
@@ -286,6 +290,13 @@ with log.open("w") as output:
             950 <= int(w) <= 1000 and 650 <= int(h) <= 700 for w, h in sizes
         ), sizes
         screenshot("resized")
+        if a.scenario == "upstream":
+            ui.press("f8")
+            wait_log("main:upstream:window-api:passed", timeout=90)
+            assert "upstream:error:" not in log.read_text(encoding="utf-8", errors="replace")
+            screenshot("window-api")
+            left, top = origin()
+            print("PASS: upstream window-api maximise, toggle, fullscreen and restore", flush=True)
         if a.scenario in ("all", "media"):
             click(*control("main", "media"))
             wait_log("main:media:allowed:audio,video")
@@ -297,12 +308,15 @@ with log.open("w") as output:
                 + ")",
                 flush=True,
             )
-        if a.scenario in ("all", "dialogs"):
+        if a.scenario in ("all", "dialogs", "upstream"):
             for name, attached in [("dialog", "false"), ("attached", "true")]:
                 click(*control("main", name))
                 wait_log("CEF_SMOKE_DIALOG opened attached=" + attached)
                 time.sleep(1)
                 screenshot(name)
+                # The main-thread callback must arrive while the native modal
+                # dialog is still open, mirroring mainthread_darwin_test.go.
+                wait_log("CEF_SMOKE_DIALOG dispatch attached=" + attached, timeout=2)
                 if sys.platform == "win32":
                     import ctypes
 
@@ -325,7 +339,8 @@ with log.open("w") as output:
                 ui.keyDown("enter")
                 time.sleep(0.12)
                 ui.keyUp("enter")
-                wait_log("CEF_SMOKE_DIALOG accepted attached=" + attached)
+                decision = "rejected" if a.scenario == "upstream" else "accepted"
+                wait_log("CEF_SMOKE_DIALOG " + decision + " attached=" + attached)
             print("PASS: native top-level and attached dialogs", flush=True)
         if a.scenario in ("all", "multiwindow"):
             main_origin = left, top

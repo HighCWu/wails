@@ -24,8 +24,10 @@ input, button { font: inherit; padding: 8px; }
 <div id="size"></div>
 <script type="module">
 import { Call, Window } from '/wails/runtime.js';
+import { checkWindowAPI } from './upstream.js';
 const role = new URLSearchParams(location.search).get('role') || 'main';
 const report = message => Call.ByName('main.ProbeService.Report', role + ':' + message);
+window.cefCheckUpstreamWindowAPI = () => checkWindowAPI(report).catch(error => report('upstream:error:' + error.message));
 const output = document.getElementById('output');
 const size = document.getElementById('size');
 function resized() { size.textContent = `${innerWidth} × ${innerHeight}`; }

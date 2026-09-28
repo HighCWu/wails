@@ -60,12 +60,30 @@ jobs:
         env:
           BUILD_TAGS: ${{ matrix.tags }}
         run: |
-          go build -tags "$BUILD_TAGS" ./pkg/application ./examples/plain
+          go build -tags "$BUILD_TAGS" ./pkg/application ./examples/plain ./examples/window ./examples/window-api ./examples/dialogs
           if [ "$RUNNER_OS" = Linux ]; then
             dbus-run-session -- xvfb-run -a go test -tags "$BUILD_TAGS" ./pkg/application -run 'Test(ParseWebviewBackend|ResolveWebviewBackend|WebviewBackend)' -count=1
           else
             go test -tags "$BUILD_TAGS" ./pkg/application -run 'Test(ParseWebviewBackend|ResolveWebviewBackend|WebviewBackend)' -count=1
           fi
+      - name: Run unmodified upstream window and dialog tests
+        working-directory: v3
+        shell: bash
+        env:
+          BUILD_TAGS: ${{ matrix.tags }}
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            dbus-run-session -- xvfb-run -a python3 examples/cef/upstream_tests.py --tags "$BUILD_TAGS" --output "$RUNNER_TEMP/upstream-tests"
+          else
+            python examples/cef/upstream_tests.py --tags "$BUILD_TAGS" --output "$RUNNER_TEMP/upstream-tests"
+          fi
+      - name: Upload upstream test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-window-dialog-${{ matrix.os }}-${{ matrix.tags || 'default' }}
+          path: ${{ runner.temp }}/upstream-tests/
+          retention-days: 7
 
   linux_cef:
     name: CEF 154 Linux (${{ matrix.toolkit }})
@@ -121,6 +139,9 @@ jobs:
       - name: Test Chinese IME composition
         working-directory: v3
         run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --runtime "$RUNNER_TEMP/cef-runtime" --switches "use-gl=angle,use-angle=swiftshader,enable-unsafe-swiftshader" --ime --output "$RUNNER_TEMP/cef-results/ime"
+      - name: Replay upstream window API and dialog examples
+        working-directory: v3
+        run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --runtime "$RUNNER_TEMP/cef-runtime" --switches "use-gl=angle,use-angle=swiftshader,enable-unsafe-swiftshader" --extended --upstream --devtools --output "$RUNNER_TEMP/cef-results/upstream"
       - name: Test system backend in CEF build
         env:
           # Hosted runners disallow the network namespace used by bubblewrap.

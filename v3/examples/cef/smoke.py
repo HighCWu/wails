@@ -24,9 +24,12 @@ parser.add_argument("--backend", choices=["cef", "system"], default="cef")
 parser.add_argument("--output", type=Path)
 parser.add_argument("--devtools", action="store_true")
 parser.add_argument("--extended", action="store_true")
+parser.add_argument("--upstream", action="store_true", help="Replay upstream window-api and default-button/icon examples (requires --extended)")
 parser.add_argument("--ime", action="store_true")
 parser.add_argument("--switches", default="", help="Additional comma-separated Chromium switches")
 args = parser.parse_args()
+if args.upstream and not args.extended:
+    parser.error("--upstream requires --extended")
 if args.backend == "cef" and not args.runtime:
     parser.error("--runtime is required for CEF")
 out = args.output or Path(tempfile.mkdtemp(prefix="wails-cef-smoke-"))
@@ -39,6 +42,8 @@ env = dict(os.environ, WAILS_WEBVIEW_BACKEND=args.backend,
            XDG_CACHE_HOME=str(out / "cache"))
 env["WAILS_CEF_SWITCHES"] = args.switches
 env["WAILS_CEF_LOG_TO_FILE"] = "1"
+if args.upstream:
+    env["CEF_SMOKE_UPSTREAM"] = "1"
 if args.extended:
     env["CEF_SMOKE_FRAMELESS"] = "1"
     env["WAILS_CEF_SWITCHES"] += ",use-fake-device-for-media-stream"
@@ -207,6 +212,24 @@ try:
                 time.sleep(.1)
             raise AssertionError("Missing log: " + expected)
 
+        if args.upstream:
+            run("xdotool", "key", "F8")
+            for _ in range(900):
+                text = (out / "application.log").read_text()
+                assert "upstream:error:" not in text, text
+                if "main:upstream:window-api:passed" in text:
+                    break
+                time.sleep(.1)
+            wait_log("main:upstream:window-api:passed")
+            # A hide/show cycle may cause the WM to place the window again.
+            # Keep the later edge-drag target within the private screen.
+            run("xdotool", "windowmove", "--sync", window, "40", "40")
+            time.sleep(.5)
+            geometry = run("xwininfo", "-id", window)
+            x = int(re.search(r"Absolute upper-left X:\s+(-?\d+)", geometry)[1])
+            y = int(re.search(r"Absolute upper-left Y:\s+(-?\d+)", geometry)[1])
+            print("PASS: upstream window-api maximise, toggle, fullscreen and restore", flush=True)
+
         # Native frameless drag through the runtime bridge.
         run("xdotool", "mousemove", str(x + 200), str(y + 60), "mousedown", "1")
         time.sleep(.2)
@@ -253,9 +276,11 @@ try:
             dialogs = [wid for wid in candidates if "_NET_WM_WINDOW_TYPE_NORMAL" in run("xprop", "-id", wid, "_NET_WM_WINDOW_TYPE") or "_NET_WM_WINDOW_TYPE_DIALOG" in run("xprop", "-id", wid, "_NET_WM_WINDOW_TYPE")]
             assert len(dialogs) == 1, dialogs
             dialog_id = dialogs[0]
+            wait_log("CEF_SMOKE_DIALOG dispatch attached=" + attached)
             run("xdotool", "windowactivate", "--sync", dialog_id)
             run("xdotool", "key", "Return")
-            wait_log("CEF_SMOKE_DIALOG accepted attached=" + attached)
+            decision = "rejected" if args.upstream else "accepted"
+            wait_log("CEF_SMOKE_DIALOG " + decision + " attached=" + attached)
         print("PASS: native top-level and attached dialogs", flush=True)
         # Clipboard path checks Unicode separately from composition/IME.
         subprocess.run(["xclip", "-selection", "clipboard"], input="中文输入验证".encode(), env=env,
