@@ -1,0 +1,80 @@
+name: CEF native IME probe
+
+# Stage-3 groundwork (handoff 2026-09-28): inventory the input-method
+# capabilities of hosted runners before attempting real TSF/AppKit IME
+# automation. Runs on demand only; never part of the push gate.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-ime:
+    runs-on: windows-latest
+    steps:
+      - name: Inventory installed input methods
+        shell: powershell
+        run: |
+          Write-Host "== User language list =="
+          Get-WinUserLanguageList | Format-List *
+          Write-Host "== Enabled input methods per language =="
+          Get-WinUserLanguageList | ForEach-Object {
+            Write-Host ("Lang: " + $_.LanguageTag)
+            $_.InputMethodTips | ForEach-Object { Write-Host ("  TIP: " + $_) }
+          }
+          Write-Host "== Keyboard layouts (active sessions) =="
+          Get-KeyboardLayout | ForEach-Object {
+            Write-Host ("  Layout: " + $_)
+          }
+          Write-Host "== Layout list via registry =="
+          Get-ItemProperty 'HKU:._keyboard layout\Preload' -ErrorAction SilentlyContinue | Format-List
+          Write-Host "== CTF profiles (TSF) =="
+          Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\CTF\SortOrder\AssemblyItem' -ErrorAction SilentlyContinue |
+            Select-Object -First 5
+          Write-Host "== Installed languages (AppX) =="
+          Get-InstalledLanguage -ErrorAction SilentlyContinue
+
+  macos-ime:
+    runs-on: macos-14
+    steps:
+      - name: Inventory installed input sources
+        shell: bash
+        run: |
+          set -x
+          defaults read com.apple.HIToolbox AppleEnabledInputSources || true
+          defaults read com.apple.HIToolbox AppleInputSourceHistory || true
+          defaults read com.apple.HIToolbox AppleSelectedInputSources || true
+          # Full list of installable/available input sources via TIS.
+          python3 - <<'PY'
+          import objc
+          from Foundation import NSBundle
+          Carbon = NSBundle.bundleWithIdentifier_("com.apple.Carbon")
+          if Carbon is None:
+              Carbon = NSBundle.bundleWithPath_(
+                  "/System/Library/Frameworks/Carbon.framework")
+          functions = [
+              ("TISCreateInputSourceList", b"^@^{__TISInputSource=}{_CFArray={__CFArrayBase}^v}BB"),
+              ("TISGetInputSourceProperty", b"^{__TISInputSource=}^{__CFString=}^@"),
+          ]
+          objc.loadBundleFunctions(Carbon, globals(), functions)
+          from CoreFoundation import CFStringCreateWithCString, kCFStringEncodingUTF8
+          import CoreFoundation
+          def cf(s):
+              return CFStringCreateWithCString(None, s, kCFStringEncodingUTF8)
+          sources = TISCreateInputSourceList(None, True)
+          if sources is None:
+              print("TISCreateInputSourceList returned None")
+          else:
+              seen = []
+              for s in sources:
+                  sid = TISGetInputSourceProperty(s, cf("TISPropertyInputSourceID"))
+                  loc = TISGetInputSourceProperty(s, cf("TISPropertyLocalizedName"))
+                  sel = TISGetInputSourceProperty(
+                      s, cf("TISPropertyInputSourceIsSelectable"))
+                  if sid:
+                      seen.append((str(sid), str(loc), bool(sel)))
+              for sid, loc, selectable in sorted(seen):
+                  print(("SELECTABLE " if selectable else "HIDDEN     ") + sid + "  " + loc)
+              print("total:", len(seen))
+              chinese = [x for x in seen if "Chinese" in x[0] or "Pinyin" in x[0] or "PY" in x[0]]
+              print("CHINESE SOURCES:", chinese)
+          PY
