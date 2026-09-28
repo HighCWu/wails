@@ -144,8 +144,15 @@ def window_position(title):
             Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
         )
         for w in windows:
-            if w.get(Quartz.kCGWindowName) == title:
-                bounds = w[Quartz.kCGWindowBounds]
+            bounds = w[Quartz.kCGWindowBounds]
+            # Upstream AppKit intentionally omits titles on frameless windows.
+            overlay = (
+                title == "CEF smoke overlay ready"
+                and w.get(Quartz.kCGWindowOwnerPID) == app.pid
+                and bounds["Width"] == 400
+                and 250 <= bounds["Height"] <= 300
+            )
+            if w.get(Quartz.kCGWindowName) == title or overlay:
                 return bounds["X"], bounds["Y"]
     else:
         windows = ui.getWindowsWithTitle(title)

@@ -3,9 +3,7 @@
 package main
 
 /*
-#cgo LDFLAGS: -ldbghelp
 #include <windows.h>
-#include <dbghelp.h>
 #include <stdio.h>
 static LONG CALLBACK smoke_exception(EXCEPTION_POINTERS *info) {
  if(info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) return EXCEPTION_CONTINUE_SEARCH;

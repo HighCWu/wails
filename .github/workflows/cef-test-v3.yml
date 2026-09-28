@@ -22,6 +22,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: cef-tests-v3-${{ github.event.pull_request.number || github.ref }}-${{ inputs.hardware_platform || 'none' }}
+  cancel-in-progress: true
+
 jobs:
   compatibility:
     # Check both the default backend and opt-in CEF build on native runners.
@@ -138,7 +142,7 @@ jobs:
 
   native_cef:
     name: CEF 154 native (${{ matrix.os }})
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.hardware_platform == matrix.platform && fromJSON(format('["self-hosted","cef-hardware","{0}"]', matrix.runner_label)) || matrix.os }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.hardware_platform == matrix.platform && fromJSON(format('["self-hosted","cef-hardware","{0}","{1}"]', matrix.runner_label, matrix.runner_arch)) || matrix.os }}
     env:
       CEF_HARDWARE_MEDIA: ${{ github.event_name == 'workflow_dispatch' && inputs.hardware_platform == matrix.platform }}
     timeout-minutes: 25
@@ -149,10 +153,12 @@ jobs:
           - os: windows-latest
             platform: windows64
             runner_label: Windows
+            runner_arch: X64
             executable: cef-smoke.exe
           - os: macos-14
             platform: macosarm64
             runner_label: macOS
+            runner_arch: ARM64
             executable: cef-smoke
     steps:
       - uses: actions/checkout@v4

@@ -108,7 +108,40 @@ both with and without `wails_cef`, and test backend selection. Native Windows
 applications, and drive their disposable desktops with `native_smoke.py`.
 That script refuses to send input outside GitHub Actions. It checks presented
 pixels, typing, RPC, Ctrl+M, native resize and shutdown with DevTools open.
-The native suite does not yet cover IME, file drops or hardware media devices.
+Each native scenario runs in a separate process; `results.json` reports all
+failures instead of allowing one failed feature to hide later checks. The suite
+covers Chromium composition/preedit/commit (via CDP), native Unicode file drag
+and drop, independent windows and shortcuts, permission allow/deny, actual
+captured video frames and encoded audio bytes, native top-level/attached dialogs,
+whole-window mouse passthrough and opaque frameless dragging. CDP composition
+checks do **not** validate the Windows TSF or macOS input-method frontend;
+the Linux IBus test remains the native OS IME regression.
+
+For real camera/microphone testing, manually dispatch this workflow and select
+`hardware_platform: windows64` or `macosarm64`. That platform's job then requires
+a **dedicated, interactive** self-hosted runner labelled `cef-hardware` plus
+`Windows` + `X64` or `macOS` + `ARM64`, with capture devices and OS privacy permissions configured.
+It does not append fake-device switches and fails when capture produces no
+video frame or encoded audio. Use an isolated test desktop: the suite sends real
+input. No such hardware runner is provisioned by this repository, and a normal
+hosted-runner pass must not be reported as physical-device validation.
+
+### Capability boundaries
+
+- Official CEF distributions target Windows, macOS and Linux; iOS and Android
+  keep the system backend. The CEF Go/cgo files are excluded for both mobile
+  targets, even when `wails_cef` is supplied. Forced CEF reports unavailable.
+  See [CEF General Usage](https://chromiumembedded.github.io/cef/general_usage).
+- CEF 154's native windowed renderer does not provide per-pixel transparent
+  painting: `cef_settings_t.background_color` documents an opaque fallback.
+  Per-pixel transparency and alpha-based click-through require an OSR renderer
+  and native hit testing; this backend does not implement them. Whole-window
+  `IgnoreMouseEvents` and dragging opaque content are separate regression cases,
+  **not** evidence that transparent pixels automatically pass through clicks.
+- Upstream has application/window/dialog unit tests, a Cocoa modal-loop test,
+  and manual dialog/window examples. Its normal v3 CI builds examples and runs
+  Go/JS tests; it does not drive the entire feature set above in a real webview.
+
 
 Headless Linux runners select ANGLE SwiftShader explicitly; they do not use
 `disable-gpu`. The system-WebKit regression disables its bubblewrap sandbox
