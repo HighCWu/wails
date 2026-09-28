@@ -506,7 +506,23 @@ with log.open("w") as output:
                 # opened chooser).
                 script = '''
                 tell application "System Events"
-                    repeat with p in (application processes whose visible is true)
+                    repeat with pname in {"UserNotificationCenter",
+                        "CoreServicesUIAgent", "universalctrl",
+                        "NotificationCenter", "TextInputMenuAgent"}
+                        try
+                            tell application process (pname as text)
+                                repeat with w in windows
+                                    try
+                                        if exists button "Not Now" of w then
+                                            click button "Not Now" of w
+                                            return "clicked"
+                                        end if
+                                    end try
+                                end repeat
+                            end tell
+                        end try
+                    end repeat
+                    repeat with p in application processes
                         try
                             repeat with w in (every window of p)
                                 try
