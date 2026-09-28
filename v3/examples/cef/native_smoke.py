@@ -585,6 +585,33 @@ with log.open("w") as output:
                        "directory": "dirs", "multiple": "multiple",
                        "save": ".", "save-attached": ".", "overwrite": "."}
 
+            def type_case(case):
+                """Type the case name and verify it landed, re-typing on
+                dropped or mangled keystrokes (the mac runner truncates
+                input bursts now and then)."""
+                click(*control("main", "name"))
+                ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
+                ui.press("backspace")
+                ui.write(case, interval=0.05)
+                for _ in range(4):
+                    time.sleep(0.3)
+                    # Newline suffix (with \r\n normalised): "open" must
+                    # not match a report of "open-attached".
+                    marker = "main:input:" + case + "\n"
+                    if marker in log.read_text(encoding="utf-8",
+                                               errors="replace"
+                                               ).replace("\r\n", "\n"):
+                        return
+                    if sys.platform == "darwin":
+                        dismiss_mac_alerts()
+                        activate_mac_app()
+                    click(*control("main", "name"))
+                    ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
+                    ui.press("backspace")
+                    ui.write(case, interval=0.05)
+                raise AssertionError(
+                    f"input field never received {case!r}")
+
             def fd_request(case):
                 activate_mac_app()
                 if sys.platform == "darwin" and bundle_id and case in fd_dirs:
@@ -603,21 +630,7 @@ with log.open("w") as output:
                 deadline = time.monotonic() + 10
                 while fd_is_open() and time.monotonic() < deadline:
                     time.sleep(0.2)
-                click(*control("main", "name"))
-                ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
-                ui.press("backspace")
-                ui.write(case, interval=0.05)
-                time.sleep(0.3)
-                if sys.platform == "darwin" and dismiss_mac_alerts():
-                    # The dismissal (prompt click or stray desktop click)
-                    # may also have mangled the input or changed which app
-                    # is frontmost; restore both and redo the input.
-                    activate_mac_app()
-                    click(*control("main", "name"))
-                    ui.hotkey("command", "a")
-                    ui.press("backspace")
-                    ui.write(case, interval=0.05)
-                    time.sleep(0.3)
+                type_case(case)
                 ui.press("f9")
 
             def fd_opened(case):

@@ -44,6 +44,9 @@ document.getElementById('close-overlay').onclick = () => Call.ByName('main.Probe
 const controls = () => report('controls:' + JSON.stringify(Object.fromEntries(
  [...document.querySelectorAll('button,input')].map(e => {const r=e.getBoundingClientRect();return [e.id,[r.x+r.width/2,r.y+r.height/2]];}))));
 controls(); addEventListener('resize', controls);
+// Runner automation verifies what it typed against this before driving
+// the dialog, so dropped or mangled keystrokes are recoverable.
+document.getElementById('name').addEventListener('input', e => report('input:' + e.target.value));
 document.getElementById('dialog').onclick = () => Call.ByName('main.ProbeService.Dialog', false);
 document.getElementById('attached').onclick = () => Call.ByName('main.ProbeService.Dialog', true);
 document.getElementById('close').onclick = () => Window.Close();
