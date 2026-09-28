@@ -511,7 +511,6 @@ with log.open("w") as output:
                 deadline = time.monotonic() + 10
                 while fd_is_open() and time.monotonic() < deadline:
                     time.sleep(0.2)
-                dismiss_mac_alerts()
                 click(*control("main", "name"))
                 ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
                 ui.press("backspace")
