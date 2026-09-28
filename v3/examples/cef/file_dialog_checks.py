@@ -51,6 +51,14 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
                     key('alt', 'n')
                     paste(' '.join('"' + str(p) + '"' for p in expected))
                 elif platform == 'darwin':
+                    # NSOpenPanel reopens at its remembered location, so
+                    # navigate to the fixture dir via the Go-to sheet
+                    # before selecting everything in it.
+                    key('command', 'shift', 'g')
+                    time.sleep(.5)
+                    paste(str(root / 'multiple'))
+                    key('enter')
+                    time.sleep(1)
                     key('command', 'a')
                 else:
                     # The chooser opens with the file list focused (the
@@ -62,9 +70,21 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
                 filename = {'save':'saved.txt', 'save-attached':'attached.txt',
                             'overwrite':'existing.txt', 'directory':'目录'}.get(case, '中文文件.txt')
                 sub = {'open': 'open', 'open-attached': 'open', 'cancel-open': 'open',
-                       'filter': 'open', 'directory': 'dirs'}.get(case, '')
+                       'filter': 'open', 'directory': 'dirs', 'multiple': 'multiple'}.get(case, '')
                 expected = [root / filename if not sub else root / sub / filename]
-                if platform == 'darwin':
+                if platform == 'darwin' and sub:
+                    # macOS NSOpenPanel does not honour the requested start
+                    # directory (it reopens at its remembered location), so
+                    # navigate explicitly with the Go-to-folder sheet; the
+                    # single-item fixture view then leaves exactly one
+                    # selectable entry for the final Enter.
+                    key('command', 'shift', 'g')
+                    time.sleep(.5)
+                    paste(str(root / sub))
+                    key('enter')
+                    time.sleep(1)
+                    key('End')
+                elif platform == 'darwin':
                     # Single-item fixture view: End selects the only entry.
                     key('End')
                 elif platform == 'win32':
