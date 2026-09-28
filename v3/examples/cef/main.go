@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -135,13 +136,14 @@ func (*ProbeService) Dialog(attached bool) {
 
 func newWindow(app *application.App, name string, frameless bool, permission application.Permission) *application.WebviewWindow {
 	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name: name, Title: "CEF smoke " + name, URL: "/?role=" + name + "&passive=" + os.Getenv("CEF_SMOKE_PASSIVE"), Width: 900, Height: 640,
+		Name: name, Title: "CEF smoke " + name, URL: "/?role=" + name + "&passive=" + os.Getenv("CEF_SMOKE_PASSIVE") + "&platform=" + runtime.GOOS, Width: 900, Height: 640,
 		Frameless: frameless, EnableFileDrop: name == "main", DevToolsEnabled: true,
 		Permissions: map[application.PermissionType]application.Permission{
 			application.PermissionCamera: permission, application.PermissionMicrophone: permission,
 		},
 		KeyBindings: map[string]func(application.Window){
 			"F8": func(window application.Window) {
+				fmt.Println("CEF_SMOKE_WINDOW_API requested")
 				window.ExecJS("window.cefCheckUpstreamWindowAPI()")
 			},
 			"Ctrl+M": func(window application.Window) {
@@ -153,6 +155,14 @@ func newWindow(app *application.App, name string, frameless bool, permission app
 	win.OnWindowEvent(events.Common.WindowFilesDropped, func(event *application.WindowEvent) {
 		fmt.Printf("CEF_SMOKE_DROP %s %q %#v\n", name, event.Context().DroppedFiles(), event.Context().DropTargetDetails())
 	})
+	if runtime.GOOS == "darwin" {
+		win.OnWindowEvent(events.Mac.WindowDidEnterFullScreen, func(*application.WindowEvent) {
+			win.ExecJS("window.cefNativeFullscreen = true")
+		})
+		win.OnWindowEvent(events.Mac.WindowDidExitFullScreen, func(*application.WindowEvent) {
+			win.ExecJS("window.cefNativeFullscreen = false")
+		})
+	}
 	return win
 }
 

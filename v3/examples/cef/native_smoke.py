@@ -169,7 +169,11 @@ def window_position(title):
 def wait_log(text, timeout=40):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if text in log.read_text(encoding="utf-8", errors="replace"):
+        content = log.read_text(encoding="utf-8", errors="replace")
+        failures = [line for line in content.splitlines() if "upstream:error:" in line]
+        if failures:
+            raise AssertionError("\n".join(failures))
+        if text in content:
             return
         if app.poll() is not None:
             raise AssertionError(f"Application exited: {app.returncode}")
@@ -292,6 +296,7 @@ with log.open("w") as output:
         screenshot("resized")
         if a.scenario == "upstream":
             ui.press("f8")
+            wait_log("CEF_SMOKE_WINDOW_API requested", timeout=5)
             wait_log("main:upstream:window-api:passed", timeout=90)
             assert "upstream:error:" not in log.read_text(encoding="utf-8", errors="replace")
             screenshot("window-api")
