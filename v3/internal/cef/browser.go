@@ -83,9 +83,9 @@ static int wails_cef_req_on_before_browse(struct _cef_request_handler_t* self, s
   return wailsCEFRequestOnBeforeBrowse(self, browser, frame, request, user_gesture, is_redirect);
 }
 
-void wailsCEFRenderTerminated(int status, int error_code, const cef_string_t* error_string);
+void wailsCEFRenderTerminated(struct _cef_request_handler_t* self, struct _cef_browser_t* browser, int status, int error_code, const cef_string_t* error_string);
 static void wails_cef_render_terminated(struct _cef_request_handler_t* self, struct _cef_browser_t* browser, cef_termination_status_t status, int error_code, const cef_string_t* error_string) {
- wailsCEFRenderTerminated((int)status,error_code,error_string);
+ wailsCEFRenderTerminated(self, browser, (int)status, error_code, error_string);
 }
 
 // client getters for the new handlers
