@@ -367,12 +367,17 @@ with log.open("w") as output:
         for attempt in range(greet_attempts):
             click(100, 164)
             if sys.platform == "darwin":
-                # Same truncation workaround as type_case: paste instead
-                # of typing, and select-all first so retries replace the
-                # previous attempt's fragments.
+                # Same truncation workaround as type_text: confirm the
+                # pasteboard before trusting cmd+v, otherwise type.
                 subprocess.run(["pbcopy"], input=b"CEF154", check=True)
-                ui.hotkey("command", "a")
-                ui.hotkey("command", "v")
+                board = subprocess.run(["pbpaste"], capture_output=True,
+                                       text=True).stdout
+                if board == "CEF154":
+                    ui.hotkey("command", "a")
+                    ui.hotkey("command", "v")
+                else:
+                    print("greet: pasteboard mismatch, typing", flush=True)
+                    ui.write("CEF154", interval=0.1)
             else:
                 ui.write("CEF154", interval=0.1)
             click(290, 164)
