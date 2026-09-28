@@ -27,3 +27,13 @@ func TestIOSGoTemplatesExtract(t *testing.T) {
 		require.True(t, os.IsNotExist(err))
 	}
 }
+
+func TestIOSOverlayUsesEmbeddedTemplate(t *testing.T) {
+	t.Chdir(t.TempDir())
+	output := filepath.Join("build", "ios", "overlay.json")
+	require.NoError(t, IOSOverlayGen(&IOSOverlayGenOptions{Out: output}))
+	generated, err := os.ReadFile(filepath.Join("build", "ios", "gen", "main_ios.gen.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(generated), "//export WailsIOSMain")
+	require.Contains(t, string(generated), "func WailsIOSMain()")
+}
