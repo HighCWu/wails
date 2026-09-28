@@ -185,13 +185,13 @@ jobs:
       - name: Test Windows CEF interaction
         if: runner.os == 'Windows'
         shell: bash
-        run: python v3/examples/cef/native_smoke.py "$RUNNER_TEMP/cef-smoke.exe" --runtime "$RUNNER_TEMP/cef-native/runtime" --output "$RUNNER_TEMP/cef-native-results"
+        run: python v3/examples/cef/native_smoke.py --suite "$RUNNER_TEMP/cef-smoke.exe" --runtime "$RUNNER_TEMP/cef-native/runtime" --output "$RUNNER_TEMP/cef-native-results"
       - name: Test macOS CEF interaction
         if: runner.os == 'macOS'
         shell: bash
         run: |
           app="$RUNNER_TEMP/cef-native/CEFSmoke.app/Contents"
-          python v3/examples/cef/native_smoke.py "$app/MacOS/CEFSmoke" --runtime "$app/Frameworks" --helper "$app/Frameworks/CEFSmoke Helper.app/Contents/MacOS/CEFSmoke Helper" --output "$RUNNER_TEMP/cef-native-results"
+          python v3/examples/cef/native_smoke.py --suite "$app/MacOS/CEFSmoke" --runtime "$app/Frameworks" --helper "$app/Frameworks/CEFSmoke Helper.app/Contents/MacOS/CEFSmoke Helper" --output "$RUNNER_TEMP/cef-native-results"
       - name: Upload native diagnostics
         if: always()
         uses: actions/upload-artifact@v4

@@ -17,6 +17,21 @@ import pyautogui as ui
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("binary", type=Path)
+p.add_argument(
+    "--scenario",
+    choices=[
+        "all",
+        "core",
+        "composition",
+        "media",
+        "dialogs",
+        "multiwindow",
+        "mouse",
+        "drop",
+    ],
+    default="all",
+)
+p.add_argument("--suite", action="store_true")
 p.add_argument("--runtime", required=True, type=Path)
 p.add_argument("--output", required=True, type=Path)
 p.add_argument("--helper", type=Path)
@@ -32,6 +47,41 @@ if os.environ.get("GITHUB_ACTIONS") != "true":
         "Native input automation is restricted to disposable GitHub Actions desktops"
     )
 a.output.mkdir(parents=True, exist_ok=True)
+if a.suite:
+    results = {}
+    for scenario in [
+        "core",
+        "composition",
+        "media",
+        "dialogs",
+        "multiwindow",
+        "mouse",
+        "drop",
+    ]:
+        command = [
+            sys.executable,
+            __file__,
+            str(a.binary),
+            "--runtime",
+            str(a.runtime),
+            "--output",
+            str(a.output / scenario),
+            "--scenario",
+            scenario,
+        ]
+        if a.helper:
+            command += ["--helper", str(a.helper)]
+        if a.hardware_media:
+            command += ["--hardware-media"]
+        try:
+            result = subprocess.run(command, timeout=180)
+            results[scenario] = "passed" if result.returncode == 0 else "failed"
+        except subprocess.TimeoutExpired:
+            results[scenario] = "timed out"
+    (a.output / "results.json").write_text(json.dumps(results, indent=2))
+    print(json.dumps(results, indent=2), flush=True)
+    raise SystemExit(0 if all(v == "passed" for v in results.values()) else 1)
+
 env = dict(
     os.environ,
     WAILS_WEBVIEW_BACKEND="cef",
@@ -156,50 +206,51 @@ with log.open("w") as output:
         ui.press("m")
         ui.keyUp("ctrl")
         wait_log("CEF_SMOKE_EXECJS main")
-        click(*control("main", "name"))
-        ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
-        ui.press("backspace")
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{debug_port}/json/list", timeout=10
-        ) as response:
-            pages = json.load(response)
-        page = next(
-            p
-            for p in pages
-            if p.get("type") == "page" and "role=main" in p.get("url", "")
-        )
-        ws = websocket.create_connection(
-            page["webSocketDebuggerUrl"], suppress_origin=True, timeout=10
-        )
-        message_id = 0
-
-        def cdp(method, params):
-            global message_id
-            message_id += 1
-            ws.send(json.dumps(dict(id=message_id, method=method, params=params)))
-            while True:
-                response = json.loads(ws.recv())
-                if response.get("id") == message_id:
-                    assert "error" not in response, response
-                    return response.get("result")
-
-        try:
-            cdp(
-                "Input.imeSetComposition",
-                dict(text="中文输入", selectionStart=0, selectionEnd=4),
+        if a.scenario in ("all", "composition"):
+            click(*control("main", "name"))
+            ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
+            ui.press("backspace")
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{debug_port}/json/list", timeout=10
+            ) as response:
+                pages = json.load(response)
+            page = next(
+                p
+                for p in pages
+                if p.get("type") == "page" and "role=main" in p.get("url", "")
             )
-            wait_log("main:compositionupdate:中文输入")
-            screenshot("composition")
-            cdp("Input.insertText", dict(text="中文输入"))
-            wait_log("main:compositionend:中文输入")
-            click(*control("main", "greet"))
-            wait_log('CEF_SMOKE_GREET "中文输入"')
-        finally:
-            ws.close()
-        print(
-            "PASS: Chromium composition/preedit/commit and Unicode RPC (CDP, not native OS IME)",
-            flush=True,
-        )
+            ws = websocket.create_connection(
+                page["webSocketDebuggerUrl"], suppress_origin=True, timeout=10
+            )
+            message_id = 0
+
+            def cdp(method, params):
+                global message_id
+                message_id += 1
+                ws.send(json.dumps(dict(id=message_id, method=method, params=params)))
+                while True:
+                    response = json.loads(ws.recv())
+                    if response.get("id") == message_id:
+                        assert "error" not in response, response
+                        return response.get("result")
+
+            try:
+                cdp(
+                    "Input.imeSetComposition",
+                    dict(text="中文输入", selectionStart=0, selectionEnd=4),
+                )
+                wait_log("main:compositionupdate:中文输入")
+                screenshot("composition")
+                cdp("Input.insertText", dict(text="中文输入"))
+                wait_log("main:compositionend:中文输入")
+                click(*control("main", "greet"))
+                wait_log('CEF_SMOKE_GREET "中文输入"')
+            finally:
+                ws.close()
+            print(
+                "PASS: Chromium composition/preedit/commit and Unicode RPC (CDP, not native OS IME)",
+                flush=True,
+            )
         click(260, 223)
         # Wails SetSize is the outer window size on Windows. Account for native
         # frame decorations instead of requiring a 1000x700 browser viewport.
@@ -209,128 +260,138 @@ with log.open("w") as output:
             950 <= int(w) <= 1000 and 650 <= int(h) <= 700 for w, h in sizes
         ), sizes
         screenshot("resized")
-        click(*control("main", "media"))
-        wait_log("main:media:allowed:audio,video")
-        wait_log("main:media:frame:")
-        wait_log("main:media:audio-bytes:")
-        print(
-            "PASS: media permissions and captured video frame ("
-            + ("hardware" if a.hardware_media else "fake devices")
-            + ")",
-            flush=True,
-        )
-        for name, attached in [("dialog", "false"), ("attached", "true")]:
-            click(*control("main", name))
-            wait_log("CEF_SMOKE_DIALOG opened attached=" + attached)
+        if a.scenario in ("all", "media"):
+            click(*control("main", "media"))
+            wait_log("main:media:allowed:audio,video")
+            wait_log("main:media:frame:")
+            wait_log("main:media:audio-bytes:")
+            print(
+                "PASS: media permissions and captured video frame ("
+                + ("hardware" if a.hardware_media else "fake devices")
+                + ")",
+                flush=True,
+            )
+        if a.scenario in ("all", "dialogs"):
+            for name, attached in [("dialog", "false"), ("attached", "true")]:
+                click(*control("main", name))
+                wait_log("CEF_SMOKE_DIALOG opened attached=" + attached)
+                time.sleep(1)
+                screenshot(name)
+                ui.press("enter")
+                wait_log("CEF_SMOKE_DIALOG accepted attached=" + attached)
+            print("PASS: native top-level and attached dialogs", flush=True)
+        if a.scenario in ("all", "multiwindow"):
+            main_origin = left, top
+            click(*control("main", "new"))
+            wait_log("secondary:ready")
             time.sleep(1)
-            screenshot(name)
-            ui.press("enter")
-            wait_log("CEF_SMOKE_DIALOG accepted attached=" + attached)
-        print("PASS: native top-level and attached dialogs", flush=True)
-        main_origin = left, top
-        click(*control("main", "new"))
-        wait_log("secondary:ready")
-        time.sleep(1)
-        left, top = origin()
-        click(*control("secondary", "media"))
-        wait_log("secondary:media:NotAllowedError")
-        click(*control("secondary", "name"))
-        ui.write("SECOND", interval=0.1)
-        click(*control("secondary", "greet"))
-        wait_log('CEF_SMOKE_GREET "SECOND"')
-        ui.hotkey("ctrl", "m")
-        wait_log("CEF_SMOKE_EXECJS secondary")
-        click(*control("secondary", "close"))
-        time.sleep(1)
-        assert app.poll() is None, "Closing secondary terminated the application"
-        left, top = main_origin
-        click(*control("main", "name"))
-        ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
-        ui.write("MAIN-AGAIN", interval=0.1)
-        click(*control("main", "greet"))
-        wait_log('CEF_SMOKE_GREET "MAIN-AGAIN"')
-        print(
-            "PASS: independent windows, shortcuts, permission denial, close and restored focus",
-            flush=True,
-        )
-        click(*control("main", "overlay"))
-        wait_log("overlay:ready")
-        time.sleep(1)
-        # The overlay is placed inside the main viewport, over its header. Its
-        # mouse policy must route a real OS click to the underlying main window.
-        tx, ty = left + 120, top + 90
-        before = log.read_text(errors="replace").count("main:pointer:")
-        ui.click(tx, ty)
-        time.sleep(0.5)
-        assert log.read_text(errors="replace").count("main:pointer:") > before
-        click(*control("main", "capture"))
-        time.sleep(0.5)
-        before = log.read_text(errors="replace").count("overlay:pointer:")
-        ui.click(tx, ty)
-        time.sleep(0.5)
-        assert log.read_text(errors="replace").count("overlay:pointer:") > before
-        screenshot("mouse-policy")
-        ox, oy = window_position("CEF smoke overlay ready")
-        ui.moveTo(tx, ty)
-        ui.mouseDown()
-        time.sleep(0.2)
-        ui.moveTo(tx + 5, ty, duration=0.2)
-        time.sleep(0.3)
-        ui.moveTo(tx + 95, ty + 35, duration=1)
-        ui.mouseUp()
-        time.sleep(0.5)
-        nx, ny = window_position("CEF smoke overlay ready")
-        assert 75 <= nx - ox <= 110 and 25 <= ny - oy <= 45, (ox, oy, nx, ny)
-        print("PASS: dragging opaque frameless content", flush=True)
-        click(*control("main", "close-overlay"))
-        time.sleep(0.5)
-        print("PASS: whole-window mouse passthrough and restored capture", flush=True)
-        dropped = a.output / "拖放测试.txt"
-        dropped.write_text("CEF native file drop probe")
-        source_position = a.output / "source-position.json"
-        source_log = (a.output / "drop-source.log").open("w")
-        source = subprocess.Popen(
-            [
-                sys.executable,
-                str(Path(__file__).with_name("native_drop_source.py")),
-                str(dropped),
-                str(source_position),
-            ],
-            env=env,
-            stdout=source_log,
-            stderr=subprocess.STDOUT,
-        )
-        for _ in range(100):
-            if source_position.exists():
-                break
-            if source.poll() is not None:
-                raise AssertionError("Native drop source failed; see drop-source.log")
-            time.sleep(0.1)
-        sx, sy = json.loads(source_position.read_text())
-
-        def drag_file(x, y):
-            ui.moveTo(sx, sy)
-            ui.mouseDown()
-            time.sleep(0.3)
-            ui.moveTo(left + x, top + y, duration=2)
+            left, top = origin()
+            click(*control("secondary", "media"))
+            wait_log("secondary:media:NotAllowedError")
+            click(*control("secondary", "name"))
+            ui.write("SECOND", interval=0.1)
+            click(*control("secondary", "greet"))
+            wait_log('CEF_SMOKE_GREET "SECOND"')
+            ui.hotkey("ctrl", "m")
+            wait_log("CEF_SMOKE_EXECJS secondary")
+            click(*control("secondary", "close"))
+            time.sleep(1)
+            assert app.poll() is None, "Closing secondary terminated the application"
+            left, top = main_origin
+            click(*control("main", "name"))
+            ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
+            ui.write("MAIN-AGAIN", interval=0.1)
+            click(*control("main", "greet"))
+            wait_log('CEF_SMOKE_GREET "MAIN-AGAIN"')
+            print(
+                "PASS: independent windows, shortcuts, permission denial, close and restored focus",
+                flush=True,
+            )
+        if a.scenario in ("all", "mouse"):
+            click(*control("main", "overlay"))
+            wait_log("overlay:ready")
+            time.sleep(1)
+            # The overlay is placed inside the main viewport, over its header. Its
+            # mouse policy must route a real OS click to the underlying main window.
+            tx, ty = left + 120, top + 90
+            before = log.read_text(errors="replace").count("main:pointer:")
+            ui.click(tx, ty)
             time.sleep(0.5)
+            assert log.read_text(errors="replace").count("main:pointer:") > before
+            click(*control("main", "capture"))
+            time.sleep(0.5)
+            before = log.read_text(errors="replace").count("overlay:pointer:")
+            ui.click(tx, ty)
+            time.sleep(0.5)
+            assert log.read_text(errors="replace").count("overlay:pointer:") > before
+            screenshot("mouse-policy")
+            ox, oy = window_position("CEF smoke overlay ready")
+            ui.moveTo(tx, ty)
+            ui.mouseDown()
+            time.sleep(0.2)
+            ui.moveTo(tx + 5, ty, duration=0.2)
+            time.sleep(0.3)
+            ui.moveTo(tx + 95, ty + 35, duration=1)
             ui.mouseUp()
             time.sleep(0.5)
+            nx, ny = window_position("CEF smoke overlay ready")
+            assert 75 <= nx - ox <= 110 and 25 <= ny - oy <= 45, (ox, oy, nx, ny)
+            print("PASS: dragging opaque frameless content", flush=True)
+            click(*control("main", "close-overlay"))
+            time.sleep(0.5)
+            print(
+                "PASS: whole-window mouse passthrough and restored capture", flush=True
+            )
+        if a.scenario in ("all", "drop"):
+            dropped = a.output / "拖放测试.txt"
+            dropped.write_text("CEF native file drop probe")
+            source_position = a.output / "source-position.json"
+            source_log = (a.output / "drop-source.log").open("w")
+            source = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(Path(__file__).with_name("native_drop_source.py")),
+                    str(dropped),
+                    str(source_position),
+                ],
+                env=env,
+                stdout=source_log,
+                stderr=subprocess.STDOUT,
+            )
+            for _ in range(100):
+                if source_position.exists():
+                    break
+                if source.poll() is not None:
+                    raise AssertionError(
+                        "Native drop source failed; see drop-source.log"
+                    )
+                time.sleep(0.1)
+            sx, sy = json.loads(source_position.read_text())
 
-        drag_file(100, 295)
-        wait_log("CEF_SMOKE_DROP main")
-        text = log.read_text(errors="replace")
-        assert "拖放测试.txt" in text and 'ElementID:"drop"' in text
-        count = text.count("CEF_SMOKE_DROP")
-        drag_file(100, 380)
-        assert log.read_text(errors="replace").count("CEF_SMOKE_DROP") == count
-        screenshot("file-drop")
-        source.terminate()
-        source.wait(timeout=10)
-        source = None
-        print(
-            "PASS: native Unicode file drop and rejection outside targets", flush=True
-        )
+            def drag_file(x, y):
+                ui.moveTo(sx, sy)
+                ui.mouseDown()
+                time.sleep(0.3)
+                ui.moveTo(left + x, top + y, duration=2)
+                time.sleep(0.5)
+                ui.mouseUp()
+                time.sleep(0.5)
+
+            drag_file(100, 295)
+            wait_log("CEF_SMOKE_DROP main")
+            text = log.read_text(errors="replace")
+            assert "拖放测试.txt" in text and 'ElementID:"drop"' in text
+            count = text.count("CEF_SMOKE_DROP")
+            drag_file(100, 380)
+            assert log.read_text(errors="replace").count("CEF_SMOKE_DROP") == count
+            screenshot("file-drop")
+            source.terminate()
+            source.wait(timeout=10)
+            source = None
+            print(
+                "PASS: native Unicode file drop and rejection outside targets",
+                flush=True,
+            )
         # Open DevTools, return to the host content and request graceful exit.
         click(334, 223)
         click(438, 164)
