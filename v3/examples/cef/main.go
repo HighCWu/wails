@@ -142,6 +142,9 @@ func newWindow(app *application.App, name string, frameless bool, permission app
 			application.PermissionCamera: permission, application.PermissionMicrophone: permission,
 		},
 		KeyBindings: map[string]func(application.Window){
+			"F9": func(window application.Window) {
+				window.ExecJS("window.cefCheckFileDialog()")
+			},
 			"F8": func(window application.Window) {
 				fmt.Println("CEF_SMOKE_WINDOW_API requested")
 				window.ExecJS("window.cefCheckUpstreamWindowAPI()")

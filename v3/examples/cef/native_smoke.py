@@ -25,6 +25,7 @@ p.add_argument(
         "composition",
         "media",
         "dialogs",
+        "file-dialogs",
         "multiwindow",
         "mouse",
         "drop",
@@ -55,6 +56,7 @@ if a.suite:
         "composition",
         "media",
         "dialogs",
+        "file-dialogs",
         "multiwindow",
         "mouse",
         "drop",
@@ -92,6 +94,9 @@ env = dict(
     CEF_SMOKE_DELAY_QUIT="1",
     CEF_SMOKE_TRACE_CRASH="1",
 )
+file_dir = a.output.parent / "file-dialogs-fixture" if a.suite else a.output / "file-dialogs-fixture"
+if a.scenario == "file-dialogs":
+    env["CEF_SMOKE_FILE_DIR"] = str(file_dir)
 if a.scenario == "upstream":
     env["CEF_SMOKE_UPSTREAM"] = "1"
 if a.helper:
@@ -188,6 +193,14 @@ def screenshot(name):
 
 
 with log.open("w") as output:
+    if a.scenario == "file-dialogs":
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "file_dialog_checks",
+            Path(__file__).with_name("file_dialog_checks.py"))
+        fdm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fdm)
+        fdm.prepare_files(file_dir)
     app = subprocess.Popen(
         [str(a.binary.resolve())], env=env, stdout=output, stderr=subprocess.STDOUT
     )
@@ -347,6 +360,96 @@ with log.open("w") as output:
                 decision = "rejected" if a.scenario == "upstream" else "accepted"
                 wait_log("CEF_SMOKE_DIALOG " + decision + " attached=" + attached)
             print("PASS: native top-level and attached dialogs", flush=True)
+        if a.scenario in ("all", "file-dialogs"):
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "file_dialog_checks",
+                Path(__file__).with_name("file_dialog_checks.py"))
+            fdm = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(fdm)
+
+            def fd_request(case):
+                click(*control("main", "name"))
+                ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
+                ui.press("backspace")
+                ui.write(case, interval=0.05)
+                time.sleep(.3)
+                ui.press("f9")
+
+            def fd_opened(case):
+                # The native chooser steals focus; its window title matches
+                # the Go builder (Win32) or is empty with a document name
+                # (Cocoa). Wait for focus to leave the app's own windows.
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    front = ui.getActiveWindow()
+                    if front and app.pid not in (
+                        front._hWnd if sys.platform == "win32" else 0,
+                    ) or (front is None):
+                        pass
+                    active_title = (front.title if front else "") or ""
+                    if active_title and "CEF smoke" not in active_title:
+                        rect = (front.left, front.top, front.width, front.height)
+                        screenshot("file-" + case + "-open")
+                        return rect
+                    time.sleep(.2)
+                screenshot("file-" + case + "-not-open")
+                raise AssertionError("File dialog for case " + case + " never appeared")
+
+            def fd_key(*args):
+                i = 0
+                while i < len(args):
+                    k = args[i]
+                    if k == "click" and i + 2 < len(args):
+                        ui.click(int(args[i + 1]), int(args[i + 2]))
+                        i += 3
+                        continue
+                    if k == "ctrl-shift-click" and i + 2 < len(args):
+                        ui.keyDown("ctrl" if sys.platform == "win32" else "command")
+                        ui.click(int(args[i + 1]), int(args[i + 2]))
+                        ui.keyUp("ctrl" if sys.platform == "win32" else "command")
+                        i += 3
+                        continue
+                    if k == "esc":
+                        ui.press("escape")
+                    elif k == "enter":
+                        ui.press("enter")
+                    elif k in ("ctrl", "command", "shift"):
+                        ui.keyDown(k)
+                    else:
+                        ui.press(k)
+                    i += 1
+
+            def fd_paste(text):
+                # Platform clipboard CLI, no extra Python dependencies.
+                if sys.platform == "darwin":
+                    subprocess.run(["pbcopy"], input=text.encode(), check=True)
+                else:
+                    subprocess.run(["clip"], input=text.encode(), check=True)
+                ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "v")
+                time.sleep(.4)
+
+            def fd_result(case):
+                marker = "CEF_SMOKE_FILE_RESULT "
+                deadline = time.monotonic() + 40
+                while time.monotonic() < deadline:
+                    matches = [
+                        ln
+                        for ln in log.read_text(encoding="utf-8", errors="replace").splitlines()
+                        if ln.startswith(marker)
+                        and json.loads(ln[len(marker):])["case"] == case
+                    ]
+                    if matches:
+                        return json.loads(matches[-1][len(marker):])
+                    if app.poll() is not None:
+                        raise AssertionError("Application exited while waiting for " + case)
+                    time.sleep(.2)
+                raise AssertionError("No result for file dialog case " + case)
+
+            fdm.check_file_dialogs(
+                file_dir, sys.platform, fd_request, fd_opened, fd_key, fd_paste,
+                fd_result, screenshot)
+            print("PASS: native file dialogs (open/save/multiple/directory/filter/cancel/overwrite)", flush=True)
         if a.scenario in ("all", "multiwindow"):
             main_origin = left, top
             click(*control("main", "new"))

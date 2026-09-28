@@ -26,6 +26,8 @@ parser.add_argument("--devtools", action="store_true")
 parser.add_argument("--extended", action="store_true")
 parser.add_argument("--upstream", action="store_true", help="Replay upstream window-api and default-button/icon examples (requires --extended)")
 parser.add_argument("--ime", action="store_true")
+parser.add_argument("--file-dialogs", action="store_true",
+                    help="Exercise native open/save/multiple/directory/filter/cancel/overwrite dialogs")
 parser.add_argument("--switches", default="", help="Additional comma-separated Chromium switches")
 args = parser.parse_args()
 if args.upstream and not args.extended:
@@ -87,6 +89,10 @@ def screenshot(name):
     return pixels
 
 
+if args.file_dialogs and args.backend != "cef":
+    parser.error("--file-dialogs runs against the CEF backend")
+file_dir = out / "file-dialogs"
+
 try:
     xvfb = start(["Xvfb", "-displayfd", "1", "-screen", "0", "1280x900x24",
                   "-nolisten", "tcp"], "xvfb", stdout=subprocess.PIPE)
@@ -119,6 +125,15 @@ try:
     time.sleep(.5)
     app_log = open(out / "application.log", "w")
     logs.append(app_log)
+    if args.file_dialogs:
+        env["CEF_SMOKE_FILE_DIR"] = str(file_dir)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "file_dialog_checks",
+            Path(__file__).with_name("file_dialog_checks.py"))
+        fdm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fdm)
+        fdm.prepare_files(file_dir)
     app = subprocess.Popen([str(args.binary.resolve())], env=env,
                            stdout=app_log, stderr=subprocess.STDOUT,
                            start_new_session=True)
@@ -370,6 +385,120 @@ try:
         print("PASS: drops outside targets and into disabled windows are ignored", flush=True)
         run("xdotool", "windowminimize", source)
         screenshot("extended")
+    if args.file_dialogs:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "file_dialog_checks",
+            Path(__file__).with_name("file_dialog_checks.py"))
+        fdm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fdm)
+
+        def fd_request(case):
+            run("xdotool", "windowactivate", "--sync", window)
+            click(100, 164)
+            run("xdotool", "key", "ctrl+a")
+            # xdotool key syntax only takes keysyms; type the case name
+            # (which contains '-') as literal text instead.
+            run("xdotool", "type", "--", case)
+            # GTK's upstream key debounce includes modifier presses (50 ms).
+            time.sleep(.12)
+            run("xdotool", "key", "F9")
+
+        def fd_opened(case):
+            # The chooser belongs to our process and is a normal or dialog
+            # window that is not one of the known app windows. GTK save
+            # dialogs carry an empty X title (the document name becomes the
+            # accessible name instead), so title matching is not usable.
+            known = set(run("xdotool", "search", "--pid", str(app.pid)).splitlines())
+            known_names = {}
+            for wid in list(known):
+                known_names[wid] = run("xdotool", "getwindowname", wid)
+            for _ in range(100):
+                result = subprocess.run(
+                    ["xdotool", "search", "--onlyvisible", "--pid", str(app.pid)],
+                    env=env, capture_output=True, text=True, timeout=5)
+                candidates = []
+                for wid in result.stdout.splitlines():
+                    if wid in known_names and ("overlay" in known_names[wid]
+                                               or "secondary" in known_names[wid]):
+                        continue  # dynamically created app windows, not choosers
+                    if wid not in known and "window state:" in run("xprop", "-id", wid, "WM_STATE"):
+                        xprop = run("xprop", "-id", wid, "_NET_WM_WINDOW_TYPE")
+                        if "NORMAL" in xprop or "DIALOG" in xprop:
+                            candidates.append(wid)
+                if len(candidates) == 1:
+                    run("xdotool", "windowactivate", "--sync", candidates[0])
+                    geometry = run("xwininfo", "-id", candidates[0])
+                    dx = int(re.search(r"Absolute upper-left X:\s+(-?\d+)", geometry)[1])
+                    dy = int(re.search(r"Absolute upper-left Y:\s+(-?\d+)", geometry)[1])
+                    w = int(re.search(r"Width:\s+(\d+)", geometry)[1])
+                    h = int(re.search(r"Height:\s+(\d+)", geometry)[1])
+                    return dx, dy, w, h
+                time.sleep(.1)
+            screenshot("file-" + case + "-not-open")
+            raise AssertionError("File dialog for case " + case + " never appeared")
+
+        def fd_key(*args):
+            # Supports key("ctrl", "a"), key("esc"), key("enter") and the
+            # file-list click form key("click", x, y) used to focus the
+            # multiple-selection list before ctrl+a.
+            i = 0
+            while i < len(args):
+                k = args[i]
+                if k == "click" and i + 2 < len(args):
+                    run("xdotool", "mousemove",
+                        str(int(args[i + 1])), str(int(args[i + 2])), "click", "1")
+                    i += 3
+                    continue
+                if k == "ctrl-shift-click" and i + 2 < len(args):
+                    # One xdotool invocation keeps modifiers held across
+                    # the move+click; splitting into separate processes
+                    # races GTK's modifier tracking on this list.
+                    run("xdotool", "keydown", "ctrl",
+                        "mousemove", str(int(args[i + 1])),
+                        str(int(args[i + 2])), "click", "1",
+                        "keyup", "ctrl")
+                    i += 3
+                    continue
+                if k == "esc":
+                    run("xdotool", "key", "Escape")
+                elif k == "enter":
+                    run("xdotool", "key", "Return")
+                elif k == "ctrl":
+                    run("xdotool", "keydown", "ctrl")
+                elif k == "command":
+                    pass  # darwin-only
+                else:
+                    run("xdotool", "key", k)
+                i += 1
+
+        def fd_paste(text):
+            subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(),
+                           env=env, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, check=True)
+            run("xdotool", "key", "ctrl+v")
+
+        def fd_result(case):
+            marker = "CEF_SMOKE_FILE_RESULT "
+            deadline = time.monotonic() + 40
+            while time.monotonic() < deadline:
+                matches = [ln for ln in
+                           (out / "application.log").read_text(errors="replace").splitlines()
+                           if ln.startswith(marker) and
+                           json.loads(ln[len(marker):])["case"] == case]
+                if matches:
+                    return json.loads(matches[-1][len(marker):])
+                if app.poll() is not None:
+                    raise AssertionError("Application exited while waiting for " + case)
+                time.sleep(.2)
+            raise AssertionError("No result for file dialog case " + case)
+
+        fdm.check_file_dialogs(
+            file_dir, "linux", fd_request, fd_opened, fd_key, fd_paste,
+            fd_result, screenshot)
+        run("xdotool", "windowactivate", "--sync", window)
+        print("PASS: native file dialogs (open/save/multiple/directory/filter/cancel/overwrite)", flush=True)
+
     if args.devtools:
         click(438, 164)
         for _ in range(50):
