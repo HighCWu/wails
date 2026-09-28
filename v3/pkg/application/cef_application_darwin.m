@@ -71,4 +71,12 @@ void wails_cef_size_view(uintptr_t parent, uintptr_t child) {
   if (!NSEqualRects(view.frame, container.bounds))
     [view setFrame:container.bounds];
 }
-void wails_cef_close_window(void *window) { [(NSWindow *)window close]; }
+void wails_cef_close_window(void *window, uintptr_t child) {
+  @autoreleasepool {
+    // Wails retains its NSWindow after close. Remove CEF's child explicitly:
+    // CefBrowserHostView.dealloc is what notifies CEF of native destruction.
+    if (child)
+      [(NSView *)child removeFromSuperview];
+    [(NSWindow *)window close];
+  }
+}

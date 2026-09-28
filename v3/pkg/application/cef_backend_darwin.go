@@ -9,7 +9,7 @@ void wails_cef_prepare_app(void);
 void wails_cef_pump_host(void);
 uintptr_t wails_cef_content_view(void* window);
 void wails_cef_size_view(uintptr_t parent,uintptr_t child);
-void wails_cef_close_window(void* window);
+void wails_cef_close_window(void* window, uintptr_t child);
 */
 import "C"
 
@@ -35,7 +35,13 @@ func init() {
 			}
 		}
 		e.loaded = func() { w.parent.emit(events.Mac.WebViewDidFinishNavigation) }
-		e.closeNative = func() { C.wails_cef_close_window(w.nsWindow) }
+		e.closeNative = func() {
+			var child uintptr
+			if e.browser != nil {
+				child = e.browser.XWindow()
+			}
+			C.wails_cef_close_window(w.nsWindow, C.uintptr_t(child))
+		}
 		e.finishClose = func() {
 			w.parent.markAsDestroyed()
 			clearWindowDragCache(w.parent.id)
