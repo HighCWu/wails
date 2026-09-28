@@ -377,19 +377,37 @@ with log.open("w") as output:
                 ui.press("f9")
 
             def fd_opened(case):
-                # The native chooser steals focus; its window title matches
-                # the Go builder (Win32) or is empty with a document name
-                # (Cocoa). Wait for focus to leave the app's own windows.
+                # The native chooser steals focus. Detect it through the
+                # platform front-window API directly (pyautogui has no
+                # getActiveWindow).
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
-                    front = ui.getActiveWindow()
-                    if front and app.pid not in (
-                        front._hWnd if sys.platform == "win32" else 0,
-                    ) or (front is None):
-                        pass
-                    active_title = (front.title if front else "") or ""
-                    if active_title and "CEF smoke" not in active_title:
-                        rect = (front.left, front.top, front.width, front.height)
+                    title, rect = "", None
+                    if sys.platform == "win32":
+                        import ctypes
+
+                        hwnd = ctypes.windll.user32.GetForegroundWindow()
+                        for wdw in ui.getAllWindows():
+                            if wdw._hWnd == hwnd:
+                                title = wdw.title or ""
+                                rect = (wdw.left, wdw.top, wdw.width, wdw.height)
+                                break
+                    else:
+                        import Quartz
+
+                        front_app = Quartz.NSWorkspace.sharedWorkspace(
+                        ).frontmostApplication()
+                        if front_app.processIdentifier() != app.pid:
+                            windows = Quartz.CGWindowListCopyWindowInfo(
+                                Quartz.kCGWindowListOptionOnScreenOnly,
+                                Quartz.kCGNullWindowID)
+                            for w in windows:
+                                if w.get(Quartz.kCGWindowOwnerPID) == front_app.processIdentifier() and w.get(Quartz.kCGWindowLayer) == 0:
+                                    b = w[Quartz.kCGWindowBounds]
+                                    title = w.get(Quartz.kCGWindowName) or ""
+                                    rect = (b["X"], b["Y"], b["Width"], b["Height"])
+                                    break
+                    if rect is not None:
                         screenshot("file-" + case + "-open")
                         return rect
                     time.sleep(.2)
