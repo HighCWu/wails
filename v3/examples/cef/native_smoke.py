@@ -149,6 +149,79 @@ source = None
 bundle_id = ""
 
 
+def activate_mac_app():
+    # A dismissed prompt or a stray desktop click can leave Finder
+    # frontmost; keystrokes would go nowhere until the app is activated
+    # again.
+    if sys.platform != "darwin":
+        return
+    import AppKit
+
+    native_app = (
+        AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(
+            app.pid
+        )
+    )
+    native_app.activateWithOptions_(
+        AppKit.NSApplicationActivateIgnoringOtherApps
+    )
+    time.sleep(0.5)
+
+
+def dismiss_mac_alerts():
+    # Fresh runner accounts raise a "Do you want to enable Dictation?"
+    # prompt the first time a text field gets focus after the microphone
+    # permission was granted. It swallows typing and shortcuts. Click its
+    # "Not Now" button through System Events; if scripting is unavailable,
+    # click the prompt's fixed on-screen spot — with no prompt present
+    # that point is empty app content, which is why there is deliberately
+    # NO Escape fallback (it would cancel a just opened chooser).
+    script = '''
+    tell application "System Events"
+        repeat with pname in {"UserNotificationCenter", "CoreServicesUIAgent", "universalctrl", "NotificationCenter", "TextInputMenuAgent"}
+            try
+                tell application process (pname as text)
+                    repeat with w in windows
+                        try
+                            if exists button "Not Now" of w then
+                                click button "Not Now" of w
+                                return "clicked"
+                            end if
+                        end try
+                    end repeat
+                end tell
+            end try
+        end repeat
+        repeat with p in application processes
+            try
+                repeat with w in (every window of p)
+                    try
+                        if exists button "Not Now" of w then
+                            click button "Not Now" of w
+                            return "clicked"
+                        end if
+                    end try
+                end repeat
+            end try
+        end repeat
+    end tell
+    return "none"
+    '''
+    result = subprocess.run(
+        ["osascript", "-e", script], capture_output=True,
+        text=True, timeout=20)
+    if result.stderr.strip():
+        print("dismiss_mac_alerts: " + result.stderr.strip(), flush=True)
+    # Always finish with a click at the prompt's fixed spot: on the alert
+    # it is the Not Now button, and with no alert up it is empty app
+    # content. Callers re-type afterwards, so a stray click is harmless
+    # either way.
+    width, height = ui.size()
+    ui.click(int(width * 0.545), int(height * 0.330))
+    time.sleep(0.5)
+    return True
+
+
 def origin():
     image = screenshot("active")
     pixels = image.load()
@@ -232,6 +305,11 @@ with log.open("w") as output:
     )
     try:
         wait_log("main:ready")
+        if sys.platform == "darwin":
+            # A first-run system prompt left up by an earlier scenario
+            # covers the app and fails the pixel check below.
+            dismiss_mac_alerts()
+            activate_mac_app()
         for _ in range(60):
             image = screenshot("initial")
             if Counter(image.getdata())[(30, 102, 245)] > 50000:
@@ -562,6 +640,7 @@ with log.open("w") as output:
                 return True
 
             def fd_request(case):
+                activate_mac_app()
                 if sys.platform == "darwin" and bundle_id and case in fd_dirs:
                     # NSOpenPanel/NSSavePanel reopen at their remembered
                     # location and ignore the requested start directory; pin
@@ -584,8 +663,10 @@ with log.open("w") as output:
                 ui.write(case, interval=0.05)
                 time.sleep(0.3)
                 if sys.platform == "darwin" and dismiss_mac_alerts():
-                    # The prompt stole focus mid-typing; redo the input
-                    # with the alert gone.
+                    # The dismissal (prompt click or stray desktop click)
+                    # may also have mangled the input or changed which app
+                    # is frontmost; restore both and redo the input.
+                    activate_mac_app()
                     click(*control("main", "name"))
                     ui.hotkey("command", "a")
                     ui.press("backspace")
