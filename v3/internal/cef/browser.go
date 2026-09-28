@@ -58,6 +58,9 @@ static void wails_cef_displayh_on_title_change(struct _cef_display_handler_t* se
 
 // cef_keyboard_handler_t
 int wailsCEFKeyboardOnKeyEvent(struct _cef_keyboard_handler_t* self, struct _cef_browser_t* browser, const cef_key_event_t* event, cef_event_handle_t os_event);
+static int wails_cef_kb_on_key_event(struct _cef_keyboard_handler_t* self, struct _cef_browser_t* browser, const cef_key_event_t* event, cef_event_handle_t os_event) {
+ return wailsCEFKeyboardOnKeyEvent(self,browser,event,os_event);
+}
 static int wails_cef_kb_on_pre_key_event(struct _cef_keyboard_handler_t* self, struct _cef_browser_t* browser, const cef_key_event_t* event, cef_event_handle_t os_event, int* is_keyboard_shortcut) {
   return wailsCEFKeyboardOnKeyEvent(self, browser, event, os_event);
 }
@@ -117,7 +120,11 @@ static void wcef_init_client(void* p) {
 }
 static void wcef_init_keyboardh(void* p) {
   cef_keyboard_handler_t* h = (cef_keyboard_handler_t*)p;
+  #if defined(OS_LINUX)
+  h->on_key_event = wails_cef_kb_on_key_event;
+#else
   h->on_pre_key_event = wails_cef_kb_on_pre_key_event;
+#endif
 }
 static void wcef_init_permissionh(void* p) {
   cef_permission_handler_t* h = (cef_permission_handler_t*)p;

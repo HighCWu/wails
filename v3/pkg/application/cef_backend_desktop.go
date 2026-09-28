@@ -88,7 +88,11 @@ func startDesktopCEF(app *App) error {
 			if !ok {
 				return false
 			}
-			windowKeyEvents <- &windowKeyEvent{windowId: id, acceleratorString: acc.String()}
+			if w, ok := app.Window.GetByID(id); ok {
+				if window, ok := w.(*WebviewWindow); ok {
+					return window.processKeyBinding(acc.String())
+				}
+			}
 			return false
 		},
 		OnFileDrop: func(id uint, files []string, x, y int) {
@@ -222,6 +226,6 @@ func cefNativeKey(key uint32) (string, bool) {
 	if key >= 0x70 && key <= 0x87 {
 		return fmt.Sprintf("f%d", key-0x6f), true
 	}
-	value, ok := map[uint32]string{8: "backspace", 9: "tab", 13: "return", 27: "escape", 32: "space", 33: "pageup", 34: "pagedown", 35: "end", 36: "home", 37: "left", 38: "up", 39: "right", 40: "down", 45: "insert", 46: "delete", 186: ";", 187: "=", 188: ",", 189: "-", 190: ".", 191: "/", 192: "`", 219: "[", 220: "\\", 221: "]", 222: "'"}[key]
+	value, ok := map[uint32]string{8: "backspace", 9: "tab", 13: "return", 27: "escape", 32: "space", 33: "page up", 34: "page down", 35: "end", 36: "home", 37: "left", 38: "up", 39: "right", 40: "down", 45: "insert", 46: "delete", 186: ";", 187: "=", 188: ",", 189: "-", 190: ".", 191: "/", 192: "`", 219: "[", 220: "\\", 221: "]", 222: "'"}[key]
 	return value, ok
 }

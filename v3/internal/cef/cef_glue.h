@@ -218,8 +218,9 @@ void wcef_media_callback_cont(void* cb, uint32_t allowed_permissions);
 void wcef_callback_cont(cef_callback_t* cb);
 void wcef_callback_cancel(cef_callback_t* cb);
 
-#endif  // WAILS_CEF_GLUE_H
 
 void wcef_main_args(cef_main_args_t* args, int argc, char** argv);
 void wcef_window_parent(cef_window_info_t* info, uintptr_t parent);
 uintptr_t wcef_native_handle(cef_browser_host_t* host);
+
+#endif  // WAILS_CEF_GLUE_H
