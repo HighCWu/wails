@@ -1386,6 +1386,10 @@ func (w *macosWebviewWindow) reload() {
 }
 
 func (w *macosWebviewWindow) forceReload() {
+	if w.cefEngine != nil {
+		w.cefEngine.reload(true)
+		return
+	}
 	globalApplication.debug("force reload called on WebviewWindow", "parentID", w.parent.id)
 	InvokeAsync(func() {
 		C.windowForceReload(w.nsWindow)
@@ -1804,7 +1808,11 @@ func (w *macosWebviewWindow) run() {
 					w.execJS(options.JS)
 				}
 				if options.CSS != "" {
-					C.windowInjectCSS(w.nsWindow, C.CString(options.CSS))
+					if w.cefEngine != nil {
+						w.execJS(fmt.Sprintf("document.head.appendChild(document.createElement('style')).textContent=%q", options.CSS))
+					} else {
+						C.windowInjectCSS(w.nsWindow, C.CString(options.CSS))
+					}
 				}
 				if !options.Hidden {
 					w.parent.Show()
@@ -1947,6 +1955,10 @@ func (w *macosWebviewWindow) destroy() {
 }
 
 func (w *macosWebviewWindow) setHTML(html string) {
+	if w.cefEngine != nil {
+		w.cefEngine.execJS(fmt.Sprintf("document.open();document.write(%q);document.close();", html))
+		return
+	}
 	// Convert HTML to C string
 	cHTML := C.CString(html)
 	// Render HTML

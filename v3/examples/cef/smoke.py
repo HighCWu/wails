@@ -155,6 +155,7 @@ try:
     run("xdotool", "windowactivate", "--sync", window)
     click(100, 164)
     time.sleep(.3)
+    (out / "input-focus.txt").write_text(run("xdotool", "getwindowfocus") + "\n" + run("xwininfo", "-root", "-tree"))
     run("xdotool", "type", "--clearmodifiers", "CEF154")
     screenshot("typed")
     click(290, 164)

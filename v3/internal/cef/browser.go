@@ -500,7 +500,7 @@ func keyEvent(browser *C.cef_browser_t, event *C.cef_key_event_t, client *browse
 		return 0
 	}
 	key := uint32(event.native_key_code)
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS != "linux" {
 		key = uint32(event.windows_key_code)
 	}
 	consumed := st.OnKeyEvent(client.windowID, key, uint32(event.modifiers))

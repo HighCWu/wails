@@ -14,6 +14,12 @@ int wails_cef_enabled(void){return wailsCEFEnabled();}
 @implementation WailsCEFApplication
 - (BOOL)isHandlingSendEvent{return handlingSendEvent;}
 - (void)setHandlingSendEvent:(BOOL)value{handlingSendEvent=value;}
+// Let App.Run return so its CEF shutdown runs after all browser closes.
+- (void)terminate:(id)sender {
+ if ([[self delegate] applicationShouldTerminate:self] == NSTerminateCancel) return;
+ [self stop:sender];
+ [self postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0] atStart:NO];
+}
 - (void)sendEvent:(NSEvent*)event {
  BOOL previous=handlingSendEvent; handlingSendEvent=YES;
  @try { [super sendEvent:event]; } @finally { handlingSendEvent=previous; }

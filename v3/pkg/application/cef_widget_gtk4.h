@@ -28,7 +28,16 @@ static unsigned long wails_cef_widget_xid(GtkWidget* w) {
 static void wails_cef_widget_size(GtkWidget* w,int* width,int* height) { wails_cef_widget_xid(w); int scale=gtk_widget_get_scale_factor(w); *width=gtk_widget_get_width(w)*scale; *height=gtk_widget_get_height(w)*scale; }
 static void wails_cef_resize_browser(unsigned long win,int w,int h) { if(!win)return; Display* d=gdk_x11_display_get_xdisplay(gdk_display_get_default()); XResizeWindow(d,win,w,h); XFlush(d); }
 static int wails_cef_query_pointer(GtkWidget* w,int* btn,int* x,int* y) { Display* d=cef_display(w); if(!d)return 0; Window root,child; int wx,wy; unsigned int mask; if(!XQueryPointer(d,DefaultRootWindow(d),&root,&child,x,y,&wx,&wy,&mask))return 0; *btn=(mask&Button1Mask)?1:(mask&Button2Mask)?2:(mask&Button3Mask)?3:0; return 1; }
-static int wails_cef_toplevel_has_xfocus(GtkWidget* w) { Display* d=cef_display(w); Window top=cef_surface(w),focus; int revert; if(!d||!top)return 0; XGetInputFocus(d,&focus,&revert); return focus==top; }
+static int wails_cef_toplevel_has_xfocus(GtkWidget* w) {
+ Display* d=cef_display(w); Window top=cef_surface(w),focus; int revert;
+ if(!d||!top)return 0; XGetInputFocus(d,&focus,&revert);
+ if(focus==top)return 1;
+ if(focus==None||focus==PointerRoot)return 0;
+ XWindowAttributes a; if(!XGetWindowAttributes(d,focus,&a)||a.class!=InputOnly)return 0;
+ Window root,parent,*children=NULL; unsigned int count;
+ int ok=XQueryTree(d,focus,&root,&parent,&children,&count);
+ if(children)XFree(children); return ok&&parent==top;
+}
 static void wails_cef_focus_browser(unsigned long host) {
  if(!host)return; Display* d=gdk_x11_display_get_xdisplay(gdk_display_get_default()); Window root,parent,*children=NULL; unsigned int n=0;
  if(XQueryTree(d,host,&root,&parent,&children,&n)) { for(unsigned int i=0;i<n;i++) { XWindowAttributes a; if(XGetWindowAttributes(d,children[i],&a)&&a.map_state==IsViewable&&a.width>1){XSetInputFocus(d,children[i],RevertToParent,CurrentTime);break;} } }

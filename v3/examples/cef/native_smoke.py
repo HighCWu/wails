@@ -52,10 +52,10 @@ with log.open('w') as output:
         assert Counter(screenshot('rpc').getdata())[(0,255,0)]>200000
         ui.keyDown('ctrl');time.sleep(.15);ui.press('m');ui.keyUp('ctrl')
         wait_log('CEF_SMOKE_EXECJS main')
-        click(308,223);wait_log('main:size:1000x700')
+        click(260,223);wait_log('main:size:1000x700')
         screenshot('resized')
         # Open DevTools, return to the host content and request graceful exit.
-        click(392,223);click(438,164);time.sleep(2);screenshot('devtools')
+        click(334,223);click(438,164);time.sleep(2);screenshot('devtools')
         app.wait(timeout=30)
         assert app.returncode==0, app.returncode
         text=log.read_text(errors='replace')

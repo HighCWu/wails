@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -83,7 +84,7 @@ func startDesktopCEF(app *App) error {
 				acc.Modifiers = append(acc.Modifiers, SuperKey)
 			}
 			var ok bool
-			acc.Key, ok = VirtualKeyCodes[uint(key)]
+			acc.Key, ok = cefNativeKey(key)
 			if !ok {
 				return false
 			}
@@ -199,4 +200,16 @@ func (e *desktopCEFEngine) close() {
 		delete(desktopCEFEngines, e.id)
 		e.finishClose()
 	}
+}
+
+// CEF supplies Windows virtual-key codes on both Win32 and Cocoa.
+func cefNativeKey(key uint32) (string, bool) {
+	if key >= 0x41 && key <= 0x5a || key >= 0x30 && key <= 0x39 {
+		return strings.ToLower(string(rune(key))), true
+	}
+	if key >= 0x70 && key <= 0x87 {
+		return fmt.Sprintf("f%d", key-0x6f), true
+	}
+	value, ok := map[uint32]string{8: "backspace", 9: "tab", 13: "return", 27: "escape", 32: "space", 33: "pageup", 34: "pagedown", 35: "end", 36: "home", 37: "left", 38: "up", 39: "right", 40: "down", 45: "insert", 46: "delete", 186: ";", 187: "=", 188: ",", 189: "-", 190: ".", 191: "/", 192: "`", 219: "[", 220: "\\", 221: "]", 222: "'"}[key]
+	return value, ok
 }
