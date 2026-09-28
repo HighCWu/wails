@@ -80,15 +80,25 @@ if a.suite:
             command += ["--helper", str(a.helper)]
         if a.hardware_media:
             command += ["--hardware-media"]
-        try:
-            result = subprocess.run(command, timeout=300)
-            results[scenario] = "passed" if result.returncode == 0 else "failed"
-        except subprocess.TimeoutExpired:
-            results[scenario] = "timed out"
-        finally:
-            # A timed-out scenario leaves its app (and any open native
-            # dialog) running, which would steal the next scenario's
-            # input. Kill orphans by executable name.
+        # One clean retry per scenario: hosted-runner input automation has
+        # one-off focus/click races (a missed button, a first-run prompt),
+        # and a fresh app process resolves them. Real defects fail both
+        # attempts; retries are recorded, never hidden.
+        verdict = "failed"
+        for attempt in (1, 2):
+            try:
+                result = subprocess.run(command, timeout=300)
+                if result.returncode == 0:
+                    verdict = "passed" if attempt == 1 else "passed (retry)"
+                    break
+                verdict = "failed"
+            except subprocess.TimeoutExpired:
+                verdict = "timed out"
+            if attempt == 1:
+                print(f"RETRY {scenario} after {verdict}", flush=True)
+            # A failed attempt leaves its app (and any open native dialog)
+            # running, which would steal the retry's input. Kill orphans
+            # by executable name.
             exe = str(a.binary)
             if sys.platform == "win32":
                 subprocess.run(["taskkill", "/F", "/IM", os.path.basename(exe)],
@@ -96,6 +106,7 @@ if a.suite:
             else:
                 subprocess.run(["pkill", "-9", "-f", exe], capture_output=True)
             time.sleep(1)
+        results[scenario] = verdict
     (a.output / "results.json").write_text(json.dumps(results, indent=2))
     print(json.dumps(results, indent=2), flush=True)
     raise SystemExit(0 if all(v == "passed" for v in results.values()) else 1)
