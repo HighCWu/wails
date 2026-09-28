@@ -498,8 +498,12 @@ with log.open("w") as output:
                 # Fresh runner accounts raise a "Do you want to enable
                 # Dictation?" prompt the first time a text field gets focus
                 # after the microphone permission was granted. It swallows
-                # typing and shortcuts; click its "Not Now" button through
-                # System Events, falling back to Escape.
+                # typing and shortcuts. Click its "Not Now" button through
+                # System Events; if scripting is unavailable, click the
+                # prompt's fixed on-screen spot — with no prompt present
+                # that point is empty app content, which is why there is
+                # deliberately NO Escape fallback (it would cancel a just
+                # opened chooser).
                 script = '''
                 tell application "System Events"
                     repeat with p in (application processes whose visible is true)
@@ -523,7 +527,11 @@ with log.open("w") as output:
                 if "clicked" in result.stdout:
                     time.sleep(0.5)
                     return True
-                ui.press("escape")
+                if result.stderr.strip():
+                    print("dismiss_mac_alerts: " + result.stderr.strip(),
+                          flush=True)
+                width, height = ui.size()
+                ui.click(int(width * 0.545), int(height * 0.330))
                 time.sleep(0.5)
                 return False
 
