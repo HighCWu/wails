@@ -583,62 +583,6 @@ with log.open("w") as output:
                        "directory": "dirs", "multiple": "multiple",
                        "save": ".", "save-attached": ".", "overwrite": "."}
 
-            def dismiss_mac_alerts():
-                # Fresh runner accounts raise a "Do you want to enable
-                # Dictation?" prompt the first time a text field gets focus
-                # after the microphone permission was granted. It swallows
-                # typing and shortcuts. Click its "Not Now" button through
-                # System Events; if scripting is unavailable, click the
-                # prompt's fixed on-screen spot — with no prompt present
-                # that point is empty app content, which is why there is
-                # deliberately NO Escape fallback (it would cancel a just
-                # opened chooser).
-                script = '''
-                tell application "System Events"
-                    repeat with pname in {"UserNotificationCenter", "CoreServicesUIAgent", "universalctrl", "NotificationCenter", "TextInputMenuAgent"}
-                        try
-                            tell application process (pname as text)
-                                repeat with w in windows
-                                    try
-                                        if exists button "Not Now" of w then
-                                            click button "Not Now" of w
-                                            return "clicked"
-                                        end if
-                                    end try
-                                end repeat
-                            end tell
-                        end try
-                    end repeat
-                    repeat with p in application processes
-                        try
-                            repeat with w in (every window of p)
-                                try
-                                    if exists button "Not Now" of w then
-                                        click button "Not Now" of w
-                                        return "clicked"
-                                    end if
-                                end try
-                            end repeat
-                        end try
-                    end repeat
-                end tell
-                return "none"
-                '''
-                result = subprocess.run(
-                    ["osascript", "-e", script], capture_output=True,
-                    text=True, timeout=20)
-                if result.stderr.strip():
-                    print("dismiss_mac_alerts: " + result.stderr.strip(),
-                          flush=True)
-                # Always finish with a click at the prompt's fixed spot:
-                # on the alert it is the Not Now button, and with no alert
-                # up it is empty app content. Callers re-type afterwards,
-                # so a stray click is harmless either way.
-                width, height = ui.size()
-                ui.click(int(width * 0.545), int(height * 0.330))
-                time.sleep(0.5)
-                return True
-
             def fd_request(case):
                 activate_mac_app()
                 if sys.platform == "darwin" and bundle_id and case in fd_dirs:
