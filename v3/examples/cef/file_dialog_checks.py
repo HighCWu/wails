@@ -92,9 +92,12 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
                 # (Enter confirms); GTK focuses Cancel first, so move left.
                 time.sleep(.8)
                 screenshot('file-overwrite-confirmation')
-                if platform == 'linux':
-                    key('left')
-                key('enter')
+                if platform == 'win32':
+                    # The Confirm Save As box supports Y/N accelerators;
+                    # arrow-key + Enter proved unreliable on runners.
+                    key('y')
+                else:
+                    key('enter')
             answer = result(case)
             assert not answer['error'], answer
             # GTK save dialogs append the active filter extension when the

@@ -251,10 +251,28 @@ with log.open("w") as output:
                 AppKit.NSApplicationActivateIgnoringOtherApps
             )
             time.sleep(0.5)
-        click(100, 164)
-        ui.write("CEF154", interval=0.1)
-        click(290, 164)
-        wait_log('CEF_SMOKE_GREET "CEF154"')
+        # macOS: a preceding scenario can leave focus elsewhere; the first
+        # click may only activate the window. Retry the type-and-greet
+        # sequence, re-activating the app, before failing.
+        greet_attempts = 3 if sys.platform == "darwin" else 1
+        for attempt in range(greet_attempts):
+            click(100, 164)
+            ui.write("CEF154", interval=0.1)
+            click(290, 164)
+            try:
+                wait_log('CEF_SMOKE_GREET "CEF154"', timeout=8)
+                break
+            except AssertionError:
+                if attempt + 1 >= greet_attempts:
+                    raise
+                if sys.platform == "darwin":
+                    import AppKit
+
+                    native_app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(
+                        app.pid)
+                    native_app.activateWithOptions_(
+                        AppKit.NSApplicationActivateIgnoringOtherApps)
+                    time.sleep(0.8)
         time.sleep(1)
         assert Counter(screenshot("rpc").getdata())[(0, 255, 0)] > 200000
         ui.keyDown("ctrl")
