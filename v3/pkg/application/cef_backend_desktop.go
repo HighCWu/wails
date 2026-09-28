@@ -16,7 +16,8 @@ import (
 
 var desktopCEFEngines = map[uint]*desktopCEFEngine{}
 var desktopCEFPumping atomic.Bool
-var desktopCEFPumpActive bool // UI-thread only: native loops can dispatch recursively.
+var desktopCEFPumpActive bool   // UI-thread only: native loops can dispatch recursively.
+var desktopCEFHostStopping bool // UI-thread only; shutdown still pumps browser closes.
 var beginCEFHostWork = func() {}
 var endCEFHostWork = func() {}
 
@@ -156,7 +157,7 @@ func startDesktopCEF(app *App) error {
 				return
 			}
 			InvokeAsync(func() {
-				if !desktopCEFPumping.Load() || desktopCEFPumpActive {
+				if !desktopCEFPumping.Load() || desktopCEFPumpActive || desktopCEFHostStopping {
 					return
 				}
 				desktopCEFPumpActive = true

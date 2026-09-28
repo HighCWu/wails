@@ -7,6 +7,7 @@
 extern int wailsCEFEnabled(void);
 extern bool shouldQuitApplication(void);
 extern void cleanup(void);
+extern void wailsCEFStopHostWork(void);
 int wails_cef_enabled(void) { return wailsCEFEnabled(); }
 static BOOL cefWorkActive;
 static BOOL terminationPending;
@@ -36,6 +37,9 @@ static BOOL terminationPending;
   // do not route its termination through Chromium's delegate.
   if (!shouldQuitApplication())
     return;
+  // Queued host ticks must not start another nested NSApplication run after
+  // stop. CEF shutdown will pump the remaining browser-close callbacks.
+  wailsCEFStopHostWork();
   cleanup();
   [self stop:sender];
   [self postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined

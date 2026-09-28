@@ -18,6 +18,10 @@ import "C"
 import "github.com/wailsapp/wails/v3/pkg/events"
 
 func pumpCEFHost() { C.wails_cef_pump_host() }
+
+//export wailsCEFStopHostWork
+func wailsCEFStopHostWork() { desktopCEFHostStopping = true }
+
 func init() {
 	beginCEFHostWork = func() { C.wails_cef_begin_work() }
 	endCEFHostWork = func() { C.wails_cef_end_work() }
