@@ -31,6 +31,7 @@ type windowsDialog struct {
 }
 
 func (m *windowsDialog) show() {
+	defer enterCEFModalLoop()()
 
 	title := w32.MustStringToUTF16Ptr(m.dialog.Title)
 	message := w32.MustStringToUTF16Ptr(m.dialog.Message)
@@ -256,6 +257,7 @@ func convertFilters(filters []FileFilter) []cfd.FileFilter {
 }
 
 func showCfdDialog(newDlg func() (cfd.Dialog, error), isMultiSelect bool, parentWindow Window) (any, error) {
+	defer enterCEFModalLoop()()
 	dlg, err := newDlg()
 	if err != nil {
 		return nil, err

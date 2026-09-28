@@ -23,13 +23,25 @@ import "C"
 import (
 	"fmt"
 	"github.com/wailsapp/wails/v3/internal/assetserver"
+	"github.com/wailsapp/wails/v3/internal/cef"
 	wailsruntime "github.com/wailsapp/wails/v3/internal/runtime"
 	"github.com/wailsapp/wails/v3/pkg/events"
 	"github.com/wailsapp/wails/v3/pkg/w32"
 )
 
 func pumpCEFHost() { C.cef_pump_host() }
-func init()        { attachCEFWindows = attachWindowsCEF }
+func init() {
+	attachCEFWindows = attachWindowsCEF
+	modalDepth := 0 // UI-thread only, including nested native dialogs.
+	enterCEFModalLoop = func() func() {
+		if !cef.Initialized() {
+			return func() {}
+		}
+		modalDepth++
+		cef.SetOSModalLoop(true)
+		return func() { modalDepth--; cef.SetOSModalLoop(modalDepth != 0) }
+	}
+}
 func attachWindowsCEF(w *windowsWebviewWindow) bool {
 	if globalApplication.webviewBackend != WebviewBackendCEF {
 		return false

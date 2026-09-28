@@ -71,6 +71,7 @@ import "C"
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"unsafe"
 )
@@ -146,6 +147,12 @@ func appOnCommandLine(processType *C.cef_string_t, commandLine *C.cef_command_li
 	}
 	// The Go runtime cannot serve as a zygote host.
 	appendSwitch("no-zygote")
+	if runtime.GOOS == "windows" {
+		// Chromium's native stack sampler cannot unwind Go's switching stacks.
+		// It may fault in ntdll on its profiling thread, including during startup
+		// or shutdown. This disables native metrics sampling, not JS profiling.
+		appendSwitch("disable-stack-profiler")
+	}
 	// Embedded webviews are managed by the host toolkit: Chromium's
 	// native-window occlusion detection misjudges focus/stack changes on
 	// X11 (worst on compositors without a real screen, e.g. Xvfb) and

@@ -243,11 +243,16 @@ try:
         for name, attached in [("dialog", "false"), ("attached", "true")]:
             controls = re.findall(r'main:controls:(\{[^\n]+\})', (out / "application.log").read_text())
             cx, cy = json.loads(controls[-1])[name]
+            before_dialog = set(run("xdotool", "search", "--onlyvisible", "--pid", str(app.pid)).splitlines())
             click(int(cx), int(cy))
             wait_log("CEF_SMOKE_DIALOG opened attached=" + attached)
             time.sleep(1)
             screenshot(name)
-            dialog_id = run("xdotool", "search", "--onlyvisible", "--name", "^CEF smoke dialog$").strip().splitlines()[-1]
+            # GTK4's upstream dialog uses a heading label, without an X title.
+            candidates = set(run("xdotool", "search", "--onlyvisible", "--pid", str(app.pid)).splitlines()) - before_dialog
+            dialogs = [wid for wid in candidates if "_NET_WM_WINDOW_TYPE_NORMAL" in run("xprop", "-id", wid, "_NET_WM_WINDOW_TYPE") or "_NET_WM_WINDOW_TYPE_DIALOG" in run("xprop", "-id", wid, "_NET_WM_WINDOW_TYPE")]
+            assert len(dialogs) == 1, dialogs
+            dialog_id = dialogs[0]
             run("xdotool", "windowactivate", "--sync", dialog_id)
             run("xdotool", "key", "Return")
             wait_log("CEF_SMOKE_DIALOG accepted attached=" + attached)

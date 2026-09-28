@@ -47,6 +47,9 @@ static wcef_execute_process_fn g_execute_process;
 static wcef_initialize_fn g_initialize;
 static wcef_shutdown_fn g_shutdown;
 static wcef_do_work_fn g_do_work;
+#if defined(OS_WIN)
+static void (*g_set_osmodal_loop)(int);
+#endif
 static wcef_get_exit_code_fn g_get_exit_code;
 static wcef_create_browser_fn g_create_browser;
 static wcef_string_utf8_to_utf16_fn g_str_u8u16;
@@ -106,6 +109,10 @@ int wcef_load(const char* libcef_path) {
   g_execute_process = (wcef_execute_process_fn)wcef_sym("cef_execute_process");
   g_initialize = (wcef_initialize_fn)wcef_sym("cef_initialize");
   g_shutdown = (wcef_shutdown_fn)wcef_sym("cef_shutdown");
+#if defined(OS_WIN)
+  g_set_osmodal_loop = (void (*)(int))wcef_sym("cef_set_osmodal_loop");
+  if (!g_set_osmodal_loop) return 0;
+#endif
   g_do_work = (wcef_do_work_fn)wcef_sym("cef_do_message_loop_work");
   g_get_exit_code = (wcef_get_exit_code_fn)wcef_sym("cef_get_exit_code");
   g_create_browser = (wcef_create_browser_fn)wcef_sym("cef_browser_host_create_browser");
@@ -474,3 +481,7 @@ void wcef_window_parent(cef_window_info_t* info, uintptr_t parent) {
 #endif
 }
 uintptr_t wcef_native_handle(cef_browser_host_t* host) { return (uintptr_t)host->get_window_handle(host); }
+
+#if defined(OS_WIN)
+void wcef_set_osmodal_loop(int active) { g_set_osmodal_loop(active); }
+#endif

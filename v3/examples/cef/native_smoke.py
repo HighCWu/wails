@@ -107,6 +107,8 @@ with socket.socket() as probe:
 env["WAILS_CEF_SWITCHES"] = (
     env.get("WAILS_CEF_SWITCHES", "") + f",remote-debugging-port={debug_port}"
 )
+if a.scenario == "media":
+    env["WAILS_CEF_SWITCHES"] += ",enable-logging=stderr,v=1"
 log = a.output / "application.log"
 source = None
 
