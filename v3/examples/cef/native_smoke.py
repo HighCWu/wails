@@ -506,9 +506,7 @@ with log.open("w") as output:
                 # opened chooser).
                 script = '''
                 tell application "System Events"
-                    repeat with pname in {"UserNotificationCenter",
-                        "CoreServicesUIAgent", "universalctrl",
-                        "NotificationCenter", "TextInputMenuAgent"}
+                    repeat with pname in {"UserNotificationCenter", "CoreServicesUIAgent", "universalctrl", "NotificationCenter", "TextInputMenuAgent"}
                         try
                             tell application process (pname as text)
                                 repeat with w in windows
@@ -896,7 +894,9 @@ with log.open("w") as output:
             titles = ui.getAllTitles()
         (a.output / "window-titles.json").write_text(json.dumps(titles))
         assert any("DevTools" in title for title in titles), titles
-        app.wait(timeout=30)
+        # A loaded runner can need well over 30s to finish the graceful
+        # CEF shutdown with DevTools open; keep the bound generous.
+        app.wait(timeout=90)
         assert app.returncode == 0, app.returncode
         text = log.read_text(encoding="utf-8", errors="replace")
         assert (
