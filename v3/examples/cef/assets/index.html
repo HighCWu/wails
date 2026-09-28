@@ -34,6 +34,7 @@ output.textContent = `Runtime ready; invoke bridge: ${typeof window.chrome?.webv
 document.title = role === 'main' ? 'CEF smoke ready' : `CEF smoke ${role} ready`;
 report('ready');
 document.addEventListener('pointerdown', e => report(`pointer:${e.clientX},${e.clientY}`));
+for (const type of ['dragenter', 'drop']) document.addEventListener(type, e => report(`${type}:${e.clientX},${e.clientY}:types=${Array.from(e.dataTransfer?.types || [])}:enabled=${window._wails?.flags?.enableFileDrop}`), true);
 document.getElementById('overlay').onclick = () => Call.ByName('main.ProbeService.Overlay', true);
 document.getElementById('capture').onclick = () => Call.ByName('main.ProbeService.Overlay', false);
 document.getElementById('close-overlay').onclick = () => Call.ByName('main.ProbeService.CloseOverlay');

@@ -331,6 +331,9 @@ with log.open("w") as output:
             time.sleep(1)
             # The overlay is placed inside the main viewport, over its header. Its
             # mouse policy must route a real OS click to the underlying main window.
+            # Activate the underlying window first: AppKit otherwise consumes
+            # its first click for activation, independently of mouse passthrough.
+            click(800, 600)
             tx, ty = left + 120, top + 90
             before = log.read_text(encoding="utf-8", errors="replace").count(
                 "main:pointer:"
@@ -397,6 +400,8 @@ with log.open("w") as output:
                     )
                 time.sleep(0.1)
             sx, sy = json.loads(source_position.read_text())
+            ui.click(sx, sy)
+            time.sleep(0.5)
 
             def drag_file(x, y):
                 ui.moveTo(sx, sy)

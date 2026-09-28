@@ -16,9 +16,14 @@ root.attributes("-topmost", True)
 label = tk.Label(root, text="Drag test file", bg="orange")
 label.pack(fill="both", expand=True)
 label.drag_source_register(1, DND_FILES)
-label.dnd_bind(
-    "<<DragInitCmd>>", lambda e: (COPY, DND_FILES, (str(Path(sys.argv[1]).resolve()),))
-)
+
+
+def begin_drag(event):
+    print("CEF_SMOKE_DRAG_SOURCE started", flush=True)
+    return (COPY, DND_FILES, (str(Path(sys.argv[1]).resolve()),))
+
+
+label.dnd_bind("<<DragInitCmd>>", begin_drag)
 root.update()
 Path(sys.argv[2]).write_text(
     json.dumps([label.winfo_rootx() + 50, label.winfo_rooty() + 40])
