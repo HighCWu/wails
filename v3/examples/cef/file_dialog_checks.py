@@ -103,6 +103,14 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
                 # an existing file. The dialog itself never writes file contents.
                 # The confirmation defaults to Replace/Yes on Cocoa and Win32
                 # (Enter confirms); GTK focuses Cancel first, so move left.
+                if platform == 'win32':
+                    # The Save As box needs a beat to parse the pasted path
+                    # before Save works; a swallowed Enter leaves it open.
+                    # An extra Enter is idempotent — on the confirmation it
+                    # is the default Yes.
+                    for _ in range(2):
+                        time.sleep(1.2)
+                        key('enter')
                 time.sleep(.8)
                 screenshot('file-overwrite-confirmation')
                 if platform == 'win32':

@@ -484,6 +484,25 @@ with log.open("w") as output:
                        "directory": "dirs", "multiple": "multiple",
                        "save": ".", "save-attached": ".", "overwrite": "."}
 
+            def dismiss_mac_alerts():
+                # Fresh runner accounts raise first-run prompts (Dictation
+                # after the media scenario granted the microphone) that
+                # steal focus mid-scenario. Escape picks their safe default.
+                if sys.platform != "darwin":
+                    return False
+                import Quartz
+
+                windows = Quartz.CGWindowListCopyWindowInfo(
+                    Quartz.kCGWindowListOptionOnScreenOnly,
+                    Quartz.kCGNullWindowID)
+                for w in windows:
+                    name = str(w.get(Quartz.kCGWindowName) or "")
+                    if "Dictation" in name or "enable Dictation" in name:
+                        ui.press("escape")
+                        time.sleep(0.5)
+                        return True
+                return False
+
             def fd_request(case):
                 if sys.platform == "darwin" and bundle_id and case in fd_dirs:
                     # NSOpenPanel/NSSavePanel reopen at their remembered
@@ -501,11 +520,21 @@ with log.open("w") as output:
                 deadline = time.monotonic() + 10
                 while fd_is_open() and time.monotonic() < deadline:
                     time.sleep(0.2)
+                dismiss_mac_alerts()
                 click(*control("main", "name"))
                 ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
                 ui.press("backspace")
                 ui.write(case, interval=0.05)
-                time.sleep(.3)
+                time.sleep(0.3)
+                if dismiss_mac_alerts():
+                    # A first-run system prompt (Dictation after the media
+                    # scenario granted the microphone) stole focus mid-
+                    # typing; redo the input with the alert gone.
+                    click(*control("main", "name"))
+                    ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
+                    ui.press("backspace")
+                    ui.write(case, interval=0.05)
+                    time.sleep(0.3)
                 ui.press("f9")
 
             def fd_opened(case):
