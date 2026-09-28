@@ -25,11 +25,11 @@ p.add_argument(
         "composition",
         "media",
         "dialogs",
+        "file-dialogs",
         "multiwindow",
         "mouse",
         "drop",
         "upstream",
-        "file-dialogs",
     ],
     default="all",
 )
@@ -56,11 +56,11 @@ if a.suite:
         "composition",
         "media",
         "dialogs",
+        "file-dialogs",
         "multiwindow",
         "mouse",
         "drop",
         "upstream",
-        "file-dialogs",
     ]:
         command = [
             sys.executable,
