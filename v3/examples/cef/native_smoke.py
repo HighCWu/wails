@@ -345,6 +345,16 @@ with log.open("w") as output:
                     break
                 time.sleep(0.5)
             assert fresh, "auto-reload did not spawn a replacement renderer"
+            # The window title survives the renderer's death, so gate on
+            # the reloaded runtime reporting ready again before typing.
+            ready_deadline = time.monotonic() + 30
+            while time.monotonic() < ready_deadline:
+                if log.read_text(encoding="utf-8", errors="replace").count(
+                        "main:ready") >= 2:
+                    break
+                time.sleep(0.2)
+            assert log.read_text(encoding="utf-8", errors="replace").count(
+                "main:ready") >= 2, "reloaded page never became ready"
             click(*control("main", "name"))
             ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
             ui.press("backspace")

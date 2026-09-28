@@ -564,12 +564,26 @@ try:
                 break
             time.sleep(.1)
         assert fresh, "auto-reload did not spawn a replacement renderer"
+        # The window title survives the renderer's death (it is GTK
+        # state, not page state), so readiness must come from the page
+        # itself: wait for the reloaded runtime to report in again.
+        ready_deadline = time.monotonic() + 30
+        while time.monotonic() < ready_deadline:
+            if log_path.read_text().count("main:ready") >= 2:
+                break
+            time.sleep(.2)
+        assert log_path.read_text().count("main:ready") >= 2, \
+            "reloaded page never became ready"
         run("xdotool", "windowactivate", "--sync", window)
         click(100, 164)
         run("xdotool", "key", "ctrl+a", "BackSpace")
         run("xdotool", "type", "--clearmodifiers", "CEF154")
         click(290, 164)
-        wait_title(window, "CEF smoke RPC OK")
+        greet_deadline = time.monotonic() + 30
+        while time.monotonic() < greet_deadline:
+            if log_path.read_text().count('CEF_SMOKE_GREET "CEF154"') >= 2:
+                break
+            time.sleep(.2)
         final_log = log_path.read_text()
         assert final_log.count('CEF_SMOKE_GREET "CEF154"') >= 2, \
             "RPC did not recover after the crash"
