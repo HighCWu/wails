@@ -17,6 +17,18 @@ import (
 var desktopCEFEngines = map[uint]*desktopCEFEngine{}
 var desktopCEFPumping atomic.Bool
 
+// CEF close callbacks run on the UI thread. Defer native destruction until the
+// callback returns, and keep draining after Wails destroys its dispatch window.
+var desktopCEFCloseTasks []func()
+
+func drainDesktopCEFCloseTasks() {
+	tasks := desktopCEFCloseTasks
+	desktopCEFCloseTasks = nil
+	for _, task := range tasks {
+		task()
+	}
+}
+
 func init() {
 	runtime.LockOSThread()
 	if cef.IsSubprocess() {
@@ -40,7 +52,7 @@ func startDesktopCEF(app *App) error {
 	}
 	cef.SetStateHooks(&cef.State{
 		DispatchMain: func(fn func()) { InvokeAsync(fn) },
-		PumpHostLoop: pumpCEFHost,
+		PumpHostLoop: func() { pumpCEFHost(); drainDesktopCEFCloseTasks() },
 		OnWindowMessage: func(id uint, message, origin string) {
 			windowMessageBuffer <- &windowMessage{windowId: id, message: message, originInfo: &OriginInfo{Origin: origin}}
 		},
@@ -61,8 +73,16 @@ func startDesktopCEF(app *App) error {
 				w.SetTitle(title)
 			}
 		},
+		OnBrowserClosing: func(id uint) bool {
+			if e := desktopCEFEngines[id]; e != nil {
+				e.closing = true
+				desktopCEFCloseTasks = append(desktopCEFCloseTasks, e.closeNative)
+				return true
+			}
+			return false
+		},
 		OnBrowserClosed: func(id uint) {
-			InvokeAsync(func() {
+			desktopCEFCloseTasks = append(desktopCEFCloseTasks, func() {
 				if e := desktopCEFEngines[id]; e != nil {
 					delete(desktopCEFEngines, id)
 					e.finishClose()
@@ -137,6 +157,7 @@ func startDesktopCEF(app *App) error {
 					return
 				}
 				cef.DoMessageLoopWork()
+				drainDesktopCEFCloseTasks()
 				for _, e := range desktopCEFEngines {
 					if !e.closing && e.syncNative != nil {
 						e.syncNative()
@@ -155,6 +176,7 @@ type desktopCEFEngine struct {
 	width, height int
 	background    uint32
 	closing       bool
+	closeNative   func()
 	finishClose   func()
 	loaded        func()
 	syncNative    func()
@@ -214,6 +236,7 @@ func (e *desktopCEFEngine) close() {
 		e.browser.Close(true)
 	} else {
 		delete(desktopCEFEngines, e.id)
+		e.closeNative()
 		e.finishClose()
 	}
 }

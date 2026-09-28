@@ -35,10 +35,10 @@ func init() {
 			}
 		}
 		e.loaded = func() { w.parent.emit(events.Mac.WebViewDidFinishNavigation) }
+		e.closeNative = func() { C.wails_cef_close_window(w.nsWindow) }
 		e.finishClose = func() {
 			w.parent.markAsDestroyed()
 			clearWindowDragCache(w.parent.id)
-			C.wails_cef_close_window(w.nsWindow)
 			w.nsWindow = nil
 		}
 		desktopCEFEngines[e.id] = e

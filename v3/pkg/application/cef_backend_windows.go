@@ -7,7 +7,7 @@ package application
 static void cef_pump_host(void) {
  MSG msg;
  for (int i=0;i<32 && PeekMessageW(&msg,NULL,0,0,PM_NOREMOVE);i++) {
-  if(msg.message==WM_QUIT)break;
+  if(msg.message==WM_QUIT){PeekMessageW(&msg,NULL,0,0,PM_REMOVE);continue;}
   PeekMessageW(&msg,NULL,0,0,PM_REMOVE); TranslateMessage(&msg); DispatchMessageW(&msg);
  }
 }
@@ -40,13 +40,13 @@ func attachWindowsCEF(w *windowsWebviewWindow) bool {
 	colour := w.parent.options.BackgroundColour
 	r := w32.GetClientRect(w.hwnd)
 	e := &desktopCEFEngine{id: w.parent.id, native: uintptr(w.hwnd), width: int(r.Right), height: int(r.Bottom), background: uint32(colour.Alpha)<<24 | uint32(colour.Red)<<16 | uint32(colour.Green)<<8 | uint32(colour.Blue)}
+	e.closeNative = func() { w32.DestroyWindow(w.hwnd) }
 	e.finishClose = func() {
 		if w.parentHWND != 0 {
 			w32.EnableWindow(w.parentHWND, true)
 			w.parentHWND = 0
 		}
 		w.parent.markAsDestroyed()
-		w32.DestroyWindow(w.hwnd)
 		getNativeApplication().unregisterWindow(w)
 	}
 	e.syncNative = func() {

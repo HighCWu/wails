@@ -428,8 +428,16 @@ func lifeSpanAfterCreated(browser *C.cef_browser_t, client *browserClient) {
 // lifeSpanDoClose implements cef_life_span_handler_t.do_close: let CEF
 // close the browser (and its native child window) normally.
 func lifeSpanDoClose(browser *C.cef_browser_t, client *browserClient) C.int {
-	// CEF Linux closes its own child via WM_DELETE_WINDOW before notifying
-	// OnBeforeClose. The GTK parent must stay alive until that notification.
+	if value, ok := browsersByID.Load(int(C.wcef_browser_get_identifier(browser))); ok {
+		b := value.(*Browser)
+		if primary, ok := browsersByWin.Load(b.windowID); ok && primary == b {
+			if st := state.Load(); st != nil && st.OnBrowserClosing != nil {
+				return gtkBoolC(st.OnBrowserClosing(b.windowID))
+			}
+		}
+	}
+	// Linux lets CEF close its X11 child; native desktop hosts must instead
+	// destroy the top-level window once DoClose permits it (CEF contract).
 	return 0
 }
 

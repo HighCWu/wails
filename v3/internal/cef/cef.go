@@ -60,6 +60,10 @@ type State struct {
 	// OnTitleChange reports a document title change.
 	OnTitleChange func(windowID uint, title string)
 
+	// OnBrowserClosing handles the native top-level close after CEF approves it.
+	// Return true when the host will destroy its window itself.
+	OnBrowserClosing func(windowID uint) bool
+
 	// OnBrowserClosed reports that a browser was destroyed (window closed).
 	OnBrowserClosed func(windowID uint)
 

@@ -134,11 +134,11 @@ void* windowNew(unsigned int id, int width, int height, bool fraudulentWebsiteWa
 		[window setTitleVisibility:NSWindowTitleHidden];
 	}
 
-	#ifdef WAILS_CEF
- extern int wails_cef_enabled(void);
- if (wails_cef_enabled()) return window;
+#ifdef WAILS_CEF
+	extern int wails_cef_enabled(void);
+	if (wails_cef_enabled()) return window;
 #endif
- // Embed wkwebview in window
+	// Embed wkwebview in window
 	NSRect frame = NSMakeRect(0, 0, width, height);
 	WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
 	[config autorelease];
