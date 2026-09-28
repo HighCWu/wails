@@ -494,28 +494,6 @@ with log.open("w") as output:
                        "directory": "dirs", "multiple": "multiple",
                        "save": ".", "save-attached": ".", "overwrite": "."}
 
-            def dismiss_mac_alerts():
-                # Fresh runner accounts raise first-run prompts (Dictation
-                # after the media scenario granted the microphone) that
-                # steal focus mid-scenario. The alert window itself has no
-                # CGWindowName; UserNotificationCenter/CoreServicesUIAgent
-                # own them, and Escape picks their safe default.
-                if sys.platform != "darwin":
-                    return False
-                import Quartz
-
-                windows = Quartz.CGWindowListCopyWindowInfo(
-                    Quartz.kCGWindowListOptionOnScreenOnly,
-                    Quartz.kCGNullWindowID)
-                for w in windows:
-                    owner = str(w.get(Quartz.kCGWindowOwnerName) or "")
-                    if owner in ("UserNotificationCenter", "CoreServicesUIAgent",
-                                 "TextInputMenuAgent"):
-                        ui.press("escape")
-                        time.sleep(0.5)
-                        return True
-                return False
-
             def fd_request(case):
                 if sys.platform == "darwin" and bundle_id and case in fd_dirs:
                     # NSOpenPanel/NSSavePanel reopen at their remembered
@@ -539,12 +517,17 @@ with log.open("w") as output:
                 ui.press("backspace")
                 ui.write(case, interval=0.05)
                 time.sleep(0.3)
-                if dismiss_mac_alerts():
-                    # A first-run system prompt (Dictation after the media
-                    # scenario granted the microphone) stole focus mid-
-                    # typing; redo the input with the alert gone.
+                if sys.platform == "darwin":
+                    # Fresh runner accounts raise first-run prompts
+                    # (Dictation, after the media scenario granted the
+                    # microphone) that steal focus mid-typing. They have no
+                    # matchable window name or owner, so just press Escape
+                    # — the alert's safe default — and re-type to undo any
+                    # mangled input. Escape is harmless in the text field.
+                    ui.press("escape")
+                    time.sleep(0.5)
                     click(*control("main", "name"))
-                    ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
+                    ui.hotkey("command", "a")
                     ui.press("backspace")
                     ui.write(case, interval=0.05)
                     time.sleep(0.3)
