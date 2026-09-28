@@ -247,6 +247,8 @@ try:
             wait_log("CEF_SMOKE_DIALOG opened attached=" + attached)
             time.sleep(1)
             screenshot(name)
+            dialog_id = run("xdotool", "search", "--onlyvisible", "--name", "^CEF smoke dialog$").strip().splitlines()[-1]
+            run("xdotool", "windowactivate", "--sync", dialog_id)
             run("xdotool", "key", "Return")
             wait_log("CEF_SMOKE_DIALOG accepted attached=" + attached)
         print("PASS: native top-level and attached dialogs", flush=True)

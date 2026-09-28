@@ -88,6 +88,7 @@ env = dict(
     WAILS_CEF_DIR=str(a.runtime.resolve()),
     WAILS_CEF_LOG_TO_FILE="1",
     CEF_SMOKE_DELAY_QUIT="1",
+    CEF_SMOKE_TRACE_CRASH="1",
 )
 if a.helper:
     env["WAILS_CEF_SUBPROCESS_PATH"] = str(a.helper.resolve())
@@ -127,7 +128,8 @@ def origin():
 def control(role, name):
     wait_log(role + ":controls:")
     matches = re.findall(
-        re.escape(role) + r":controls:(\{[^\n]+\})", log.read_text(errors="replace")
+        re.escape(role) + r":controls:(\{[^\n]+\})",
+        log.read_text(encoding="utf-8", errors="replace"),
     )
     return json.loads(matches[-1])[name]
 
@@ -153,7 +155,7 @@ def window_position(title):
 def wait_log(text, timeout=40):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if text in log.read_text(errors="replace"):
+        if text in log.read_text(encoding="utf-8", errors="replace"):
             return
         if app.poll() is not None:
             raise AssertionError(f"Application exited: {app.returncode}")
@@ -195,6 +197,18 @@ with log.open("w") as output:
             ui.click(left + x, top + y)
             time.sleep(0.3)
 
+        if sys.platform == "darwin":
+            import AppKit
+
+            native_app = (
+                AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(
+                    app.pid
+                )
+            )
+            native_app.activateWithOptions_(
+                AppKit.NSApplicationActivateIgnoringOtherApps
+            )
+            time.sleep(0.5)
         click(100, 164)
         ui.write("CEF154", interval=0.1)
         click(290, 164)
@@ -255,7 +269,9 @@ with log.open("w") as output:
         # Wails SetSize is the outer window size on Windows. Account for native
         # frame decorations instead of requiring a 1000x700 browser viewport.
         wait_log("main:size:")
-        sizes = re.findall(r"main:size:(\d+)x(\d+)", log.read_text(errors="replace"))
+        sizes = re.findall(
+            r"main:size:(\d+)x(\d+)", log.read_text(encoding="utf-8", errors="replace")
+        )
         assert any(
             950 <= int(w) <= 1000 and 650 <= int(h) <= 700 for w, h in sizes
         ), sizes
@@ -314,16 +330,28 @@ with log.open("w") as output:
             # The overlay is placed inside the main viewport, over its header. Its
             # mouse policy must route a real OS click to the underlying main window.
             tx, ty = left + 120, top + 90
-            before = log.read_text(errors="replace").count("main:pointer:")
+            before = log.read_text(encoding="utf-8", errors="replace").count(
+                "main:pointer:"
+            )
             ui.click(tx, ty)
             time.sleep(0.5)
-            assert log.read_text(errors="replace").count("main:pointer:") > before
+            assert (
+                log.read_text(encoding="utf-8", errors="replace").count("main:pointer:")
+                > before
+            )
             click(*control("main", "capture"))
             time.sleep(0.5)
-            before = log.read_text(errors="replace").count("overlay:pointer:")
+            before = log.read_text(encoding="utf-8", errors="replace").count(
+                "overlay:pointer:"
+            )
             ui.click(tx, ty)
             time.sleep(0.5)
-            assert log.read_text(errors="replace").count("overlay:pointer:") > before
+            assert (
+                log.read_text(encoding="utf-8", errors="replace").count(
+                    "overlay:pointer:"
+                )
+                > before
+            )
             screenshot("mouse-policy")
             ox, oy = window_position("CEF smoke overlay ready")
             ui.moveTo(tx, ty)
@@ -379,11 +407,16 @@ with log.open("w") as output:
 
             drag_file(100, 295)
             wait_log("CEF_SMOKE_DROP main")
-            text = log.read_text(errors="replace")
+            text = log.read_text(encoding="utf-8", errors="replace")
             assert "拖放测试.txt" in text and 'ElementID:"drop"' in text
             count = text.count("CEF_SMOKE_DROP")
             drag_file(100, 380)
-            assert log.read_text(errors="replace").count("CEF_SMOKE_DROP") == count
+            assert (
+                log.read_text(encoding="utf-8", errors="replace").count(
+                    "CEF_SMOKE_DROP"
+                )
+                == count
+            )
             screenshot("file-drop")
             source.terminate()
             source.wait(timeout=10)
@@ -410,7 +443,7 @@ with log.open("w") as output:
         assert any("DevTools" in title for title in titles), titles
         app.wait(timeout=30)
         assert app.returncode == 0, app.returncode
-        text = log.read_text(errors="replace")
+        text = log.read_text(encoding="utf-8", errors="replace")
         assert (
             "CEF_SMOKE_EXIT" in text
             and "live browsers" not in text
