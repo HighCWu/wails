@@ -524,16 +524,24 @@ with log.open("w") as output:
                 result = subprocess.run(
                     ["osascript", "-e", script], capture_output=True,
                     text=True, timeout=20)
-                if "clicked" in result.stdout:
-                    time.sleep(0.5)
-                    return True
+                if result.returncode == 0:
+                    # Scripting worked: trust its verdict — clicking a fixed
+                    # spot here would land inside the chooser once it is up
+                    # and deselect the pinned row.
+                    if "clicked" in result.stdout:
+                        time.sleep(0.5)
+                        return True
+                    return False
+                # Scripting unavailable: fall back to a click at the
+                # prompt's fixed on-screen spot — with no prompt present
+                # that point is empty app content.
                 if result.stderr.strip():
                     print("dismiss_mac_alerts: " + result.stderr.strip(),
                           flush=True)
                 width, height = ui.size()
                 ui.click(int(width * 0.545), int(height * 0.330))
                 time.sleep(0.5)
-                return False
+                return True
 
             def fd_request(case):
                 if sys.platform == "darwin" and bundle_id and case in fd_dirs:
@@ -566,12 +574,6 @@ with log.open("w") as output:
                     ui.write(case, interval=0.05)
                     time.sleep(0.3)
                 ui.press("f9")
-                if sys.platform == "darwin":
-                    # The prompt can also appear between typing and F9,
-                    # swallowing the shortcut; dismiss and retry once.
-                    time.sleep(2)
-                    if dismiss_mac_alerts():
-                        ui.press("f9")
 
             def fd_opened(case):
                 # The native chooser steals focus. On Windows read the
