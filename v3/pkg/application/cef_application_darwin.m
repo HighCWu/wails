@@ -1,4 +1,4 @@
-// go:build darwin && cgo && wails_cef && !ios && !server
+//go:build darwin && cgo && wails_cef && !ios && !server
 
 #import <Cocoa/Cocoa.h>
 #include <stdint.h>

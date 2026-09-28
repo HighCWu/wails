@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   compatibility:
-    # These are system-backend/unsupported-CEF checks, not native CEF ports.
+    # Check both the default backend and opt-in CEF build on native runners.
     name: Backend compatibility (${{ matrix.os }}, ${{ matrix.tags || 'default' }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -112,6 +112,9 @@ jobs:
         working-directory: v3
         run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --runtime "$RUNNER_TEMP/cef-runtime" --switches "use-gl=angle,use-angle=swiftshader,enable-unsafe-swiftshader" --ime --output "$RUNNER_TEMP/cef-results/ime"
       - name: Test system backend in CEF build
+        env:
+          # Hosted runners disallow the network namespace used by bubblewrap.
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
         working-directory: v3
         run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --backend system --output "$RUNNER_TEMP/cef-results/system"
       - name: Upload diagnostic logs and screenshots

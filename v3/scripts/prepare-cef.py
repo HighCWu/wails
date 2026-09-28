@@ -54,13 +54,21 @@ else:
         symlinks=True,
         dirs_exist_ok=True,
     )
-    helper = framework / "CEFSmoke Helper.app" / "Contents"
-    (helper / "MacOS").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(a.binary, helper / "MacOS" / "CEFSmoke Helper")
-    for directory, executable, identifier, background in [
-        (contents, "CEFSmoke", "io.wails.cefsmoke", False),
-        (helper, "CEFSmoke Helper", "io.wails.cefsmoke.helper", True),
+    bundles = [(contents, "CEFSmoke", "io.wails.cefsmoke", False)]
+    # Chromium selects role-specific helpers on macOS (notably the JIT-enabled
+    # renderer). Match cefclient's bundle layout instead of shipping one helper.
+    for suffix, identifier in [
+        ("", "helper"),
+        (" (Renderer)", "helper.renderer"),
+        (" (GPU)", "helper.gpu"),
+        (" (Alerts)", "helper.alerts"),
     ]:
+        executable = "CEFSmoke Helper" + suffix
+        helper = framework / (executable + ".app") / "Contents"
+        (helper / "MacOS").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(a.binary, helper / "MacOS" / executable)
+        bundles.append((helper, executable, "io.wails.cefsmoke." + identifier, True))
+    for directory, executable, identifier, background in bundles:
         with (directory / "Info.plist").open("wb") as f:
             plistlib.dump(
                 dict(

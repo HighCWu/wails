@@ -8,6 +8,7 @@ import subprocess
 import time
 import sys
 import shutil
+import re
 import pyautogui as ui
 
 p = argparse.ArgumentParser(description=__doc__)
@@ -90,7 +91,13 @@ with log.open("w") as output:
         ui.keyUp("ctrl")
         wait_log("CEF_SMOKE_EXECJS main")
         click(260, 223)
-        wait_log("main:size:1000x700")
+        # Wails SetSize is the outer window size on Windows. Account for native
+        # frame decorations instead of requiring a 1000x700 browser viewport.
+        wait_log("main:size:")
+        sizes = re.findall(r"main:size:(\d+)x(\d+)", log.read_text(errors="replace"))
+        assert any(
+            950 <= int(w) <= 1000 and 650 <= int(h) <= 700 for w, h in sizes
+        ), sizes
         screenshot("resized")
         # Open DevTools, return to the host content and request graceful exit.
         click(334, 223)
