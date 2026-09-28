@@ -1,0 +1,122 @@
+name: CEF tests v3
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'v3/**'
+      - '.github/workflows/cef-test-v3.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'v3/**'
+      - '.github/workflows/cef-test-v3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    # These are system-backend/unsupported-CEF checks, not native CEF ports.
+    name: Backend compatibility (${{ matrix.os }}, ${{ matrix.tags || 'default' }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        tags: ['', wails_cef]
+        include:
+          - os: ubuntu-latest
+            tags: gtk3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v3/go.mod
+          cache-dependency-path: v3/go.sum
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          ./.github/scripts/prune-runner-apt-sources.sh
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libwebkitgtk-6.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev libwayland-dev build-essential pkg-config xvfb dbus-x11
+      - name: Build native application and test backend selection
+        working-directory: v3
+        shell: bash
+        env:
+          BUILD_TAGS: ${{ matrix.tags }}
+        run: |
+          go build -tags "$BUILD_TAGS" ./pkg/application ./examples/plain
+          if [ "$RUNNER_OS" = Linux ]; then
+            dbus-run-session -- xvfb-run -a go test -tags "$BUILD_TAGS" ./pkg/application -run 'Test(ParseWebviewBackend|ResolveWebviewBackend|WebviewBackend)' -count=1
+          else
+            go test -tags "$BUILD_TAGS" ./pkg/application -run 'Test(ParseWebviewBackend|ResolveWebviewBackend|WebviewBackend)' -count=1
+          fi
+
+  linux_cef:
+    name: CEF 154 GTK3 integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CEF_ARCHIVE: cef_binary_154.0.28+g564dd6c+chromium-154.0.8037.58_linux64_minimal
+      # Published linux64 minimal checksum from cef-builds.spotifycdn.com/index.json.
+      CEF_SHA1: 5dfe49d73b0d3635354c705938e26074f287b1de
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v3/go.mod
+          cache-dependency-path: v3/go.sum
+      - name: Install GTK3 and private-display test dependencies
+        run: |
+          ./.github/scripts/prune-runner-apt-sources.sh
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config libnss3 libasound2t64 libgbm1 libgl1-mesa-dri xvfb openbox xdotool x11-utils imagemagick xclip python3-pil python3-gi gir1.2-gtk-3.0 gir1.2-ibus-1.0 ibus dbus-x11
+      - name: Cache pinned CEF archive
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cef-download
+          key: cef-linux64-${{ env.CEF_SHA1 }}
+      - name: Verify and extract CEF runtime
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/cef-download" "$RUNNER_TEMP/cef-runtime"
+          archive="$RUNNER_TEMP/cef-download/$CEF_ARCHIVE.tar.bz2"
+          if [ ! -f "$archive" ]; then
+            curl --fail --location --retry 3 "https://cef-builds.spotifycdn.com/$CEF_ARCHIVE.tar.bz2" -o "$archive"
+          fi
+          echo "$CEF_SHA1  $archive" | sha1sum --check --strict
+          tar -xjf "$archive" -C "$RUNNER_TEMP" "$CEF_ARCHIVE/Release" "$CEF_ARCHIVE/Resources"
+          cp -a "$RUNNER_TEMP/$CEF_ARCHIVE/Release/." "$RUNNER_TEMP/cef-runtime/"
+          cp -a "$RUNNER_TEMP/$CEF_ARCHIVE/Resources/." "$RUNNER_TEMP/cef-runtime/"
+      - name: Build and unit test CEF configuration
+        working-directory: v3
+        run: |
+          go build -tags 'gtk3 wails_cef' -o "$RUNNER_TEMP/cef-smoke" ./examples/cef
+          dbus-run-session -- xvfb-run -a go test -tags 'gtk3 wails_cef' ./pkg/application ./internal/cef -timeout 5m -skip TestService
+      - name: Test interaction, permissions, file drops and DevTools shutdown
+        working-directory: v3
+        run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --runtime "$RUNNER_TEMP/cef-runtime" --extended --devtools --output "$RUNNER_TEMP/cef-results/extended"
+      - name: Test Chinese IME composition
+        working-directory: v3
+        run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --runtime "$RUNNER_TEMP/cef-runtime" --ime --output "$RUNNER_TEMP/cef-results/ime"
+      - name: Test system backend in CEF build
+        working-directory: v3
+        run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --backend system --output "$RUNNER_TEMP/cef-results/system"
+      - name: Upload diagnostic logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cef-gtk3-results
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/cef-results/**/*.log
+            ${{ runner.temp }}/cef-results/**/*.png
+            ${{ runner.temp }}/cef-results/**/*.txt

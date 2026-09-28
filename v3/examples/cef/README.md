@@ -76,3 +76,19 @@ embedded under the GTK drawing area, and a GTK-driven CEF message loop.
 Frameless gestures follow pointer coordinates while Chromium owns its native
 grab; window-manager snapping is not implemented by that movement path.
 Hardware media devices and GTK4 remain outside these tests.
+
+## GitHub Actions
+
+`.github/workflows/cef-test-v3.yml` runs on v3 pull requests, master pushes,
+and manual dispatches. It follows the v3 workflows' checkout/setup-go,
+Linux dependency installation, native runner matrix and artifact conventions.
+The CEF job downloads the exact minimal distribution above, checks its published
+checksum, and runs the extended, IME and system-backend regressions on private
+Xvfb displays. Diagnostic artifacts exclude browser caches and runtime binaries.
+
+Separate Windows, macOS and Linux GTK4 jobs build the application and plain
+example both with and without `wails_cef`, and test backend selection. Linux
+GTK3 also has an untagged compatibility job. On unsupported configurations,
+forcing CEF must return an error and auto/system must retain the system backend.
+These jobs do not imply CEF rendering support on Windows, macOS or GTK4; the
+existing upstream workflows remain responsible for their broader test suites.
