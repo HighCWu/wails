@@ -471,6 +471,13 @@ try:
                            stderr=subprocess.DEVNULL, check=True)
             run("xdotool", "key", "ctrl+v")
 
+        def fd_is_open():
+            result = subprocess.run(
+                ["xdotool", "search", "--onlyvisible", "--name",
+                 "^CEF file dialog$"],
+                env=env, capture_output=True, text=True, timeout=5)
+            return result.returncode == 0 and bool(result.stdout.strip())
+
         def fd_result(case):
             marker = "CEF_SMOKE_FILE_RESULT "
             deadline = time.monotonic() + 40
@@ -488,7 +495,7 @@ try:
 
         fdm.check_file_dialogs(
             file_dir, "linux", fd_request, fd_opened, fd_key, fd_paste,
-            fd_result, screenshot)
+            fd_result, screenshot, is_open=fd_is_open)
         run("xdotool", "windowactivate", "--sync", window)
         print("PASS: native file dialogs (open/save/multiple/directory/filter/cancel/overwrite)", flush=True)
 

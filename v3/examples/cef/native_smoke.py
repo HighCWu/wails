@@ -466,6 +466,31 @@ with log.open("w") as output:
                 ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "v")
                 time.sleep(.4)
 
+            def fd_is_open():
+                # Mirrors fd_opened's detection, as a predicate.
+                if sys.platform == "win32":
+                    import ctypes
+
+                    hwnd = ctypes.windll.user32.GetForegroundWindow()
+                    for wdw in ui.getAllWindows():
+                        if wdw._hWnd == hwnd and (wdw.title or "") == "CEF file dialog":
+                            return True
+                    return False
+                import Quartz
+
+                windows = Quartz.CGWindowListCopyWindowInfo(
+                    Quartz.kCGWindowListOptionOnScreenOnly,
+                    Quartz.kCGNullWindowID)
+                for w in windows:
+                    if w.get(Quartz.kCGWindowOwnerPID) != app.pid:
+                        continue
+                    if w.get(Quartz.kCGWindowLayer) != 0:
+                        continue
+                    title = w.get(Quartz.kCGWindowName) or ""
+                    if title == "CEF file dialog":
+                        return True
+                return False
+
             def fd_result(case):
                 marker = "CEF_SMOKE_FILE_RESULT "
                 deadline = time.monotonic() + 40
@@ -485,7 +510,7 @@ with log.open("w") as output:
 
             fdm.check_file_dialogs(
                 file_dir, sys.platform, fd_request, fd_opened, fd_key, fd_paste,
-                fd_result, screenshot)
+                fd_result, screenshot, is_open=fd_is_open)
             print("PASS: native file dialogs (open/save/multiple/directory/filter/cancel/overwrite)", flush=True)
         if a.scenario in ("all", "multiwindow"):
             main_origin = left, top

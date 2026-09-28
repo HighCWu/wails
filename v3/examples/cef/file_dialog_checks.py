@@ -15,7 +15,8 @@ def prepare_files(root):
         (root / name).write_text('CEF file dialog fixture\n', encoding='utf-8')
 
 
-def check_file_dialogs(root, platform, request, opened, key, paste, result, screenshot):
+def check_file_dialogs(root, platform, request, opened, key, paste, result, screenshot,
+                       is_open=None):
     """Adapters provide physical input and native dialog geometry, never results."""
     root = root.resolve()
     for case in CASES:
@@ -63,6 +64,16 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
                     key('ctrl', 'l')
                     paste(str(expected[0]))
             key('enter')
+            if is_open is not None and platform != 'linux':
+                # One Enter can mean "navigate" instead of "accept"
+                # (folder pickers, Go-to sheets). While the chooser is
+                # still up, Enter again — bounded, so a case that can
+                # never complete still fails with its own error.
+                for _ in range(3):
+                    time.sleep(1.2)
+                    if not is_open():
+                        break
+                    key('enter')
             if case == 'overwrite':
                 # NSSavePanel/IFileSaveDialog/GtkFileChooser ask before replacing
                 # an existing file. The dialog itself never writes file contents.
