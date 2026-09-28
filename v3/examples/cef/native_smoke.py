@@ -495,6 +495,12 @@ with log.open("w") as output:
                          "NSNavLastRootDirectory",
                          str((file_dir / fd_dirs[case]).resolve())],
                         check=True)
+                # A previous case's panel can linger briefly after its
+                # result arrived; let it disappear so fd_opened cannot
+                # mistake it for this case's chooser.
+                deadline = time.monotonic() + 10
+                while fd_is_open() and time.monotonic() < deadline:
+                    time.sleep(0.2)
                 click(*control("main", "name"))
                 ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
                 ui.press("backspace")
@@ -504,9 +510,12 @@ with log.open("w") as output:
 
             def fd_opened(case):
                 # The native chooser steals focus. On Windows read the
-                # foreground window via ctypes; on macOS the panel runs in
-                # our own process, so match any on-screen layer-0 window
-                # whose title is not one of the app's own windows.
+                # foreground window via ctypes and wait until it is no
+                # longer one of the app's own windows — save dialogs title
+                # themselves "Save As" (locale-dependent), so title equality
+                # cannot be used. On macOS the panel runs in our own
+                # process, so match any on-screen layer-0 window whose
+                # title is not one of the app's own windows.
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
                     title, rect = "", None
@@ -519,6 +528,8 @@ with log.open("w") as output:
                                 title = wdw.title or ""
                                 rect = (wdw.left, wdw.top, wdw.width, wdw.height)
                                 break
+                        if title.startswith("CEF smoke"):
+                            rect = None
                     else:
                         import Quartz
 
@@ -528,10 +539,13 @@ with log.open("w") as output:
                         for w in windows:
                             if w.get(Quartz.kCGWindowOwnerPID) != app.pid:
                                 continue
-                            if w.get(Quartz.kCGWindowLayer) != 0:
+                            # Attached panels are sheets above layer 0, so
+                            # only the menu-bar/status levels and the app's
+                            # own window titles are excluded.
+                            if w.get(Quartz.kCGWindowLayer) in (24, 25):
                                 continue
                             title = w.get(Quartz.kCGWindowName) or ""
-                            if not title or "CEF smoke" in title:
+                            if "CEF smoke" in title:
                                 continue
                             b = w[Quartz.kCGWindowBounds]
                             rect = (b["X"], b["Y"], b["Width"], b["Height"])
@@ -596,14 +610,17 @@ with log.open("w") as output:
                 time.sleep(.4)
 
             def fd_is_open():
-                # Mirrors fd_opened's detection, as a predicate.
+                # Mirrors fd_opened's detection, as a predicate: a chooser
+                # owns the foreground (Win32) or a non-app layer-0 window
+                # exists (macOS). Save dialogs title themselves "Save As",
+                # so title equality cannot be used.
                 if sys.platform == "win32":
                     import ctypes
 
                     hwnd = ctypes.windll.user32.GetForegroundWindow()
                     for wdw in ui.getAllWindows():
-                        if wdw._hWnd == hwnd and (wdw.title or "") == "CEF file dialog":
-                            return True
+                        if wdw._hWnd == hwnd:
+                            return not (wdw.title or "").startswith("CEF smoke")
                     return False
                 import Quartz
 
@@ -613,11 +630,13 @@ with log.open("w") as output:
                 for w in windows:
                     if w.get(Quartz.kCGWindowOwnerPID) != app.pid:
                         continue
-                    if w.get(Quartz.kCGWindowLayer) != 0:
+                    # Sheets live above layer 0; see fd_opened.
+                    if w.get(Quartz.kCGWindowLayer) in (24, 25):
                         continue
                     title = w.get(Quartz.kCGWindowName) or ""
-                    if title == "CEF file dialog":
-                        return True
+                    if "CEF smoke" in title:
+                        continue
+                    return True
                 return False
 
             def fd_result(case):
