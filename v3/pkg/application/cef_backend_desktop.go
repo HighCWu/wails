@@ -61,7 +61,7 @@ func startDesktopCEF(app *App) error {
 			if w, ok := app.Window.GetByID(req.WindowID); ok {
 				name = w.Name()
 			}
-			webviewRequests <- &webViewAssetRequest{Request: req.Request, windowId: req.WindowID, windowName: name}
+			webviewRequests <- &webViewAssetRequest{Request: cefAssetRequest{req.Request}, windowId: req.WindowID, windowName: name}
 		},
 		OnWindowLoadEnd: func(id uint) {
 			if e := desktopCEFEngines[id]; e != nil && e.loaded != nil {

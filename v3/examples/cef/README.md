@@ -24,6 +24,9 @@ intact in the application's `Contents/Frameworks` directory. Set `WAILS_CEF_DIR`
 to that directory and `WAILS_CEF_SUBPROCESS_PATH` to the executable inside the
 base Helper application. Chromium 154 also requires the sibling `Helper
 (Renderer).app` and `Helper (GPU).app` bundles with matching executable names.
+Build the isolated helper with `go build -tags wails_cef -o cef-helper ./cmd/cefhelper`
+and pass it as `--helper-binary` to the packaging script. It avoids loading the
+host UI toolkit into CEF utility processes.
 `v3/scripts/prepare-cef.py` demonstrates the complete smoke application's
 bundle layout and ad-hoc signing; shipping applications need their own bundle
 identifiers, signing and distribution setup.

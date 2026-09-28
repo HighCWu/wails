@@ -71,7 +71,16 @@ document.getElementById('media').onclick = async () => {
    report(`media:audio-bytes:${audioBytes}`);
    report('media:allowed:' + tracks.map(t => t.kind).sort().join(','));
   } finally { tracks.forEach(t => t.stop()); }
- } catch(e) { report('media:' + e.name); report('media:error:' + e.message); }
+ } catch(e) {
+  report('media:' + e.name); report('media:error:' + e.message);
+  report('media:devices:' + (await navigator.mediaDevices.enumerateDevices()).map(d => d.kind).join(','));
+  for (const kind of ['audio', 'video']) {
+   try {
+    const stream = await navigator.mediaDevices.getUserMedia({[kind]:true});
+    report(`media:diagnostic:${kind}:allowed`); stream.getTracks().forEach(t=>t.stop());
+   } catch(error) { report(`media:diagnostic:${kind}:${error.name}:${error.message}`); }
+  }
+ }
 };
 for (const name of ['compositionstart', 'compositionupdate', 'compositionend']) {
  document.getElementById('name').addEventListener(name, event => report(name + ':' + event.data));

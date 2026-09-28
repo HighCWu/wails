@@ -181,13 +181,14 @@ jobs:
           CEF_EXECUTABLE: ${{ matrix.executable }}
         run: |
           go build -tags wails_cef -o "$RUNNER_TEMP/$CEF_EXECUTABLE" ./examples/cef
+          go build -tags wails_cef -o "$RUNNER_TEMP/cef-helper" ./cmd/cefhelper
           go test -tags wails_cef ./internal/cef ./pkg/application -run 'Test(RuntimeDir|CheckRuntimeDir|Probe|ParseWebviewBackend|ResolveWebviewBackend)' -count=1
       - name: Prepare pinned runtime and native application bundle
         shell: bash
         env:
           CEF_PLATFORM: ${{ matrix.platform }}
           CEF_EXECUTABLE: ${{ matrix.executable }}
-        run: python v3/scripts/prepare-cef.py --platform "$CEF_PLATFORM" --binary "$RUNNER_TEMP/$CEF_EXECUTABLE" --output "$RUNNER_TEMP/cef-native"
+        run: python v3/scripts/prepare-cef.py --platform "$CEF_PLATFORM" --binary "$RUNNER_TEMP/$CEF_EXECUTABLE" --helper-binary "$RUNNER_TEMP/cef-helper" --output "$RUNNER_TEMP/cef-native"
       - name: Test Windows CEF interaction
         if: runner.os == 'Windows'
         shell: bash

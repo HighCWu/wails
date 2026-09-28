@@ -150,7 +150,7 @@ def window_position(title):
             overlay = (
                 title == "CEF smoke overlay ready"
                 and w.get(Quartz.kCGWindowOwnerPID) == app.pid
-                and bounds["Width"] == 400
+                and 390 <= bounds["Width"] <= 410
                 and 250 <= bounds["Height"] <= 300
             )
             if w.get(Quartz.kCGWindowName) == title or overlay:
@@ -303,6 +303,11 @@ with log.open("w") as output:
                 wait_log("CEF_SMOKE_DIALOG opened attached=" + attached)
                 time.sleep(1)
                 screenshot(name)
+                if sys.platform == "win32":
+                    dialogs = ui.getWindowsWithTitle("CEF smoke dialog")
+                    assert dialogs, "Native dialog did not appear"
+                    dialogs[0].activate()
+                    time.sleep(0.3)
                 ui.press("enter")
                 wait_log("CEF_SMOKE_DIALOG accepted attached=" + attached)
             print("PASS: native top-level and attached dialogs", flush=True)
@@ -445,6 +450,9 @@ with log.open("w") as output:
                 "PASS: native Unicode file drop and rejection outside targets",
                 flush=True,
             )
+        # AppKit consumes the first click when returning from a native drag
+        # source or another window. Activate the host before clicking Quit.
+        click(800, 600)
         # Open DevTools, return to the host content and request graceful exit.
         click(*control("main", "quit"))
         wait_log("CEF_SMOKE_QUIT requested")

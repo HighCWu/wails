@@ -12,8 +12,8 @@
 // was developed against (see include/LICENSE.txt); the C API is stable
 // across CEF versions but new struct fields may require a header refresh.
 //
-// The package is Linux-first; Windows support will be added behind the
-// same public surface.
+// Native desktop backends share this package; UI toolkit dependencies remain
+// in the application layer so helper processes can bootstrap independently.
 package cef
 
 import "sync/atomic"
@@ -106,8 +106,7 @@ const (
 // AssetRequest carries everything the glue needs to feed one CEF scheme
 // request into the wails asset server.
 type AssetRequest struct {
-	// Request implements the wails webview.Request interface on top of a
-	// CEF request object.
+	// Request wraps the CEF request object for the host asset-server adapter.
 	Request *assetRequest
 	// WindowID is the wails window id the request belongs to (0 unknown).
 	WindowID uint

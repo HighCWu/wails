@@ -170,7 +170,7 @@ func initCEFBackend(app *App) error {
 				windowName = st.WindowName(req.WindowID)
 			}
 			webviewRequests <- &webViewAssetRequest{
-				Request:    req.Request,
+				Request:    cefAssetRequest{req.Request},
 				windowId:   req.WindowID,
 				windowName: windowName,
 			}

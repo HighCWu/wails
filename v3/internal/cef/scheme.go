@@ -71,8 +71,6 @@ import (
 	"strconv"
 	"sync"
 	"unsafe"
-
-	"github.com/wailsapp/wails/v3/internal/assetserver/webview"
 )
 
 var theFactory *C.cef_scheme_handler_factory_t
@@ -380,7 +378,9 @@ type assetRequest struct {
 
 func newAssetRequest(h *resourceHandler) *assetRequest { return &assetRequest{handler: h} }
 
-var _ webview.Request = (*assetRequest)(nil)
+// Request is the CEF-side request. The application layer adapts its response
+// writer to the toolkit-specific asset server interface.
+type Request = assetRequest
 
 func (r *assetRequest) URL() (string, error) {
 	return userfreeToString(C.wcef_request_get_url(r.handler.request)), nil
@@ -447,7 +447,7 @@ func (r *assetRequest) Body() (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(body)), nil
 }
 
-func (r *assetRequest) Response() webview.ResponseWriter {
+func (r *assetRequest) Response() *responseWriter {
 	return &responseWriter{handler: r.handler}
 }
 
@@ -461,8 +461,6 @@ func (r *assetRequest) Close() error {
 type responseWriter struct {
 	handler *resourceHandler
 }
-
-var _ webview.ResponseWriter = (*responseWriter)(nil)
 
 func (w *responseWriter) Header() http.Header {
 	w.handler.mu.Lock()

@@ -19,6 +19,7 @@ p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("--platform", choices=CHECKSUMS, required=True)
 p.add_argument("--output", type=Path, required=True)
 p.add_argument("--binary", type=Path, required=True)
+p.add_argument("--helper-binary", type=Path, help="CEF-only subprocess executable")
 a = p.parse_args()
 a.output.mkdir(parents=True, exist_ok=True)
 name = f"cef_binary_{VERSION}_{a.platform}_minimal"
@@ -66,7 +67,7 @@ else:
         executable = "CEFSmoke Helper" + suffix
         helper = framework / (executable + ".app") / "Contents"
         (helper / "MacOS").mkdir(parents=True, exist_ok=True)
-        shutil.copy2(a.binary, helper / "MacOS" / executable)
+        shutil.copy2(a.helper_binary or a.binary, helper / "MacOS" / executable)
         bundles.append((helper, executable, "io.wails.cefsmoke." + identifier, True))
     for directory, executable, identifier, background in bundles:
         with (directory / "Info.plist").open("wb") as f:
