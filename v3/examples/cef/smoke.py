@@ -28,6 +28,8 @@ parser.add_argument("--upstream", action="store_true", help="Replay upstream win
 parser.add_argument("--ime", action="store_true")
 parser.add_argument("--file-dialogs", action="store_true",
                     help="Exercise native open/save/multiple/directory/filter/cancel/overwrite dialogs")
+parser.add_argument("--crash", action="store_true",
+                    help="SIGKILL the CEF renderer and verify crash event, auto-reload and RPC recovery")
 parser.add_argument("--switches", default="", help="Additional comma-separated Chromium switches")
 args = parser.parse_args()
 if args.upstream and not args.extended:
@@ -91,6 +93,8 @@ def screenshot(name):
 
 if args.file_dialogs and args.backend != "cef":
     parser.error("--file-dialogs runs against the CEF backend")
+if args.crash and args.backend != "cef":
+    parser.error("--crash exercises the CEF renderer subprocess")
 file_dir = out / "file-dialogs"
 
 try:
@@ -520,6 +524,55 @@ try:
             fd_result, screenshot, is_open=fd_is_open)
         run("xdotool", "windowactivate", "--sync", window)
         print("PASS: native file dialogs (open/save/multiple/directory/filter/cancel/overwrite)", flush=True)
+
+    if args.crash:
+        # SIGKILL the renderer subprocess — the abnormal termination real
+        # backends must survive. The backend has to emit WindowRenderCrash,
+        # schedule exactly one auto-reload (the cool-down prevents reload
+        # loops), and come back with a working page and RPC bridge.
+        log_path = out / "application.log"
+
+        def renderer_pids():
+            found = []
+            for child in run("pgrep", "-P", str(app.pid)).splitlines():
+                try:
+                    cmdline = Path("/proc/" + child + "/cmdline").read_bytes().decode(
+                        errors="replace")
+                except OSError:
+                    continue
+                if "--type=renderer" in cmdline:
+                    found.append(int(child))
+            return found
+
+        killed = renderer_pids()
+        assert killed, "no CEF renderer subprocess found"
+        for pid in killed:
+            os.kill(pid, signal.SIGKILL)
+        for _ in range(100):
+            if "CEF_SMOKE_CRASH_EVENT main" in log_path.read_text():
+                break
+            time.sleep(.1)
+        assert "CEF_SMOKE_CRASH_EVENT main" in log_path.read_text(), \
+            "WindowRenderCrash event never fired"
+        fresh = []
+        for _ in range(100):
+            fresh = [pid for pid in renderer_pids() if pid not in killed]
+            if fresh:
+                break
+            time.sleep(.1)
+        assert fresh, "auto-reload did not spawn a replacement renderer"
+        run("xdotool", "windowactivate", "--sync", window)
+        click(100, 164)
+        run("xdotool", "key", "ctrl+a", "BackSpace")
+        run("xdotool", "type", "--clearmodifiers", "CEF154")
+        click(290, 164)
+        wait_title(window, "CEF smoke RPC OK")
+        final_log = log_path.read_text()
+        assert final_log.count('CEF_SMOKE_GREET "CEF154"') >= 2, \
+            "RPC did not recover after the crash"
+        assert final_log.count("CEF_SMOKE_CRASH_EVENT") == 1, \
+            "unexpected duplicate crash events"
+        print("PASS: renderer crash event, single auto-reload and recovered RPC", flush=True)
 
     if args.devtools:
         click(438, 164)

@@ -198,6 +198,16 @@ func initCEFBackend(app *App) error {
 		OnMediaPermission: func(windowID uint, needAudio, needVideo bool) bool {
 			return allowMediaCapture(windowID, needAudio, needVideo)
 		},
+		OnRenderCrash: func(windowID uint, status int) {
+			// Mirror the desktop glue: surface the renderer death as the
+			// typed window event so OnWindowEvent listeners see it.
+			if window, ok := globalApplication.Window.GetByID(windowID); ok {
+				if ww, ok := window.(*WebviewWindow); ok {
+					ww.emit(events.Common.WindowRenderCrash)
+				}
+			}
+			globalApplication.warning("CEF renderer process crashed (status %d)", status)
+		},
 	})
 
 	// Serve the asset server from http://wails.localhost (the Windows

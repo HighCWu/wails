@@ -158,6 +158,9 @@ func newWindow(app *application.App, name string, frameless bool, permission app
 	win.OnWindowEvent(events.Common.WindowFilesDropped, func(event *application.WindowEvent) {
 		fmt.Printf("CEF_SMOKE_DROP %s %q %#v\n", name, event.Context().DroppedFiles(), event.Context().DropTargetDetails())
 	})
+	win.OnWindowEvent(events.Common.WindowRenderCrash, func(*application.WindowEvent) {
+		fmt.Printf("CEF_SMOKE_CRASH_EVENT %s\n", name)
+	})
 	if runtime.GOOS == "darwin" {
 		win.OnWindowEvent(events.Mac.WindowDidEnterFullScreen, func(*application.WindowEvent) {
 			win.ExecJS("window.cefNativeFullscreen = true")

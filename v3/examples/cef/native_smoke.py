@@ -4,6 +4,7 @@ import argparse
 from collections import Counter
 import os
 from pathlib import Path
+import signal
 import subprocess
 import time
 import sys
@@ -24,6 +25,7 @@ p.add_argument(
         "core",
         "composition",
         "media",
+        "crash",
         "dialogs",
         "file-dialogs",
         "multiwindow",
@@ -55,6 +57,7 @@ if a.suite:
         "core",
         "composition",
         "media",
+        "crash",
         "dialogs",
         "file-dialogs",
         "multiwindow",
@@ -291,6 +294,74 @@ with log.open("w") as output:
         ui.press("m")
         ui.keyUp("ctrl")
         wait_log("CEF_SMOKE_EXECJS main")
+        if a.scenario in ("all", "crash"):
+            # SIGKILL the renderer subprocess — the abnormal termination
+            # real deployments hit. The backend must emit WindowRenderCrash
+            # and schedule exactly one auto-reload (the cool-down prevents
+            # reload loops) that restores a working page and RPC bridge.
+            def renderer_pids():
+                if sys.platform == "win32":
+                    listing = subprocess.run(
+                        ["powershell", "-NoProfile", "-Command",
+                         f"Get-CimInstance Win32_Process -Filter "
+                         f"\"ParentProcessId={app.pid}\" | "
+                         "Where-Object { $_.CommandLine -match "
+                         "'--type=renderer' } | Select-Object -ExpandProperty "
+                         "ProcessId"],
+                        capture_output=True, text=True, timeout=30).stdout
+                    return [int(line) for line in listing.split()
+                            if line.strip().isdigit()]
+                pids = []
+                for child in subprocess.run(
+                        ["pgrep", "-P", str(app.pid)],
+                        capture_output=True, text=True).stdout.split():
+                    if sys.platform == "darwin":
+                        args = subprocess.run(["ps", "-o", "command=", "-p", child],
+                                              capture_output=True,
+                                              text=True).stdout
+                    else:
+                        try:
+                            args = Path(f"/proc/{child}/cmdline").read_bytes().decode(
+                                errors="replace")
+                        except OSError:
+                            continue
+                    if "--type=renderer" in args:
+                        pids.append(int(child))
+                return pids
+
+            killed = renderer_pids()
+            assert killed, "no CEF renderer subprocess found"
+            for pid in killed:
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                                   capture_output=True)
+                else:
+                    os.kill(pid, signal.SIGKILL)
+            wait_log("CEF_SMOKE_CRASH_EVENT main")
+            fresh = []
+            for _ in range(60):
+                fresh = [pid for pid in renderer_pids() if pid not in killed]
+                if fresh:
+                    break
+                time.sleep(0.5)
+            assert fresh, "auto-reload did not spawn a replacement renderer"
+            click(*control("main", "name"))
+            ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
+            ui.press("backspace")
+            ui.write("CEF154", interval=0.1)
+            click(*control("main", "greet"))
+            for _ in range(100):
+                if log.read_text(encoding="utf-8", errors="replace").count(
+                        'CEF_SMOKE_GREET "CEF154"') >= 2:
+                    break
+                time.sleep(0.2)
+            assert log.read_text(encoding="utf-8", errors="replace").count(
+                'CEF_SMOKE_GREET "CEF154"') >= 2, "RPC did not recover after the crash"
+            screenshot("crash-recovered")
+            print(
+                "PASS: renderer crash event, single auto-reload and recovered RPC",
+                flush=True,
+            )
         if a.scenario in ("all", "composition"):
             click(*control("main", "name"))
             ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
