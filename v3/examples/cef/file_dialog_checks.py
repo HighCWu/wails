@@ -49,13 +49,16 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
                 expected = [root / filename]
                 if platform == 'darwin':
                     key('command', 'shift', 'g')
-                    time.sleep(.3)
+                    time.sleep(.4)
+                    screenshot('file-' + case + '-goto')
                     paste(str(expected[0]))
                     key('enter')
-                    time.sleep(.6)
+                    time.sleep(.8)
+                    screenshot('file-' + case + '-navigated')
                 elif platform == 'win32':
                     key('alt', 'n')
                     paste(str(expected[0]))
+                    screenshot('file-' + case + '-pasted')
                 else:
                     key('ctrl', 'l')
                     paste(str(expected[0]))

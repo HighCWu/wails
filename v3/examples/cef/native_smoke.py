@@ -453,11 +453,16 @@ with log.open("w") as output:
                     i += 1
 
             def fd_paste(text):
-                # Platform clipboard CLI, no extra Python dependencies.
+                # Unicode-safe clipboard: clip.exe decodes stdin as the
+                # ANSI codepage, which mangles non-ASCII names on en-US
+                # runners; Set-Clipboard and pbcopy take proper Unicode.
                 if sys.platform == "darwin":
                     subprocess.run(["pbcopy"], input=text.encode(), check=True)
                 else:
-                    subprocess.run(["clip"], input=text.encode(), check=True)
+                    quoted = "'" + text.replace("'", "''") + "'"
+                    subprocess.run(
+                        ["powershell", "-NoProfile", "-Command",
+                         "Set-Clipboard -Value " + quoted], check=True)
                 ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "v")
                 time.sleep(.4)
 
