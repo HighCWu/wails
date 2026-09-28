@@ -157,7 +157,9 @@ func startDesktopCEF(app *App) error {
 				return
 			}
 			InvokeAsync(func() {
-				if !desktopCEFPumping.Load() || desktopCEFPumpActive || desktopCEFHostStopping {
+				// Cocoa's nested NSApplication run must unwind before another
+				// pump or termination. Win32's OS-modal loop still needs pumping.
+				if !desktopCEFPumping.Load() || desktopCEFHostStopping || (runtime.GOOS == "darwin" && desktopCEFPumpActive) {
 					return
 				}
 				desktopCEFPumpActive = true
