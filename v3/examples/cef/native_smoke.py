@@ -9,6 +9,7 @@ import time
 import sys
 import shutil
 import re
+import json
 import pyautogui as ui
 
 p = argparse.ArgumentParser(description=__doc__)
@@ -104,6 +105,17 @@ with log.open("w") as output:
         click(438, 164)
         time.sleep(2)
         screenshot("devtools")
+        if sys.platform == "darwin":
+            import Quartz
+
+            windows = Quartz.CGWindowListCopyWindowInfo(
+                Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
+            )
+            titles = [str(w.get(Quartz.kCGWindowName, "")) for w in windows]
+        else:
+            titles = ui.getAllTitles()
+        (a.output / "window-titles.json").write_text(json.dumps(titles))
+        assert any("DevTools" in title for title in titles), titles
         app.wait(timeout=30)
         assert app.returncode == 0, app.returncode
         text = log.read_text(errors="replace")
@@ -114,6 +126,19 @@ with log.open("w") as output:
         )
         print("PASS: native CEF render, keyboard, RPC, ExecJS, resize, shutdown")
     finally:
+        if sys.platform == "win32" and app.poll() not in (None, 0):
+            subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000; StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction SilentlyContinue | Format-List TimeCreated,Message",
+                ],
+                stdout=(a.output / "crash-events.txt").open("w"),
+                stderr=subprocess.STDOUT,
+                timeout=20,
+                check=False,
+            )
         if sys.platform == "darwin":
             for report in (Path.home() / "Library/Logs/DiagnosticReports").glob(
                 "*CEF*"
