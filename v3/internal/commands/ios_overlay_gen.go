@@ -42,7 +42,7 @@ func IOSOverlayGen(options *IOSOverlayGenOptions) error { // options currently u
 	// Reading from the wails source tree (repoRoot) only works when building
 	// inside the wails repo itself; a normal user project has no such tree, so
 	// this must come from the embedded FS.
-	content, err := buildAssets.ReadFile("build_assets/ios/main_ios.go")
+	content, err := buildAssets.ReadFile("build_assets/ios/main_ios.go.tmpl")
 	if err != nil {
 		return fmt.Errorf("read embedded ios main_ios.go template: %w", err)
 	}
