@@ -51,8 +51,10 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
                     key('alt', 'n')
                     paste(' '.join('"' + str(p) + '"' for p in expected))
                 elif platform == 'darwin':
-                    # The runner pins the panel location to the
-                    # multiple/ fixture view; select all in it.
+                    # The runner pins the panel to the multiple/ folder,
+                    # which the column browser shows selected: descend into
+                    # it, select all in it, confirm.
+                    key('right')
                     key('command', 'a')
                 else:
                     # The chooser opens with the file list focused (the
@@ -67,9 +69,16 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
                        'filter': 'open', 'directory': 'dirs', 'multiple': 'multiple'}.get(case, '')
                 expected = [root / filename if not sub else root / sub / filename]
                 if platform == 'darwin':
-                    # Pinned single-item fixture view (the runner pins
-                    # the panel start directory): select all, confirm.
-                    key('command', 'a')
+                    if case in ('save', 'save-attached', 'overwrite'):
+                        # NSSavePanel: keyboard focus starts in the name
+                        # field; select its prefilled text and confirm.
+                        key('command', 'a')
+                    else:
+                        # The runner pins the open panel to the case's
+                        # fixture folder, shown selected in the column
+                        # browser: descend into it and its single entry
+                        # becomes the selection.
+                        key('right')
                 elif platform == 'win32':
                     key('alt', 'n')
                     paste(str(expected[0]))
