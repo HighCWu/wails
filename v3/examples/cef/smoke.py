@@ -290,7 +290,16 @@ try:
             cx, cy = json.loads(controls[-1])[name]
             before_dialog = set(run("xdotool", "search", "--onlyvisible", "--pid", str(app.pid)).splitlines())
             click(int(cx), int(cy))
-            wait_log("CEF_SMOKE_DIALOG opened attached=" + attached)
+            try:
+                wait_log("CEF_SMOKE_DIALOG opened attached=" + attached)
+            except AssertionError:
+                # After the frameless drag/edge-resize dance the window
+                # occasionally collapses (observed 65x223), putting the
+                # button outside the window. Restore the size and retry.
+                run("xdotool", "windowsize", window, "1000", "700")
+                time.sleep(1)
+                click(int(cx), int(cy))
+                wait_log("CEF_SMOKE_DIALOG opened attached=" + attached)
             time.sleep(1)
             screenshot(name)
             # GTK4's upstream dialog uses a heading label, without an X title.
