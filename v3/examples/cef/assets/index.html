@@ -58,9 +58,19 @@ document.getElementById('media').onclick = async () => {
    await video.play();
    await Promise.race([new Promise(resolve => video.requestVideoFrameCallback(resolve)), new Promise((_,reject)=>setTimeout(()=>reject(Error('frame timeout')),5000))]);
    report(`media:frame:${video.videoWidth}x${video.videoHeight}`);
+   const audioBytes = await new Promise((resolve, reject) => {
+    const chunks = []; const recorder = new MediaRecorder(new MediaStream(stream.getAudioTracks()));
+    const timeout = setTimeout(() => { recorder.stop(); reject(Error('audio capture timeout')); }, 5000);
+    recorder.ondataavailable = e => chunks.push(e.data);
+    recorder.onerror = reject;
+    recorder.onstop = () => { clearTimeout(timeout); resolve(new Blob(chunks).size); };
+    recorder.start(); setTimeout(() => recorder.stop(), 700);
+   });
+   if (audioBytes < 256) throw Error('no encoded audio samples');
+   report(`media:audio-bytes:${audioBytes}`);
    report('media:allowed:' + tracks.map(t => t.kind).sort().join(','));
   } finally { tracks.forEach(t => t.stop()); }
- } catch(e) { report('media:' + e.name); }
+ } catch(e) { report('media:' + e.name); report('media:error:' + e.message); }
 };
 for (const name of ['compositionstart', 'compositionupdate', 'compositionend']) {
  document.getElementById('name').addEventListener(name, event => report(name + ':' + event.data));

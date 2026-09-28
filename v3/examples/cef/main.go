@@ -79,7 +79,8 @@ func (*ProbeService) Dialog(attached bool) {
 			d.AttachToWindow(w)
 		}
 	}
-	d.AddButton("OK").SetAsDefault().OnClick(func() { fmt.Printf("CEF_SMOKE_DIALOG accepted attached=%t\n", attached) })
+	d.AddButton("Yes").SetAsDefault().OnClick(func() { fmt.Printf("CEF_SMOKE_DIALOG accepted attached=%t\n", attached) })
+	d.AddButton("No").SetAsCancel()
 	fmt.Printf("CEF_SMOKE_DIALOG opened attached=%t\n", attached)
 	d.Show()
 }

@@ -239,6 +239,7 @@ try:
         wait_log("main:media:allowed:audio,video")
         print("PASS: media allow with fake devices (real permission handler)", flush=True)
         wait_log("main:media:frame:")
+        wait_log("main:media:audio-bytes:")
         for name, attached in [("dialog", "false"), ("attached", "true")]:
             controls = re.findall(r'main:controls:(\{[^\n]+\})', (out / "application.log").read_text())
             cx, cy = json.loads(controls[-1])[name]

@@ -212,6 +212,7 @@ with log.open("w") as output:
         click(*control("main", "media"))
         wait_log("main:media:allowed:audio,video")
         wait_log("main:media:frame:")
+        wait_log("main:media:audio-bytes:")
         print(
             "PASS: media permissions and captured video frame ("
             + ("hardware" if a.hardware_media else "fake devices")
@@ -356,6 +357,8 @@ with log.open("w") as output:
         )
         print("PASS: native CEF render, keyboard, RPC, ExecJS, resize, shutdown")
     finally:
+        if sys.exc_info()[0] is not None:
+            screenshot("failure")
         if source is not None and source.poll() is None:
             source.terminate()
             source.wait(timeout=10)
