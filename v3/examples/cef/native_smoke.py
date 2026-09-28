@@ -624,17 +624,50 @@ with log.open("w") as output:
                           flush=True)
                 ui.write(text, interval=0.05)
 
+            def cdp_insert_text(text):
+                """Insert text through the DevTools protocol: the mac
+                runner's synthetic keyboard events drop or reorder
+                characters, while CDP input is delivered in-process."""
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{debug_port}/json/list", timeout=10
+                ) as response:
+                    pages = json.load(response)
+                page = next(
+                    p
+                    for p in pages
+                    if p.get("type") == "page" and "role=main" in p.get("url", "")
+                )
+                ws = websocket.create_connection(
+                    page["webSocketDebuggerUrl"], suppress_origin=True,
+                    timeout=10)
+                try:
+                    ws.send(json.dumps({
+                        "id": 1,
+                        "method": "Input.insertText",
+                        "params": {"text": text},
+                    }))
+                    while True:
+                        response = json.loads(ws.recv())
+                        if response.get("id") == 1:
+                            assert "error" not in response, response
+                            break
+                finally:
+                    ws.close()
+
             def type_case(case):
-                """Type the case name and verify it landed, re-typing via
-                the other input path when keystrokes were dropped or
+                """Fill the case name and verify it landed, re-entering via
+                the DevTools protocol when keystrokes were dropped or
                 mangled."""
-                methods = (["paste", "write", "paste", "write"]
-                           if sys.platform == "darwin" else ["write"] * 4)
-                for method in methods:
+                for attempt in range(4):
                     click(*control("main", "name"))
                     ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
                     ui.press("backspace")
-                    type_text(case, method == "paste")
+                    if sys.platform == "darwin":
+                        # Synthetic keyboards are unreliable here; CDP
+                        # insertion is delivered in-process.
+                        cdp_insert_text(case)
+                    else:
+                        ui.write(case, interval=0.05)
                     for _ in range(2):
                         time.sleep(0.3)
                         # Newline suffix (with \r\n normalised): "open" must
