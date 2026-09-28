@@ -4,7 +4,7 @@
 <title>CEF smoke</title>
 <style>
 body { margin: 0; background: white; color: #111; font: 18px sans-serif; }
-h1 { margin: 0; padding: 28px; height: 64px; background: rgb(30,102,245); color: white; }
+h1 { --wails-draggable: drag; margin: 0; padding: 28px; height: 64px; background: rgb(30,102,245); color: white; }
 section { padding: 24px; }
 input, button { font: inherit; padding: 8px; }
 #size { position: fixed; right: 16px; bottom: 12px; }
@@ -15,18 +15,38 @@ input, button { font: inherit; padding: 8px; }
 <button id="greet">Call Go</button>
 <button id="red">Red</button>
 <button id="tools">DevTools</button>
+<p><button id="media">Media</button> <button id="new">New window</button></p>
+<div id="drop" data-file-drop-target style="padding:20px;border:2px dashed #555">Drop files here</div>
 <p id="output">Loading runtime…</p>
 <p>Type a name and call Go. Ctrl+M tests Go → JavaScript.</p>
 </section>
 <div id="size"></div>
 <script type="module">
 import { Call, Window } from '/wails/runtime.js';
+const role = new URLSearchParams(location.search).get('role') || 'main';
+const report = message => Call.ByName('main.ProbeService.Report', role + ':' + message);
 const output = document.getElementById('output');
 const size = document.getElementById('size');
 function resized() { size.textContent = `${innerWidth} × ${innerHeight}`; }
 addEventListener('resize', resized); resized();
 output.textContent = `Runtime ready; invoke bridge: ${typeof window.chrome?.webview?.postMessage === 'function'}`;
-document.title = 'CEF smoke ready';
+document.title = role === 'main' ? 'CEF smoke ready' : 'CEF smoke secondary ready';
+report('ready');
+if (new URLSearchParams(location.search).get('passive') === '1') {
+ setTimeout(async () => { output.textContent = await Call.ByName('main.ProbeService.Greet', 'PASSIVE'); document.body.style.background = 'lime'; report('passive:green'); }, 1800);
+}
+document.getElementById('new').onclick = () => Call.ByName('main.ProbeService.NewWindow');
+document.getElementById('media').onclick = async () => {
+ try {
+  const stream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
+  const tracks = stream.getTracks();
+  report('media:allowed:' + tracks.map(t => t.kind).sort().join(','));
+  tracks.forEach(t => t.stop());
+ } catch(e) { report('media:' + e.name); }
+};
+for (const name of ['compositionstart', 'compositionupdate', 'compositionend']) {
+ document.getElementById('name').addEventListener(name, event => report(name + ':' + event.data));
+}
 document.getElementById('red').onclick = () => { document.body.style.background = 'red'; };
 document.getElementById('tools').onclick = () => Window.OpenDevTools();
 document.getElementById('greet').onclick = async () => {

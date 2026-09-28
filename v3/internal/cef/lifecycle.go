@@ -193,7 +193,7 @@ func DoMessageLoopWork() {
 
 // shutdownGracePeriod bounds how long CloseAllBrowsers may block when
 // tearing the browser process down.
-const shutdownGracePeriod = 3 * time.Second
+const shutdownGracePeriod = 10 * time.Second
 
 // Shutdown tears down CEF on the main thread after the host UI loop has
 // stopped: force-closes any browsers still alive (windows that never
@@ -204,7 +204,10 @@ func Shutdown() {
 		return
 	}
 	if remaining := CloseAllBrowsers(shutdownGracePeriod); remaining > 0 {
-		pkgLogger().Warn("CEF shutdown proceeding with live browsers", "count", remaining)
+		pkgLogger().Error("CEF shutdown skipped: live browsers remain", "count", remaining)
+		// CEF forbids shutdown before every OnBeforeClose callback. Keep the
+		// library loaded until process exit rather than triggering its assertions.
+		return
 	}
 	C.wcef_shutdown()
 }

@@ -71,6 +71,7 @@ func v8Execute(name *C.cef_string_t, object *C.cef_v8_value_t, argumentsCount C.
 	if frame == nil {
 		return 0
 	}
+	defer C.wcef_obj_release(unsafe.Pointer(frame))
 
 	msgName := newCefString(ipcMessageInvoke)
 	defer msgName.Clear()
@@ -79,6 +80,7 @@ func v8Execute(name *C.cef_string_t, object *C.cef_v8_value_t, argumentsCount C.
 		return 0
 	}
 	args := C.wcef_msg_get_argument_list(m)
+	defer C.wcef_obj_release(unsafe.Pointer(args))
 	str := newCefString(msg)
 	defer str.Clear()
 	C.wcef_list_set_string(args, 0, str.ptr())
@@ -92,6 +94,7 @@ func currentFrame() *C.cef_frame_t {
 	if ctx == nil {
 		return nil
 	}
+	defer C.wcef_obj_release(unsafe.Pointer(ctx))
 	return C.wcef_v8ctx_get_frame(ctx)
 }
 
@@ -108,7 +111,11 @@ func browserProcessMessage(browser *C.cef_browser_t, frame *C.cef_frame_t, sourc
 	}
 
 	args := C.wcef_msg_get_argument_list(message)
-	if args == nil || C.wcef_list_get_size(args) < 1 {
+	if args == nil {
+		return 1
+	}
+	defer C.wcef_obj_release(unsafe.Pointer(args))
+	if C.wcef_list_get_size(args) < 1 {
 		return 1
 	}
 	msg := userfreeToString(C.wcef_list_get_string(args, 0))

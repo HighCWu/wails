@@ -106,6 +106,47 @@ static void wails_cef_focus_browser(unsigned long host) {
   if (children) XFree(children);
 }
 
+extern void onUriList(char** files, gint x, gint y, gpointer data);
+extern void onDragEnter(gpointer data);
+extern void onDragOver(gint x, gint y, gpointer data);
+extern void onDragLeave(gpointer data);
+
+static void wails_cef_drop_received(GtkWidget* widget, GdkDragContext* context,
+ gint x, gint y, GtkSelectionData* selection, guint info, guint time, gpointer data) {
+ gchar** uris = gtk_selection_data_get_uris(selection);
+ GPtrArray* paths = g_ptr_array_new_with_free_func(g_free);
+ if (uris) {
+  for (int i = 0; uris[i]; i++) {
+   char* path = g_filename_from_uri(uris[i], NULL, NULL);
+   if (path) g_ptr_array_add(paths, path);
+  }
+  g_strfreev(uris);
+ }
+ gboolean accepted = paths->len > 0;
+ if (accepted) {
+  g_ptr_array_add(paths, NULL);
+  onUriList((char**)paths->pdata, x, y, data);
+ }
+ g_ptr_array_free(paths, TRUE);
+ // GTK_DEST_DEFAULT_DROP completes the native drag after this signal.
+ onDragLeave(data);
+}
+static gboolean wails_cef_drop_motion(GtkWidget* widget, GdkDragContext* context,
+ gint x, gint y, guint time, gpointer data) {
+ onDragEnter(data);
+ onDragOver(x, y, data);
+ return FALSE;
+}
+static void wails_cef_drop_leave(GtkWidget* widget, GdkDragContext* context,
+ guint time, gpointer data) { onDragLeave(data); }
+static void wails_cef_enable_dnd(GtkWidget* widget, uintptr_t id) {
+ GtkTargetEntry target = {"text/uri-list", 0, 0};
+ gtk_drag_dest_set(widget, GTK_DEST_DEFAULT_ALL, &target, 1, GDK_ACTION_COPY);
+ g_signal_connect(widget, "drag-data-received", G_CALLBACK(wails_cef_drop_received), (gpointer)id);
+ g_signal_connect(widget, "drag-motion", G_CALLBACK(wails_cef_drop_motion), (gpointer)id);
+ g_signal_connect(widget, "drag-leave", G_CALLBACK(wails_cef_drop_leave), (gpointer)id);
+}
+
 // wails_cef_widget_size returns the widget's current allocation.
 static void wails_cef_widget_size(GtkWidget* widget, int* w, int* h) {
   GtkAllocation a;
@@ -139,6 +180,7 @@ import "C"
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -150,15 +192,21 @@ import (
 // window. All webview-facing linuxWebviewWindow methods dispatch here
 // when w.cefEngine != nil.
 type linuxCEFWebview struct {
-	parent   *linuxWebviewWindow
-	widget   pointer // GtkDrawingArea (owns the X11 host window)
-	windowID uint
+	nativeClosed bool
+	parent       *linuxWebviewWindow
+	widget       pointer // GtkDrawingArea (owns the X11 host window)
+	windowID     uint
 
 	// background (0xAARRGGBB, 0 = CEF default) applied at browser
 	// creation; CEF latches it with the first paint.
 	background uint32
 
-	closed bool
+	closed                         bool
+	moving                         bool
+	moveX, moveY, windowX, windowY int
+	windowWidth, windowHeight      int
+	resizeEdge                     string
+	lastDragX, lastDragY           int
 
 	// creating guards concurrent attach attempts; attached means the
 	// browser exists (and is only set on success so lazy retries work).
@@ -196,6 +244,7 @@ func newCEFWebview(windowId uint, gpuPolicy WebviewGpuPolicy) pointer {
 	}
 	widget := pointer(C.gtk_drawing_area_new())
 	C.wails_cef_set_default_visual((*C.GtkWidget)(widget))
+	C.wails_cef_enable_dnd((*C.GtkWidget)(widget), C.uintptr_t(windowId))
 	C.gtk_widget_set_can_focus((*C.GtkWidget)(widget), C.gboolean(1))
 	e := &linuxCEFWebview{widget: widget, windowID: windowId}
 	cefEngines.Store(unsafe.Pointer(widget), e)
@@ -360,14 +409,41 @@ func (e *linuxCEFWebview) reload(ignoreCache bool) {
 
 func (e *linuxCEFWebview) stopAndClose() {
 	e.mu.Lock()
-	browser := e.browser
-	e.browser = nil
+	if e.closed {
+		e.mu.Unlock()
+		return
+	}
 	e.closed = true
+	browser := e.browser
 	e.mu.Unlock()
-	cefEngines.Delete(unsafe.Pointer(e.widget))
 	if browser != nil {
 		browser.Close(true)
+	} else {
+		e.finishClose()
 	}
+}
+
+// CEF must destroy its own X11 child before GTK destroys the parent.
+// OnBeforeClose schedules this after DevTools detach and unload complete.
+func (e *linuxCEFWebview) finishClose() {
+	if e.nativeClosed {
+		return
+	}
+	e.nativeClosed = true
+	cefEngines.Delete(unsafe.Pointer(e.widget))
+	C.gtk_widget_destroy((*C.GtkWidget)(e.parent.window))
+	getNativeApplication().unregisterWindow(windowPointer(e.parent.window))
+}
+
+func finishCEFWindowClose(windowID uint) {
+	cefEngines.Range(func(_, value any) bool {
+		engine := value.(*linuxCEFWebview)
+		if engine.windowID == windowID {
+			engine.finishClose()
+			return false
+		}
+		return true
+	})
 }
 
 // resizeBrowser sizes the native browser child to match the GTK container.
@@ -396,6 +472,10 @@ func (e *linuxCEFWebview) resizeBrowser(width, height int) {
 }
 
 func (e *linuxCEFWebview) syncSize() {
+	if e.closed {
+		return
+	}
+	e.syncMove()
 	var width, height C.int
 	C.wails_cef_widget_size((*C.GtkWidget)(e.widget), &width, &height)
 	e.resizeBrowser(int(width), int(height))
@@ -459,4 +539,79 @@ func getLinuxEngine(window Window) *linuxCEFWebview {
 	}
 	engine, _ := impl.cefEngine.(*linuxCEFWebview)
 	return engine
+}
+
+// Chromium owns the pointer grab on its native child. GTK/WM move requests
+// cannot acquire that grab, so follow root coordinates while the button is held.
+// This also keeps working when the pointer leaves the embedded child.
+func (e *linuxCEFWebview) beginWindowDrag(edge string) {
+	if e.moving {
+		return
+	}
+	button, x, y := e.queryPointerDragState()
+	if button != 1 {
+		return
+	}
+	var wx, wy, width, height C.int
+	C.gtk_window_get_position((*C.GtkWindow)(e.parent.window), &wx, &wy)
+	C.gtk_window_get_size((*C.GtkWindow)(e.parent.window), &width, &height)
+	e.windowWidth, e.windowHeight = int(width), int(height)
+	e.resizeEdge = strings.TrimSuffix(edge, "-resize")
+	e.lastDragX, e.lastDragY = x, y
+	e.moving = true
+	e.moveX, e.moveY = x, y
+	e.windowX, e.windowY = int(wx), int(wy)
+}
+
+func (e *linuxCEFWebview) syncMove() {
+	if !e.moving {
+		return
+	}
+	button, x, y := e.queryPointerDragState()
+	if button != 1 {
+		e.moving = false
+		return
+	}
+	if x == e.lastDragX && y == e.lastDragY {
+		return
+	}
+	e.lastDragX, e.lastDragY = x, y
+	scale := max(1, int(C.gtk_widget_get_scale_factor((*C.GtkWidget)(e.widget))))
+	dx, dy := (x-e.moveX)/scale, (y-e.moveY)/scale
+	wx, wy := e.windowX, e.windowY
+	if e.resizeEdge == "" {
+		wx += dx
+		wy += dy
+	} else {
+		width, height := e.windowWidth, e.windowHeight
+		if strings.Contains(e.resizeEdge, "e") {
+			width += dx
+		}
+		if strings.Contains(e.resizeEdge, "w") {
+			width -= dx
+		}
+		if strings.Contains(e.resizeEdge, "s") {
+			height += dy
+		}
+		if strings.Contains(e.resizeEdge, "n") {
+			height -= dy
+		}
+		opts := e.parent.parent.options
+		width = max(width, max(1, opts.MinWidth))
+		height = max(height, max(1, opts.MinHeight))
+		if opts.MaxWidth > 0 {
+			width = min(width, opts.MaxWidth)
+		}
+		if opts.MaxHeight > 0 {
+			height = min(height, opts.MaxHeight)
+		}
+		if strings.Contains(e.resizeEdge, "w") {
+			wx += e.windowWidth - width
+		}
+		if strings.Contains(e.resizeEdge, "n") {
+			wy += e.windowHeight - height
+		}
+		C.gtk_window_resize((*C.GtkWindow)(e.parent.window), C.int(width), C.int(height))
+	}
+	C.gtk_window_move((*C.GtkWindow)(e.parent.window), C.int(wx), C.int(wy))
 }

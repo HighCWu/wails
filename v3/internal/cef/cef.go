@@ -43,6 +43,9 @@ type State struct {
 	// the UI/main thread where required.
 	DispatchMain func(fn func())
 
+	// PumpHostLoop drains host UI events while waiting for browsers to close.
+	PumpHostLoop func()
+
 	// OnWindowMessage delivers a window.wails.invoke message from the
 	// renderer (windowID identifies the wails window, origin is the frame
 	// URL the message came from).
@@ -78,9 +81,6 @@ type State struct {
 	// OnMediaPermission decides a getUserMedia request; mirrors the
 	// system webview permission handling.
 	OnMediaPermission func(windowID uint, needAudio, needVideo bool) bool
-
-	// OnFilesDropped delivers files dropped onto the browser window.
-	OnFilesDropped func(windowID uint, filenames []string)
 }
 
 // cef_key_event_t modifier flags (cef_types.h).

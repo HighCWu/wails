@@ -396,6 +396,8 @@ double wcef_host_get_zoom_level(cef_browser_host_t* h) { return h->get_zoom_leve
 
 void wcef_host_set_zoom_level(cef_browser_host_t* h, double zoom_level) { h->set_zoom_level(h, zoom_level); }
 
+void wcef_host_close_dev_tools(cef_browser_host_t* h) { h->close_dev_tools(h); }
+
 void wcef_host_show_dev_tools(cef_browser_host_t* h, cef_client_t* client) {
   cef_window_info_t wi = {0};
   wi.size = sizeof(wi);

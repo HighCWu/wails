@@ -155,6 +155,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -206,9 +207,8 @@ type browserClient struct {
 	requestH    *C.cef_request_handler_t
 	windowID    uint
 
-	// dragPending caches the dragged file paths from on_drag_enter until
-	// the resulting file:// navigation arrives in on_before_browse, which
-	// is the only drop notification windowed CEF offers.
+	// dragPending remembers native file drags so any fallback file://
+	// navigation can be blocked. GTK delivers actual drops with coordinates.
 	dragPending []string
 	dragMu      sync.Mutex
 }
@@ -287,10 +287,13 @@ type CreateBrowserOptions struct {
 	BackgroundColor uint32
 }
 
+var closingBrowsers atomic.Bool
+
 // CloseAllBrowsers force-closes every live browser and waits until their
 // before_close notifications arrive (CEF requires this before shutdown),
 // bounded by timeout. Returns the number of browsers still alive.
 func CloseAllBrowsers(timeout time.Duration) int {
+	closingBrowsers.Store(true)
 	var browsers []*Browser
 	browsersByID.Range(func(_, v any) bool {
 		browsers = append(browsers, v.(*Browser))
@@ -305,6 +308,10 @@ func CloseAllBrowsers(timeout time.Duration) int {
 	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		// Native child destruction and queued host callbacks also need GLib.
+		if st := state.Load(); st != nil && st.PumpHostLoop != nil {
+			st.PumpHostLoop()
+		}
 		// The GTK loop has stopped; close notifications still need the CEF UI pump.
 		C.wcef_do_message_loop_work()
 		alive := 0
@@ -399,7 +406,7 @@ func lifeSpanAfterCreated(browser *C.cef_browser_t, client *browserClient) {
 	b.c = browser
 	b.host = C.wcef_browser_get_host(browser)
 	browsersByID.Store(int(C.wcef_browser_get_identifier(browser)), b)
-	if b.closeRequested {
+	if b.closeRequested || closingBrowsers.Load() {
 		b.Close(true)
 	}
 }
@@ -407,25 +414,28 @@ func lifeSpanAfterCreated(browser *C.cef_browser_t, client *browserClient) {
 // lifeSpanDoClose implements cef_life_span_handler_t.do_close: let CEF
 // close the browser (and its native child window) normally.
 func lifeSpanDoClose(browser *C.cef_browser_t, client *browserClient) C.int {
-	_ = browser
-	_ = client
+	// CEF Linux closes its own child via WM_DELETE_WINDOW before notifying
+	// OnBeforeClose. The GTK parent must stay alive until that notification.
 	return 0
 }
 
 // lifeSpanBeforeClose implements cef_life_span_handler_t.on_before_close.
 func lifeSpanBeforeClose(browser *C.cef_browser_t, client *browserClient) {
 	id := int(C.wcef_browser_get_identifier(browser))
+	primary := false
+	windowID := uint(0)
 	if b, ok := browsersByID.LoadAndDelete(id); ok {
 		browser := b.(*Browser)
-		browsersByWin.CompareAndDelete(browser.windowID, browser)
+		primary = browsersByWin.CompareAndDelete(browser.windowID, browser)
+		windowID = browser.windowID
 		C.wcef_obj_release(unsafe.Pointer(browser.host))
 		C.wcef_obj_release(unsafe.Pointer(browser.c))
 		browser.host = nil
 		browser.c = nil
 	}
 	st := state.Load()
-	if st != nil && st.OnBrowserClosed != nil {
-		st.OnBrowserClosed(client.windowID)
+	if primary && st != nil && st.OnBrowserClosed != nil {
+		st.OnBrowserClosed(windowID)
 	}
 }
 
@@ -503,8 +513,8 @@ func mediaPermission(browser *C.cef_browser_t, requestedPermissions C.uint32_t, 
 	if st == nil || st.OnMediaPermission == nil {
 		return 0
 	}
-	needVideo := requestedPermissions&C.uint32_t(C.CEF_PERMISSION_TYPE_CAMERA_STREAM) != 0
-	needAudio := requestedPermissions&C.uint32_t(C.CEF_PERMISSION_TYPE_MIC_STREAM) != 0
+	needVideo := requestedPermissions&C.uint32_t(C.CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE) != 0
+	needAudio := requestedPermissions&C.uint32_t(C.CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE) != 0
 	if st.OnMediaPermission(client.windowID, needAudio, needVideo) {
 		C.wcef_media_callback_cont(callback, requestedPermissions)
 	} else {
@@ -513,10 +523,12 @@ func mediaPermission(browser *C.cef_browser_t, requestedPermissions C.uint32_t, 
 	return 1
 }
 
-// dragEnter implements cef_drag_handler_t.on_drag_enter: stash dragged
-// file paths; the drop itself surfaces as the file:// navigation that
-// beforeBrowse cancels and converts into OnFilesDropped.
+// dragEnter tracks file drags for navigation prevention. GTK handles
+// external drops and routes their coordinates to the runtime.
 func dragEnter(browser *C.cef_browser_t, dragData *C.cef_drag_data_t, client *browserClient) C.int {
+	client.dragMu.Lock()
+	client.dragPending = nil
+	client.dragMu.Unlock()
 	if dragData == nil {
 		return 0
 	}
@@ -533,6 +545,7 @@ func dragEnter(browser *C.cef_browser_t, dragData *C.cef_drag_data_t, client *br
 			continue
 		}
 		files = append(files, goString(&out))
+		C.wcef_string_utf16_clear(&out)
 	}
 	if len(files) == 0 {
 		return 0
@@ -540,14 +553,11 @@ func dragEnter(browser *C.cef_browser_t, dragData *C.cef_drag_data_t, client *br
 	client.dragMu.Lock()
 	client.dragPending = files
 	client.dragMu.Unlock()
-	// Allow the drag so Chromium starts the file:// navigation on
-	// release; beforeBrowse turns that into the drop event.
+	// Keep Chromium HTML drag handling; block any file navigation below.
 	return 0
 }
 
-// beforeBrowse implements cef_request_handler_t.on_before_browse:
-// converts the file:// navigation caused by an external file drop into
-// the host's OnFilesDropped event and cancels the navigation.
+// beforeBrowse cancels file navigation caused by native file drags.
 func beforeBrowse(browser *C.cef_browser_t, request *C.cef_request_t, client *browserClient) C.int {
 	if request == nil {
 		return 0
@@ -563,10 +573,8 @@ func beforeBrowse(browser *C.cef_browser_t, request *C.cef_request_t, client *br
 	if len(files) == 0 {
 		return 0
 	}
-	st := state.Load()
-	if st != nil && st.OnFilesDropped != nil {
-		st.OnFilesDropped(client.windowID, files)
-	}
+	// A native file drag must never navigate away from the app.
+	// Actual drops are delivered by the GTK destination.
 	return 1 // cancel the file:// navigation
 }
 
@@ -577,7 +585,11 @@ func (b *Browser) ExecJS(js string) {
 		return
 	}
 	frame := C.wcef_browser_get_main_frame(b.c)
-	if frame == nil || C.wcef_frame_is_valid(frame) != 1 {
+	if frame == nil {
+		return
+	}
+	defer C.wcef_obj_release(unsafe.Pointer(frame))
+	if C.wcef_frame_is_valid(frame) != 1 {
 		return
 	}
 	code := newCefString(js)
@@ -593,7 +605,11 @@ func (b *Browser) LoadURL(url string) {
 		return
 	}
 	frame := C.wcef_browser_get_main_frame(b.c)
-	if frame == nil || C.wcef_frame_is_valid(frame) != 1 {
+	if frame == nil {
+		return
+	}
+	defer C.wcef_obj_release(unsafe.Pointer(frame))
+	if C.wcef_frame_is_valid(frame) != 1 {
 		return
 	}
 	u := newCefString(url)
@@ -651,6 +667,10 @@ func (b *Browser) Close(force bool) {
 	b.closeRequested = true
 	if b.host == nil {
 		return
+	}
+	C.wcef_browser_stop_load(b.c)
+	if b.devToolsClient != nil {
+		C.wcef_host_close_dev_tools(b.host)
 	}
 	C.wcef_host_close_browser(b.host, gtkBoolC(force))
 }

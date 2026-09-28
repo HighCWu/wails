@@ -195,6 +195,7 @@ double wcef_host_get_zoom_level(cef_browser_host_t* h);
 void wcef_host_set_zoom_level(cef_browser_host_t* h, double zoom_level);
 
 // cef_browser_host_t (continued)
+void wcef_host_close_dev_tools(cef_browser_host_t* h);
 void wcef_host_show_dev_tools(cef_browser_host_t* h, cef_client_t* client);
 
 // cef_drag_data_t (browser process, drag handler)

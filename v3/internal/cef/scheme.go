@@ -94,12 +94,9 @@ func buildSchemeFactory() *C.cef_scheme_handler_factory_t {
 func factoryCreate(browser *C.cef_browser_t, frame *C.cef_frame_t, scheme *C.cef_string_t, request *C.cef_request_t) *C.cef_resource_handler_t {
 	_ = scheme
 	h := newResourceHandler()
-	// Retain references for the lifetime of the request handling.
-	h.browser = browser
-	h.frame = frame
+	// Only request data outlives this callback. Browser/frame are used here
+	// to resolve window routing and do not need extra lifetime references.
 	h.request = request
-	C.wcef_obj_add_ref(unsafe.Pointer(browser))
-	C.wcef_obj_add_ref(unsafe.Pointer(frame))
 	C.wcef_obj_add_ref(unsafe.Pointer(request))
 
 	if b := lookupBrowserByCefID(int(C.wcef_browser_get_identifier(browser))); b != nil {
@@ -123,8 +120,6 @@ type resourceHandler struct {
 	c *C.cef_resource_handler_t
 
 	// CEF-owned objects retained between process_request and release.
-	browser *C.cef_browser_t
-	frame   *C.cef_frame_t
 	request *C.cef_request_t
 
 	windowID uint
@@ -154,12 +149,6 @@ func newResourceHandler() *resourceHandler {
 }
 
 func (h *resourceHandler) releaseCEFRefs() {
-	if h.browser != nil {
-		C.wcef_obj_release(unsafe.Pointer(h.browser))
-	}
-	if h.frame != nil {
-		C.wcef_obj_release(unsafe.Pointer(h.frame))
-	}
 	if h.request != nil {
 		C.wcef_obj_release(unsafe.Pointer(h.request))
 	}

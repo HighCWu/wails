@@ -1163,8 +1163,6 @@ func widgetSetVisible(widget pointer, hidden bool) {
 func (w *linuxWebviewWindow) close() {
 	if w.cefEngine != nil {
 		w.cefEngine.stopAndClose()
-		C.gtk_widget_destroy(w.gtkWidget())
-		getNativeApplication().unregisterWindow(windowPointer(w.window))
 		return
 	}
 	// Stop active loads before destroying the view so outstanding custom

@@ -9,20 +9,28 @@ unsigned int wails_cef_keyval(unsigned int keycode);
 
 // The pump callback: calls into the cef package's DoMessageLoopWork.
 extern gboolean wailsCEFPumpMessageLoop(gpointer user_data);
+static guint wails_cef_pump_source;
 static void wails_cef_start_message_pump(void) {
-  g_timeout_add(10, wailsCEFPumpMessageLoop, NULL);
+  wails_cef_pump_source = g_timeout_add(10, wailsCEFPumpMessageLoop, NULL);
 }
 
 // GTK signal trampolines for the CEF engine container widget (the engine
 // file's preamble carries definitions, so exports live here).
 extern void wailsCEFOnMap(GtkWidget* widget, gpointer user_data);
 extern void wailsCEFOnSizeAllocate(GtkWidget* widget, GdkRectangle* allocation, gpointer user_data);
+static void wails_cef_stop_message_pump(void) {
+ if (wails_cef_pump_source) { g_source_remove(wails_cef_pump_source); wails_cef_pump_source = 0; }
+}
+static void wails_cef_drain_host(void) {
+ for (int i = 0; i < 32 && g_main_context_pending(NULL); i++) g_main_context_iteration(NULL, FALSE);
+}
 */
 import "C"
 
 import (
 	"fmt"
 	"os"
+	"strings"
 	"unsafe"
 
 	"github.com/wailsapp/wails/v3/internal/assetserver"
@@ -108,7 +116,26 @@ func initCEFBackend(app *App) error {
 
 	cef.SetStateHooks(&cef.State{
 		DispatchMain: func(fn func()) { InvokeAsync(fn) },
+		PumpHostLoop: func() { C.wails_cef_drain_host() },
 		OnWindowMessage: func(windowID uint, message string, origin string) {
+			if message == "wails:drag" || strings.HasPrefix(message, "wails:resize:") {
+				edge := strings.TrimPrefix(message, "wails:resize:")
+				if message == "wails:drag" {
+					edge = ""
+				} else if _, valid := gdkEdgeForBorder[edge]; !valid {
+					return
+				}
+				InvokeAsync(func() {
+					if window, ok := globalApplication.Window.GetByID(windowID); ok {
+						if e := getLinuxEngine(window); e != nil && !window.IsFullscreen() {
+							if edge == "" || !e.parent.parent.options.DisableResize {
+								e.beginWindowDrag(edge)
+							}
+						}
+					}
+				})
+				return
+			}
 			windowMessageBuffer <- &windowMessage{
 				windowId:   windowID,
 				message:    message,
@@ -135,7 +162,7 @@ func initCEFBackend(app *App) error {
 				}
 			}
 		},
-		OnBrowserClosed: func(windowID uint) {},
+		OnBrowserClosed: func(windowID uint) { InvokeAsync(func() { finishCEFWindowClose(windowID) }) },
 		AssetRequest: func(req *cef.AssetRequest) {
 			windowName := ""
 			if st := cef.Current(); st != nil && st.WindowName != nil {
@@ -170,9 +197,6 @@ func initCEFBackend(app *App) error {
 		OnMediaPermission: func(windowID uint, needAudio, needVideo bool) bool {
 			return allowMediaCapture(windowID, needAudio, needVideo)
 		},
-		OnFilesDropped: func(windowID uint, filenames []string) {
-			addDragAndDropMessage(windowID, filenames, nil)
-		},
 	})
 
 	// Serve the asset server from http://wails.localhost (the Windows
@@ -197,6 +221,13 @@ func initCEFBackend(app *App) error {
 // shutdownCEFBackend tears CEF down after the GTK main loop has stopped.
 // Called from appRun.
 func shutdownCEFBackend() {
+	if !cef.Initialized() {
+		return
+	}
+	C.wails_cef_stop_message_pump()
+	// GTK may quit before flushing the final XDestroyWindow. CEF uses a
+	// separate X connection and must see native child destruction first.
+	C.gdk_display_sync(C.gdk_display_get_default())
 	cef.Shutdown()
 }
 
