@@ -7,6 +7,8 @@ package application
 #include <stdint.h>
 void wails_cef_prepare_app(void);
 void wails_cef_pump_host(void);
+void wails_cef_begin_work(void);
+void wails_cef_end_work(void);
 uintptr_t wails_cef_content_view(void* window);
 void wails_cef_size_view(uintptr_t parent,uintptr_t child);
 void wails_cef_close_window(void* window, uintptr_t child);
@@ -17,6 +19,8 @@ import "github.com/wailsapp/wails/v3/pkg/events"
 
 func pumpCEFHost() { C.wails_cef_pump_host() }
 func init() {
+	beginCEFHostWork = func() { C.wails_cef_begin_work() }
+	endCEFHostWork = func() { C.wails_cef_end_work() }
 	preparePlatformCEF = func(app *App) error {
 		if app.webviewBackend == WebviewBackendCEF {
 			C.wails_cef_prepare_app()

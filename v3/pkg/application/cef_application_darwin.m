@@ -8,6 +8,8 @@ extern int wailsCEFEnabled(void);
 extern bool shouldQuitApplication(void);
 extern void cleanup(void);
 int wails_cef_enabled(void) { return wailsCEFEnabled(); }
+static BOOL cefWorkActive;
+static BOOL terminationPending;
 
 @interface WailsCEFApplication : NSApplication <CefAppProtocol> {
   BOOL handlingSendEvent;
@@ -22,6 +24,13 @@ int wails_cef_enabled(void) { return wailsCEFEnabled(); }
 }
 // Let App.Run return so its CEF shutdown runs after all browser closes.
 - (void)terminate:(id)sender {
+  // CEF temporarily runs NSApplication from DoMessageLoopWork. Stopping there
+  // stops that inner loop, leaving Wails' outer run loop alive. Defer both
+  // cleanup and stop until control returns to the host.
+  if (cefWorkActive) {
+    terminationPending = YES;
+    return;
+  }
   // Chromium may install an application delegate when its own windows (for
   // example DevTools) are opened. Wails owns the quit policy and host cleanup;
   // do not route its termination through Chromium's delegate.
@@ -50,6 +59,14 @@ int wails_cef_enabled(void) { return wailsCEFEnabled(); }
   }
 }
 @end
+void wails_cef_begin_work(void) { cefWorkActive = YES; }
+void wails_cef_end_work(void) {
+  cefWorkActive = NO;
+  if (terminationPending) {
+    terminationPending = NO;
+    [NSApp terminate:nil];
+  }
+}
 void wails_cef_prepare_app(void) { [WailsCEFApplication sharedApplication]; }
 void wails_cef_pump_host(void) {
   @autoreleasepool {

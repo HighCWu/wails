@@ -16,6 +16,9 @@ import (
 
 var desktopCEFEngines = map[uint]*desktopCEFEngine{}
 var desktopCEFPumping atomic.Bool
+var desktopCEFPumpActive bool // UI-thread only: native loops can dispatch recursively.
+var beginCEFHostWork = func() {}
+var endCEFHostWork = func() {}
 
 // CEF close callbacks run on the UI thread. Defer native destruction until the
 // callback returns, and keep draining after Wails destroys its dispatch window.
@@ -153,9 +156,15 @@ func startDesktopCEF(app *App) error {
 				return
 			}
 			InvokeAsync(func() {
-				if !desktopCEFPumping.Load() {
+				if !desktopCEFPumping.Load() || desktopCEFPumpActive {
 					return
 				}
+				desktopCEFPumpActive = true
+				beginCEFHostWork()
+				defer func() {
+					desktopCEFPumpActive = false
+					endCEFHostWork()
+				}()
 				cef.DoMessageLoopWork()
 				drainDesktopCEFCloseTasks()
 				for _, e := range desktopCEFEngines {
