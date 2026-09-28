@@ -36,6 +36,8 @@ p.add_argument(
     default="all",
 )
 p.add_argument("--suite", action="store_true")
+p.add_argument("--exclude", default="",
+               help="Comma-separated scenario names skipped by --suite")
 p.add_argument("--runtime", required=True, type=Path)
 p.add_argument("--output", required=True, type=Path)
 p.add_argument("--helper", type=Path)
@@ -56,6 +58,7 @@ if a.suite:
     # file-dialogs runs LAST: its prompt/panel dance is the one flow
     # that can leave the mac input pipeline wedged, and this order keeps
     # any fallout contained to itself.
+    excluded = [s.strip() for s in a.exclude.split(",") if s.strip()]
     for scenario in [
         "core",
         "composition",
@@ -79,6 +82,8 @@ if a.suite:
             "--scenario",
             scenario,
         ]
+        if scenario in excluded:
+            continue
         if a.helper:
             command += ["--helper", str(a.helper)]
         if a.hardware_media:

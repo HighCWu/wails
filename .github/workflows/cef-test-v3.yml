@@ -237,7 +237,10 @@ jobs:
         shell: bash
         run: |
           app="$RUNNER_TEMP/cef-native/CEFSmoke.app/Contents"
-          python v3/examples/cef/native_smoke.py --suite "$app/MacOS/CEFSmoke" --runtime "$app/Frameworks" --helper "$app/Frameworks/CEFSmoke Helper.app/Contents/MacOS/CEFSmoke Helper" --output "$RUNNER_TEMP/cef-native-results"
+          # file-dialogs runs in its own fresh-runner job: after nine CEF
+          # app lifecycles the runner's synthetic keyboard pipeline starts
+          # dropping events, which is fatal only to this input-heavy flow.
+          python v3/examples/cef/native_smoke.py --suite "$app/MacOS/CEFSmoke" --runtime "$app/Frameworks" --helper "$app/Frameworks/CEFSmoke Helper.app/Contents/MacOS/CEFSmoke Helper" --output "$RUNNER_TEMP/cef-native-results" --exclude file-dialogs
       - name: Upload native diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -249,3 +252,47 @@ jobs:
             ${{ runner.temp }}/cef-native-results/
             ${{ runner.temp }}/cef-native/runtime/debug.log
             ${{ runner.temp }}/cef-native/CEFSmoke.app/Contents/Frameworks/debug.log
+
+  native_cef_filedialogs:
+    name: CEF 154 native file-dialogs (macos-14)
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v3/go.mod
+          cache-dependency-path: v3/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install native interaction test dependencies
+        run: python -m pip install PyAutoGUI==0.9.54 Pillow==11.3.0 tkinterdnd2==0.6.3 websocket-client==1.9.0
+      - name: Build CEF example
+        working-directory: v3
+        shell: bash
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          go build -tags wails_cef -o "$RUNNER_TEMP/cef-smoke" ./examples/cef
+          go build -tags wails_cef -o "$RUNNER_TEMP/cef-helper" ./cmd/cefhelper
+      - name: Prepare pinned runtime and native application bundle
+        shell: bash
+        run: python v3/scripts/prepare-cef.py --platform macosarm64 --binary "$RUNNER_TEMP/cef-smoke" --helper-binary "$RUNNER_TEMP/cef-helper" --output "$RUNNER_TEMP/cef-native"
+      - name: Test macOS CEF file dialogs
+        shell: bash
+        run: |
+          app="$RUNNER_TEMP/cef-native/CEFSmoke.app/Contents"
+          python v3/examples/cef/native_smoke.py --scenario file-dialogs "$app/MacOS/CEFSmoke" --runtime "$app/Frameworks" --helper "$app/Frameworks/CEFSmoke Helper.app/Contents/MacOS/CEFSmoke Helper" --output "$RUNNER_TEMP/cef-native-results"
+      - name: Upload native diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cef-native-filedialogs-macosarm64
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/cef-native-results/
+            ${{ runner.temp }}/cef-native/runtime/debug.log
