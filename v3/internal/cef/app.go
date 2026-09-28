@@ -132,10 +132,17 @@ func appOnCommandLine(processType *C.cef_string_t, commandLine *C.cef_command_li
 		// one; switches below are inherited automatically.
 		return
 	}
-	appendSwitch := func(name string) {
+	appendSwitch := func(sw string) {
+		name, value, hasValue := strings.Cut(sw, "=")
 		s := newCefString(name)
 		defer s.Clear()
-		C.wcef_cl_append_switch(commandLine, s.ptr())
+		if hasValue {
+			v := newCefString(value)
+			defer v.Clear()
+			C.wcef_cl_append_switch_value(commandLine, s.ptr(), v.ptr())
+		} else {
+			C.wcef_cl_append_switch(commandLine, s.ptr())
+		}
 	}
 	// The Go runtime cannot serve as a zygote host.
 	appendSwitch("no-zygote")

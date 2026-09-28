@@ -129,6 +129,7 @@ int wcef_obj_release(void* obj);
 
 // cef_command_line_t
 void wcef_cl_append_switch(cef_command_line_t* cl, const cef_string_t* name);
+void wcef_cl_append_switch_value(cef_command_line_t* cl, const cef_string_t* name, const cef_string_t* value);
 
 // cef_scheme_registrar_t
 int wcef_registrar_add_custom_scheme(cef_scheme_registrar_t* reg, const cef_string_t* name, int options);

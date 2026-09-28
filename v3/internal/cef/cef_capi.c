@@ -301,6 +301,9 @@ int wcef_obj_release(void* obj) {
 void wcef_cl_append_switch(cef_command_line_t* cl, const cef_string_t* name) {
   cl->append_switch(cl, name);
 }
+void wcef_cl_append_switch_value(cef_command_line_t* cl, const cef_string_t* name, const cef_string_t* value) {
+  cl->append_switch_with_value(cl, name, value);
+}
 
 int wcef_registrar_add_custom_scheme(cef_scheme_registrar_t* reg, const cef_string_t* name, int options) {
   return reg->add_custom_scheme(reg, name, options);
