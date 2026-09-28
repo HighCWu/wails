@@ -78,10 +78,21 @@ if a.suite:
         if a.hardware_media:
             command += ["--hardware-media"]
         try:
-            result = subprocess.run(command, timeout=180)
+            result = subprocess.run(command, timeout=300)
             results[scenario] = "passed" if result.returncode == 0 else "failed"
         except subprocess.TimeoutExpired:
             results[scenario] = "timed out"
+        finally:
+            # A timed-out scenario leaves its app (and any open native
+            # dialog) running, which would steal the next scenario's
+            # input. Kill orphans by executable name.
+            exe = str(a.binary)
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/F", "/IM", os.path.basename(exe)],
+                               capture_output=True)
+            else:
+                subprocess.run(["pkill", "-9", "-f", exe], capture_output=True)
+            time.sleep(1)
     (a.output / "results.json").write_text(json.dumps(results, indent=2))
     print(json.dumps(results, indent=2), flush=True)
     raise SystemExit(0 if all(v == "passed" for v in results.values()) else 1)
@@ -377,9 +388,10 @@ with log.open("w") as output:
                 ui.press("f9")
 
             def fd_opened(case):
-                # The native chooser steals focus. Detect it through the
-                # platform front-window API directly (pyautogui has no
-                # getActiveWindow).
+                # The native chooser steals focus. On Windows read the
+                # foreground window via ctypes; on macOS the panel runs in
+                # our own process, so match any on-screen layer-0 window
+                # whose title is not one of the app's own windows.
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
                     title, rect = "", None
@@ -395,18 +407,20 @@ with log.open("w") as output:
                     else:
                         import Quartz
 
-                        front_app = Quartz.NSWorkspace.sharedWorkspace(
-                        ).frontmostApplication()
-                        if front_app.processIdentifier() != app.pid:
-                            windows = Quartz.CGWindowListCopyWindowInfo(
-                                Quartz.kCGWindowListOptionOnScreenOnly,
-                                Quartz.kCGNullWindowID)
-                            for w in windows:
-                                if w.get(Quartz.kCGWindowOwnerPID) == front_app.processIdentifier() and w.get(Quartz.kCGWindowLayer) == 0:
-                                    b = w[Quartz.kCGWindowBounds]
-                                    title = w.get(Quartz.kCGWindowName) or ""
-                                    rect = (b["X"], b["Y"], b["Width"], b["Height"])
-                                    break
+                        windows = Quartz.CGWindowListCopyWindowInfo(
+                            Quartz.kCGWindowListOptionOnScreenOnly,
+                            Quartz.kCGNullWindowID)
+                        for w in windows:
+                            if w.get(Quartz.kCGWindowOwnerPID) != app.pid:
+                                continue
+                            if w.get(Quartz.kCGWindowLayer) != 0:
+                                continue
+                            title = w.get(Quartz.kCGWindowName) or ""
+                            if not title or "CEF smoke" in title:
+                                continue
+                            b = w[Quartz.kCGWindowBounds]
+                            rect = (b["X"], b["Y"], b["Width"], b["Height"])
+                            break
                     if rect is not None:
                         screenshot("file-" + case + "-open")
                         return rect

@@ -63,9 +63,12 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
             if case == 'overwrite':
                 # NSSavePanel/IFileSaveDialog/GtkFileChooser ask before replacing
                 # an existing file. The dialog itself never writes file contents.
+                # The confirmation defaults to Replace/Yes on Cocoa and Win32
+                # (Enter confirms); GTK focuses Cancel first, so move left.
                 time.sleep(.8)
                 screenshot('file-overwrite-confirmation')
-                key('left')
+                if platform == 'linux':
+                    key('left')
                 key('enter')
             answer = result(case)
             assert not answer['error'], answer
