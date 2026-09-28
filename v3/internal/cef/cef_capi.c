@@ -485,3 +485,18 @@ uintptr_t wcef_native_handle(cef_browser_host_t* host) { return (uintptr_t)host-
 #if defined(OS_WIN)
 void wcef_set_osmodal_loop(int active) { g_set_osmodal_loop(active); }
 #endif
+
+void wcef_record_media_permission(cef_browser_t* browser, const cef_string_t* origin, uint32_t permissions) {
+  cef_browser_host_t* host = browser->get_host(browser);
+  if (!host) return;
+  cef_request_context_t* context = host->get_request_context(host);
+  host->base.release(&host->base);
+  if (!context) return;
+  // Scope Chromium's permission subscription to the origin whose request the
+  // host approved. The CEF permission handler still decides every gUM request.
+  if (permissions & CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE)
+    context->set_content_setting(context, origin, origin, CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_MIC, CEF_CONTENT_SETTING_VALUE_ALLOW);
+  if (permissions & CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE)
+    context->set_content_setting(context, origin, origin, CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_CAMERA, CEF_CONTENT_SETTING_VALUE_ALLOW);
+  wcef_obj_release(context);
+}

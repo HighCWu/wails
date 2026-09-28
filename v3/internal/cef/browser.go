@@ -534,14 +534,25 @@ func keyEvent(browser *C.cef_browser_t, event *C.cef_key_event_t, client *browse
 // mediaPermission implements
 // cef_permission_handler_t.on_request_media_access_permission, honouring
 // the host's decision (mirrors the system webview permission handling).
-func mediaPermission(browser *C.cef_browser_t, requestedPermissions C.uint32_t, callback unsafe.Pointer, client *browserClient) C.int {
+func mediaPermission(browser *C.cef_browser_t, origin *C.cef_string_t, requestedPermissions C.uint32_t, callback unsafe.Pointer, client *browserClient) C.int {
 	st := state.Load()
 	if st == nil || st.OnMediaPermission == nil {
 		return 0
 	}
+	devicePermissions := C.uint32_t(C.CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE | C.CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE)
+	if requestedPermissions & ^devicePermissions != 0 {
+		// Camera/microphone policy does not authorize screen or system-audio capture.
+		C.wcef_media_callback_cont(callback, 0)
+		return 1
+	}
 	needVideo := requestedPermissions&C.uint32_t(C.CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE) != 0
 	needAudio := requestedPermissions&C.uint32_t(C.CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE) != 0
 	if st.OnMediaPermission(client.windowID, needAudio, needVideo) {
+		if runtime.GOOS == "darwin" && origin != nil {
+			// macOS permission observers can otherwise report ASK immediately
+			// after the explicit grant and cancel the newly opened capture stream.
+			C.wcef_record_media_permission(browser, origin, requestedPermissions)
+		}
 		C.wcef_media_callback_cont(callback, requestedPermissions)
 	} else {
 		C.wcef_media_callback_cont(callback, 0)

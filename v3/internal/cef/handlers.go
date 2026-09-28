@@ -210,7 +210,7 @@ func wailsCEFKeyboardOnKeyEvent(self *C.cef_keyboard_handler_t, browser *C.cef_b
 //export wailsCEFPermissionOnMediaAccess
 func wailsCEFPermissionOnMediaAccess(self *C.cef_permission_handler_t, browser *C.cef_browser_t, frame *C.cef_frame_t, requestingOrigin *C.cef_string_t, requestedPermissions C.uint32_t, callback *C.cef_media_access_callback_t) C.int {
 	if bc := clientByHandlerPtr(unsafe.Pointer(self)); bc != nil {
-		return mediaPermission(browser, requestedPermissions, unsafe.Pointer(callback), bc)
+		return mediaPermission(browser, requestingOrigin, requestedPermissions, unsafe.Pointer(callback), bc)
 	}
 	return 0
 }

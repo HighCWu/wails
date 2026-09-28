@@ -5,6 +5,8 @@
 #define OS_MAC 1
 #include "../../internal/cef/include/cef_application_mac.h"
 extern int wailsCEFEnabled(void);
+extern bool shouldQuitApplication(void);
+extern void cleanup(void);
 int wails_cef_enabled(void) { return wailsCEFEnabled(); }
 
 @interface WailsCEFApplication : NSApplication <CefAppProtocol> {
@@ -20,8 +22,12 @@ int wails_cef_enabled(void) { return wailsCEFEnabled(); }
 }
 // Let App.Run return so its CEF shutdown runs after all browser closes.
 - (void)terminate:(id)sender {
-  if ([[self delegate] applicationShouldTerminate:self] == NSTerminateCancel)
+  // Chromium may install an application delegate when its own windows (for
+  // example DevTools) are opened. Wails owns the quit policy and host cleanup;
+  // do not route its termination through Chromium's delegate.
+  if (!shouldQuitApplication())
     return;
+  cleanup();
   [self stop:sender];
   [self postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined
                                      location:NSZeroPoint

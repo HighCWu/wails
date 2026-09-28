@@ -383,6 +383,7 @@ with log.open("w") as output:
             nx, ny = window_position("CEF smoke overlay ready")
             assert 75 <= nx - ox <= 110 and 25 <= ny - oy <= 45, (ox, oy, nx, ny)
             print("PASS: dragging opaque frameless content", flush=True)
+            click(800, 600)
             click(*control("main", "close-overlay"))
             time.sleep(0.5)
             print(

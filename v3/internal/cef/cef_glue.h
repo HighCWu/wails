@@ -214,6 +214,7 @@ int wcef_string_list_value(cef_string_list_t list, size_t index, cef_string_t* v
 
 // cef_media_access_callback_t
 void wcef_media_callback_cont(void* cb, uint32_t allowed_permissions);
+void wcef_record_media_permission(cef_browser_t* browser, const cef_string_t* origin, uint32_t permissions);
 
 // cef_callback_t
 void wcef_callback_cont(cef_callback_t* cb);
