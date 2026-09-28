@@ -304,11 +304,27 @@ with log.open("w") as output:
                 time.sleep(1)
                 screenshot(name)
                 if sys.platform == "win32":
+                    import ctypes
+
                     dialogs = ui.getWindowsWithTitle("CEF smoke dialog")
                     assert dialogs, "Native dialog did not appear"
-                    dialogs[0].activate()
+                    dialog = dialogs[0]
+                    dialog.activate()
+                    # SetForegroundWindow alone is not evidence that input
+                    # reached the dialog. Use a real activation click and
+                    # verify its HWND before sending the confirmation key.
+                    ui.click(dialog.left + dialog.width / 2, dialog.top + 12)
                     time.sleep(0.3)
-                ui.press("enter")
+                    get_foreground = ctypes.windll.user32.GetForegroundWindow
+                    get_foreground.restype = ctypes.c_void_p
+                    foreground = get_foreground()
+                    (a.output / (name + "-focus.json")).write_text(
+                        json.dumps({"dialog": dialog._hWnd, "foreground": foreground})
+                    )
+                    assert foreground == dialog._hWnd, "Native dialog lacks keyboard focus"
+                ui.keyDown("enter")
+                time.sleep(0.12)
+                ui.keyUp("enter")
                 wait_log("CEF_SMOKE_DIALOG accepted attached=" + attached)
             print("PASS: native top-level and attached dialogs", flush=True)
         if a.scenario in ("all", "multiwindow"):
