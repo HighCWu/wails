@@ -540,20 +540,13 @@ with log.open("w") as output:
                 result = subprocess.run(
                     ["osascript", "-e", script], capture_output=True,
                     text=True, timeout=20)
-                if result.returncode == 0:
-                    # Scripting worked: trust its verdict — clicking a fixed
-                    # spot here would land inside the chooser once it is up
-                    # and deselect the pinned row.
-                    if "clicked" in result.stdout:
-                        time.sleep(0.5)
-                        return True
-                    return False
-                # Scripting unavailable: fall back to a click at the
-                # prompt's fixed on-screen spot — with no prompt present
-                # that point is empty app content.
                 if result.stderr.strip():
                     print("dismiss_mac_alerts: " + result.stderr.strip(),
                           flush=True)
+                # Always finish with a click at the prompt's fixed spot:
+                # on the alert it is the Not Now button, and with no alert
+                # up it is empty app content. Callers re-type afterwards,
+                # so a stray click is harmless either way.
                 width, height = ui.size()
                 ui.click(int(width * 0.545), int(height * 0.330))
                 time.sleep(0.5)
