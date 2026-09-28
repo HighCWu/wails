@@ -94,8 +94,9 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
                 else:
                     key('ctrl', 'l')
                     paste(str(expected[0]))
+                    screenshot('file-' + case + '-pasted')
             key('enter')
-            if is_open is not None and platform != 'linux':
+            if is_open is not None:
                 # One Enter can mean "navigate" instead of "accept"
                 # (folder pickers, Go-to sheets). While the chooser is
                 # still up, Enter again — bounded, so a case that can
