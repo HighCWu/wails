@@ -29,12 +29,14 @@ func (*ProbeService) Report(message string) {
 }
 
 func (*ProbeService) Quit() {
+	fmt.Println("CEF_SMOKE_QUIT requested")
 	go func() {
 		delay := 200 * time.Millisecond
 		if os.Getenv("CEF_SMOKE_DELAY_QUIT") == "1" {
 			delay = 5 * time.Second
 		}
 		time.Sleep(delay)
+		fmt.Println("CEF_SMOKE_QUIT dispatch")
 		application.Get().Quit()
 	}()
 }

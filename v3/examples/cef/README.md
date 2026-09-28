@@ -148,3 +148,7 @@ Headless Linux runners select ANGLE SwiftShader explicitly; they do not use
 only in that CI step because hosted runners restrict network namespaces.
 Neither setting changes the backend's production defaults. The existing
 upstream workflows remain responsible for their broader test suites.
+
+For capture diagnostics, combine `WAILS_CEF_LOG_TO_FILE=1` with
+`WAILS_CEF_LOG_VERBOSE=1` and Chromium `v=1` in `WAILS_CEF_SWITCHES`.
+The native suite preserves `cef.log` separately for each scenario.

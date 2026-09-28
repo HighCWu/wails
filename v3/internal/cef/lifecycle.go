@@ -278,6 +278,9 @@ func buildSettings(dir string, opts InitializeOptions) (*C.cef_settings_t, func(
 	if opts.LogToFile {
 		owned = append(owned, setStr(&s.log_file, filepath.Join(dir, "debug.log")))
 		s.log_severity = C.LOGSEVERITY_INFO
+		if os.Getenv("WAILS_CEF_LOG_VERBOSE") == "1" {
+			s.log_severity = C.LOGSEVERITY_VERBOSE
+		}
 	} else {
 		s.log_severity = C.LOGSEVERITY_ERROR
 	}

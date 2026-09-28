@@ -109,6 +109,7 @@ env["WAILS_CEF_SWITCHES"] = (
 )
 if a.scenario == "media":
     env["WAILS_CEF_SWITCHES"] += ",enable-logging=stderr,v=1"
+    env["WAILS_CEF_LOG_VERBOSE"] = "1"
 log = a.output / "application.log"
 source = None
 
@@ -369,9 +370,9 @@ with log.open("w") as output:
             ui.moveTo(tx, ty)
             ui.mouseDown()
             time.sleep(0.2)
-            ui.moveTo(tx + 5, ty, duration=0.2)
+            ui.dragTo(tx + 5, ty, duration=0.2, button="left", mouseDownUp=False)
             time.sleep(0.3)
-            ui.moveTo(tx + 95, ty + 35, duration=1)
+            ui.dragTo(tx + 95, ty + 35, duration=1, button="left", mouseDownUp=False)
             ui.mouseUp()
             time.sleep(0.5)
             nx, ny = window_position("CEF smoke overlay ready")
@@ -398,7 +399,7 @@ with log.open("w") as output:
                 stdout=source_log,
                 stderr=subprocess.STDOUT,
             )
-            for _ in range(100):
+            for _ in range(300):
                 if source_position.exists():
                     break
                 if source.poll() is not None:
@@ -406,6 +407,9 @@ with log.open("w") as output:
                         "Native drop source failed; see drop-source.log"
                     )
                 time.sleep(0.1)
+            assert (
+                source_position.exists()
+            ), "Native drop source did not become ready; see drop-source.log"
             sx, sy = json.loads(source_position.read_text())
             ui.click(sx, sy)
             time.sleep(0.5)
@@ -414,7 +418,9 @@ with log.open("w") as output:
                 ui.moveTo(sx, sy)
                 ui.mouseDown()
                 time.sleep(0.3)
-                ui.moveTo(left + x, top + y, duration=2)
+                ui.dragTo(
+                    left + x, top + y, duration=2, button="left", mouseDownUp=False
+                )
                 time.sleep(0.5)
                 ui.mouseUp()
                 time.sleep(0.5)
@@ -440,8 +446,9 @@ with log.open("w") as output:
                 flush=True,
             )
         # Open DevTools, return to the host content and request graceful exit.
-        click(334, 223)
-        click(438, 164)
+        click(*control("main", "quit"))
+        wait_log("CEF_SMOKE_QUIT requested")
+        click(*control("main", "tools"))
         time.sleep(2)
         screenshot("devtools")
         if sys.platform == "darwin":
@@ -513,3 +520,7 @@ with log.open("w") as output:
                 app.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 app.kill()
+
+        cef_log = a.runtime / "debug.log"
+        if cef_log.exists():
+            shutil.copy2(cef_log, a.output / "cef.log")
