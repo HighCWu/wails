@@ -132,6 +132,7 @@ if a.scenario == "media":
     env["WAILS_CEF_LOG_VERBOSE"] = "1"
 log = a.output / "application.log"
 source = None
+bundle_id = ""
 
 
 def origin():
@@ -251,6 +252,16 @@ with log.open("w") as output:
                 AppKit.NSApplicationActivateIgnoringOtherApps
             )
             time.sleep(0.5)
+            # The app's bundle domain, for NSOpenPanel location defaults.
+            if a.helper:
+                plist = Path(a.helper).parent.parent.parent / "Info.plist"
+            else:
+                plist = Path(a.binary).parent / "Info.plist"
+            if plist.exists():
+                import plistlib
+
+                bundle_id = plistlib.loads(plist.read_bytes()).get(
+                    "CFBundleIdentifier", "")
         # macOS: a preceding scenario can leave focus elsewhere; the first
         # click may only activate the window. Retry the type-and-greet
         # sequence, re-activating the app, before failing.
@@ -397,7 +408,22 @@ with log.open("w") as output:
             fdm = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(fdm)
 
+            fd_dirs = {"open": "open", "open-attached": "open",
+                       "cancel-open": "open", "filter": "open",
+                       "directory": "dirs", "multiple": "multiple",
+                       "save": ".", "save-attached": ".", "overwrite": "."}
+
             def fd_request(case):
+                if sys.platform == "darwin" and bundle_id and case in fd_dirs:
+                    # NSOpenPanel/NSSavePanel reopen at their remembered
+                    # location and ignore the requested start directory; pin
+                    # the panel to the case's single-item fixture view (or
+                    # the fixture root for save cases) instead.
+                    subprocess.run(
+                        ["defaults", "write", bundle_id,
+                         "NSNavLastRootDirectory",
+                         str((file_dir / fd_dirs[case]).resolve())],
+                        check=True)
                 click(*control("main", "name"))
                 ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
                 ui.press("backspace")

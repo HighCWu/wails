@@ -393,7 +393,25 @@ try:
         fdm = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(fdm)
 
+        fd_dirs = {"open": "open", "open-attached": "open",
+                   "cancel-open": "open", "filter": "open",
+                   "directory": "dirs", "multiple": "multiple",
+                   "save": "", "save-attached": "", "overwrite": ""}
+
         def fd_request(case):
+            # GTK remembers the chooser's last folder in this setting; pin
+            # it per case so the chooser opens on the single-item fixture
+            # view (or the fixture root for save cases) instead of racing
+            # the requested start folder. Best-effort: a runner without a
+            # dconf session simply keeps GTK's default restore behaviour.
+            sub = fd_dirs.get(case)
+            if sub is not None:
+                uri = (file_dir / sub if sub else file_dir).resolve().as_uri()
+                subprocess.run(
+                    ["gsettings", "set", "org.gtk.Settings.FileChooser",
+                     "last-folder-uri", uri],
+                    env=env, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, timeout=10)
             run("xdotool", "windowactivate", "--sync", window)
             click(100, 164)
             run("xdotool", "key", "ctrl+a")
@@ -426,9 +444,13 @@ try:
                         xprop = run("xprop", "-id", wid, "_NET_WM_WINDOW_TYPE")
                         if "NORMAL" in xprop or "DIALOG" in xprop:
                             candidates.append(wid)
-                if len(candidates) == 1:
-                    run("xdotool", "windowactivate", "--sync", candidates[0])
-                    geometry = run("xwininfo", "-id", candidates[0])
+                if candidates:
+                    # The most recently mapped candidate is the chooser;
+                    # a previous dialog's X window can linger briefly after
+                    # its GTK widget was destroyed.
+                    target = candidates[-1]
+                    run("xdotool", "windowactivate", "--sync", target)
+                    geometry = run("xwininfo", "-id", target)
                     dx = int(re.search(r"Absolute upper-left X:\s+(-?\d+)", geometry)[1])
                     dy = int(re.search(r"Absolute upper-left Y:\s+(-?\d+)", geometry)[1])
                     w = int(re.search(r"Width:\s+(\d+)", geometry)[1])
