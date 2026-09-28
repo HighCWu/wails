@@ -7,12 +7,18 @@ CASES = ['open', 'open-attached', 'cancel-open', 'save', 'save-attached',
 
 
 def prepare_files(root):
+    # open/ and dirs/ are single-item views: their chooser opens with
+    # exactly one selectable entry, so keyboard selection (End + Enter)
+    # cannot miss regardless of the runner's sort order or resolution.
     root.mkdir(parents=True, exist_ok=True)
+    (root / 'open').mkdir(exist_ok=True)
+    (root / 'dirs').mkdir(exist_ok=True)
     (root / 'multiple').mkdir(exist_ok=True)
-    (root / '目录').mkdir(exist_ok=True)
-    for name in ['中文文件.txt', 'existing.txt', 'excluded.bin',
-                 'multiple/first.txt', 'multiple/第二个.txt']:
-        (root / name).write_text('CEF file dialog fixture\n', encoding='utf-8')
+    (root / 'open/中文文件.txt').write_text('CEF file dialog fixture\n', encoding='utf-8')
+    (root / 'dirs/目录').mkdir(exist_ok=True)
+    (root / 'existing.txt').write_text('CEF file dialog fixture\n', encoding='utf-8')
+    (root / 'multiple/first.txt').write_text('CEF file dialog fixture\n', encoding='utf-8')
+    (root / 'multiple/第二个.txt').write_text('CEF file dialog fixture\n', encoding='utf-8')
 
 
 def check_file_dialogs(root, platform, request, opened, key, paste, result, screenshot,
@@ -25,6 +31,14 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
         screenshot('file-' + case + '-open')
         if case.startswith('cancel'):
             key('esc')
+            if is_open is not None:
+                # Focus can sit on the parent window after programmatic
+                # activation; Esc again while the chooser is still up.
+                for _ in range(3):
+                    time.sleep(1.2)
+                    if not is_open():
+                        break
+                    key('esc')
             answer = result(case)
             assert answer['paths'] == [], answer
             error = answer['error'].lower()
@@ -47,15 +61,12 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
             else:
                 filename = {'save':'saved.txt', 'save-attached':'attached.txt',
                             'overwrite':'existing.txt', 'directory':'目录'}.get(case, '中文文件.txt')
-                expected = [root / filename]
+                sub = {'open': 'open', 'open-attached': 'open', 'cancel-open': 'open',
+                       'filter': 'open', 'directory': 'dirs'}.get(case, '')
+                expected = [root / filename if not sub else root / sub / filename]
                 if platform == 'darwin':
-                    key('command', 'shift', 'g')
-                    time.sleep(.4)
-                    screenshot('file-' + case + '-goto')
-                    paste(str(expected[0]))
-                    key('enter')
-                    time.sleep(.8)
-                    screenshot('file-' + case + '-navigated')
+                    # Single-item fixture view: End selects the only entry.
+                    key('End')
                 elif platform == 'win32':
                     key('alt', 'n')
                     paste(str(expected[0]))

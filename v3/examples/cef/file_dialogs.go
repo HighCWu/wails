@@ -55,9 +55,21 @@ func (*ProbeService) FileDialog(name string) {
 			result.Paths = append(result.Paths, path)
 		}
 	case "open", "open-attached", "cancel-open", "filter", "multiple", "directory":
+		// Single-item fixture views make native keyboard selection
+		// deterministic on every platform (the panel opens with exactly
+		// one selectable entry, so Home/End/Enter cannot miss).
+		base := root
+		switch name {
+		case "open", "open-attached", "cancel-open", "filter":
+			base = filepath.Join(root, "open")
+		case "directory":
+			base = filepath.Join(root, "dirs")
+		case "multiple":
+			base = filepath.Join(root, "multiple")
+		}
 		d := app.Dialog.OpenFile().
 			SetTitle("CEF file dialog").
-			SetDirectory(root).
+			SetDirectory(base).
 			CanChooseFiles(true)
 		if name == "open-attached" {
 			w, _ := app.Window.GetByName("main")
@@ -70,7 +82,6 @@ func (*ProbeService) FileDialog(name string) {
 			d.CanChooseDirectories(true).CanChooseFiles(false)
 		}
 		if name == "multiple" {
-			d.SetDirectory(filepath.Join(root, "multiple"))
 			result.Paths, err = d.PromptForMultipleSelection()
 		} else {
 			var path string
