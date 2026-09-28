@@ -13,11 +13,6 @@ on:
       - '.github/workflows/build-and-test-v3.yml'
   pull_request_review:
     types: [submitted]
-    branches:
-      - master
-
-permissions:
-  contents: read
 
 jobs:
   test_js:
