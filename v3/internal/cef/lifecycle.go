@@ -4,7 +4,7 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15200
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
 */
 import "C"
 
@@ -82,7 +82,6 @@ func ExecuteSubprocess() error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "[cef-sub] execute_process enter args=%d\n", len(os.Args))
 	ma := newMainArgs()
 	defer ma.free()
 	app := buildApp()
@@ -162,7 +161,7 @@ func Initialize(opts InitializeOptions) error {
 		return fmt.Errorf("cef: cef_initialize failed (see %s)", logHint(opts))
 	}
 
-	// Register the wails:// scheme handler on the global request context.
+	// Register the http://wails.localhost scheme handler on the global request context.
 	// Documented as callable from any browser-process thread.
 	if !registerSchemeFactory() {
 		return fmt.Errorf("cef: cef_register_scheme_handler_factory failed")

@@ -4,7 +4,7 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15200
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
 
 // Shims over the //export'ed callbacks in scheme_handlers.go.
 
@@ -32,6 +32,20 @@ static void wails_cef_resource_cancel(struct _cef_resource_handler_t* self) {
   wailsCEFResourceCancel(self);
 }
 
+// Explicitly select the legacy async callbacks. A missing Read callback
+// defaults to EOF, not ReadResponse: CEF requires bytes_read=-1 to delegate.
+static int wails_cef_resource_open(struct _cef_resource_handler_t* self,
+    struct _cef_request_t* request, int* handle_request, struct _cef_callback_t* callback) {
+  *handle_request = 0;
+  return 0;
+}
+static int wails_cef_resource_read(struct _cef_resource_handler_t* self,
+    void* data_out, int bytes_to_read, int* bytes_read,
+    struct _cef_resource_read_callback_t* callback) {
+  *bytes_read = -1;
+  return 0;
+}
+
 // Struct initialisers (see app.go for why wiring happens in C).
 static void wcef_init_factory(void* p) {
   cef_scheme_handler_factory_t* f = (cef_scheme_handler_factory_t*)p;
@@ -39,6 +53,8 @@ static void wcef_init_factory(void* p) {
 }
 static void wcef_init_resource_handler(void* p) {
   cef_resource_handler_t* h = (cef_resource_handler_t*)p;
+  h->open = wails_cef_resource_open;
+  h->read = wails_cef_resource_read;
   h->process_request = wails_cef_resource_process_request;
   h->get_response_headers = wails_cef_resource_get_response_headers;
   h->read_response = wails_cef_resource_read_response;
@@ -50,6 +66,7 @@ import "C"
 import (
 	"bytes"
 	"io"
+	mimepkg "mime"
 	"net/http"
 	"strconv"
 	"sync"
@@ -60,7 +77,7 @@ import (
 
 var theFactory *C.cef_scheme_handler_factory_t
 
-// buildSchemeFactory creates the singleton wails:// factory.
+// buildSchemeFactory creates the singleton http://wails.localhost factory.
 func buildSchemeFactory() *C.cef_scheme_handler_factory_t {
 	if theFactory != nil {
 		return theFactory
@@ -225,7 +242,11 @@ func resourceGetResponseHeaders(self *C.cef_resource_handler_t, response *C.cef_
 		C.wcef_response_set_status_text(response, s.ptr())
 	}
 	if mime != "" {
-		m := newCefString(mime)
+		mediaType, _, err := mimepkg.ParseMediaType(mime)
+		if err != nil {
+			mediaType = mime
+		}
+		m := newCefString(mediaType)
 		defer m.Clear()
 		C.wcef_response_set_mime_type(response, m.ptr())
 	}

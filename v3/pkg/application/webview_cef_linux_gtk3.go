@@ -7,106 +7,41 @@ package application
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
 #include <X11/Xlib.h>
+#include <X11/XKBlib.h>
 
-// wails_cef_create_host_child creates a RAW X child window under the
-// drawing area's X window. CEF's windowed browser cannot parent into a
-// GDK-owned window (its presenter ends up targeting the wrong window and
-// fails with XGetWindowAttributes errors); a plain X child works (same
-// finding as the pure-C host experiments).
-// wails_cef_create_host_child creates the raw X window that parents the
-// browser. It must be a CHILD OF ROOT positioned over the drawing area:
-// with a GDK window anywhere in its ancestor chain CEF's presenter
-// fails (verified experimentally; root-direct children work).
-static unsigned long wails_cef_create_host_child(GtkWidget* widget, int w, int h) {
-  GdkWindow* win = gtk_widget_get_window(widget);
-  if (win == NULL) return 0;
+unsigned int wails_cef_keyval(unsigned int keycode) {
   Display* d = gdk_x11_get_default_xdisplay();
-  gint ox = 0, oy = 0;
-  gdk_window_get_origin(win, &ox, &oy);
-  Window root = DefaultRootWindow(d);
-  Window child = XCreateSimpleWindow(d, root, ox, oy, (unsigned)w, (unsigned)h, 0, 0, 0);
-  XMapWindow(d, child);
-  // Keep the host directly above the GTK toplevel in the stacking order.
-  GdkWindow* top = gtk_widget_get_window(gtk_widget_get_toplevel(widget));
-  if (top != NULL) {
-    Window order[2] = { (Window)gdk_x11_window_get_xid(top), child };
-    XRestackWindows(d, order, 2);
-  }
-  XFlush(d);
-  return (unsigned long)child;
+  XkbStateRec state = {0};
+  XkbGetState(d, XkbUseCoreKbd, &state);
+  return XkbKeycodeToKeysym(d, keycode, state.group, 0);
 }
 
-// wails_cef_sync_host moves/resizes the host window to track the drawing
-// area (origin change from window moves, size from size-allocate).
-static void wails_cef_sync_host(GtkWidget* widget, unsigned long host) {
-  GdkWindow* win = gtk_widget_get_window(widget);
-  if (win == NULL || host == 0) return;
-  Display* d = gdk_x11_get_default_xdisplay();
-  gint ox = 0, oy = 0;
-  gdk_window_get_origin(win, &ox, &oy);
-  GtkAllocation a;
-  gtk_widget_get_allocation(widget, &a);
-  XMoveResizeWindow(d, (Window)host, ox, oy, (unsigned)a.width, (unsigned)a.height);
-  GdkWindow* top = gtk_widget_get_window(gtk_widget_get_toplevel(widget));
-  if (top != NULL) {
-    Window order[2] = { (Window)gdk_x11_window_get_xid(top), (Window)host };
-    XRestackWindows(d, order, 2);
-  }
-  XFlush(d);
+// GTK's preferred/system visual may differ from the X11 default visual.
+// Chromium creates its embedded child using the default visual; a mismatch
+// causes BadMatch during window creation and leaves an empty GTK container.
+// Match cefclient's UseDefaultX11VisualForGtk, before realizing the widget.
+static void wails_cef_set_default_visual(GtkWidget* widget) {
+  GdkScreen* screen = gtk_widget_get_screen(widget);
+  Display* display = GDK_SCREEN_XDISPLAY(screen);
+  Visual* visual = DefaultVisual(display, GDK_SCREEN_XNUMBER(screen));
+  GdkVisual* gvisual = gdk_x11_screen_lookup_visual(screen, visual->visualid);
+  if (gvisual != NULL) gtk_widget_set_visual(widget, gvisual);
 }
 
-// wails_cef_destroy_window unmaps and destroys an X window.
-static void wails_cef_destroy_window(unsigned long xwin) {
-  if (xwin == 0) return;
-  Display* d = gdk_x11_get_default_xdisplay();
-  XDestroyWindow(d, (Window)xwin);
-  XFlush(d);
-}
-
-// wails_cef_resize_window resizes an X window (the host child or the
-// browser window found under it).
-static void wails_cef_resize_window(unsigned long xwin, int w, int h) {
-  if (xwin == 0) return;
-  Display* d = gdk_x11_get_default_xdisplay();
-  XResizeWindow(d, (Window)xwin, (unsigned)w, (unsigned)h);
-  XFlush(d);
-}
-
-// wails_cef_child_of returns the first child window of the given X
-// window (0 if none) — used to find the browser window for resizing.
-static unsigned long wails_cef_child_of(unsigned long xwin) {
-  if (xwin == 0) return 0;
-  Display* d = gdk_x11_get_default_xdisplay();
-  Window r, p, *kids = NULL; unsigned int n = 0;
-  unsigned long out = 0;
-  if (XQueryTree(d, (Window)xwin, &r, &p, &kids, &n) && n > 0) out = kids[0];
-  if (kids) XFree(kids);
-  return out;
-}
-
-// wails_cef_toplevel_xid returns the X11 window of the widget's
-// toplevel window.
-static unsigned long wails_cef_toplevel_xid(GtkWidget* widget) {
-  GtkWidget* top = gtk_widget_get_toplevel(widget);
-  GdkWindow* win = gtk_widget_get_window(top);
-  if (win == NULL) return 0;
-  return (unsigned long)gdk_x11_window_get_xid(win);
-}
-
-// wails_cef_widget_xid returns the X11 window of a realised widget.
 static unsigned long wails_cef_widget_xid(GtkWidget* widget) {
   GdkWindow* win = gtk_widget_get_window(widget);
   if (win == NULL) return 0;
+  // CEF uses a separate X connection. Publish the parent before creating
+  // its child on that connection.
+  gdk_display_sync(gtk_widget_get_display(widget));
   return (unsigned long)gdk_x11_window_get_xid(win);
 }
 
-// wails_cef_resize_browser resizes the browser's native child window to
-// match the GTK container allocation. CEF windowed browsers on X11 do not
-// track their parent automatically.
 static void wails_cef_resize_browser(unsigned long xwin, int w, int h) {
   if (xwin == 0) return;
   Display* d = gdk_x11_get_default_xdisplay();
   XResizeWindow(d, (Window)xwin, (unsigned)w, (unsigned)h);
+  XFlush(d);
 }
 
 // wails_cef_query_pointer returns the current pointer position relative
@@ -130,27 +65,45 @@ static int wails_cef_query_pointer(GtkWidget* widget, int* btn, int* root_x, int
   return 1;
 }
 
-// wails_cef_focus_xwin forwards the X keyboard focus to the embedded
-// browser's native child window: the WM focuses the GTK toplevel, and X
-// delivers key events to the focused window — CEF's window would never
-// see them otherwise.
-static unsigned long wails_cef_focus_input_child(GtkWidget* widget) {
-  GdkWindow* win = gtk_widget_get_window(widget);
-  if (win == NULL) return 0;
+// Focus may arrive before CEF maps its child. Retry only while the GTK
+// toplevel itself owns X focus; never steal focus from another native window.
+static int wails_cef_toplevel_has_xfocus(GtkWidget* widget) {
+  GdkWindow* top = gtk_widget_get_window(gtk_widget_get_toplevel(widget));
+  if (!top) return 0;
+  Window focused; int revert;
+  XGetInputFocus(gdk_x11_get_default_xdisplay(), &focused, &revert);
+  Window top_xid = gdk_x11_window_get_xid(top);
+  if (focused == top_xid) return 1;
+  // GDK usually focuses a hidden 1x1 InputOnly proxy below its toplevel.
+  // It is not the browser, and CEF cannot receive keys through that proxy.
+  if (focused == None || focused == PointerRoot) return 0;
+  XWindowAttributes attr;
   Display* d = gdk_x11_get_default_xdisplay();
-  Window w = (Window)gdk_x11_window_get_xid(win);
-  Window r, p, *kids = NULL; unsigned int n = 0;
-  if (!XQueryTree(d, w, &r, &p, &kids, &n) || n == 0) return 0;
-  unsigned long target = 0;
-  for (unsigned int i = 0; i < n; i++) {
-    XWindowAttributes attr;
-    if (!XGetWindowAttributes(d, kids[i], &attr)) continue;
-    if (attr.width > 2) { target = kids[i]; break; }
-    if (target == 0) target = kids[i];
+  if (!XGetWindowAttributes(d, focused, &attr) || attr.class != InputOnly) return 0;
+  Window root, parent, *children = NULL; unsigned int count = 0;
+  int ok = XQueryTree(d, focused, &root, &parent, &children, &count);
+  if (children) XFree(children);
+  return ok && parent == top_xid;
+}
+
+// CEF's outer X window contains a DesktopWindowTreeHost input child.
+// Focus that mapped child, matching CefWindowX11::Focus, rather than the
+// outer wrapper (which does not receive Chromium keyboard events).
+static void wails_cef_focus_browser(unsigned long host) {
+  if (!host) return;
+  Display* d = gdk_x11_get_default_xdisplay();
+  Window root, parent, *children = NULL; unsigned int count = 0;
+  if (XQueryTree(d, host, &root, &parent, &children, &count)) {
+    for (unsigned int i = 0; i < count; ++i) {
+      XWindowAttributes a;
+      if (XGetWindowAttributes(d, children[i], &a) && a.map_state == IsViewable && a.width > 1) {
+        XSetInputFocus(d, children[i], RevertToParent, CurrentTime);
+        XFlush(d);
+        break;
+      }
+    }
   }
-  XFree(kids);
-  if (target != 0) XSetInputFocus(d, (Window)target, RevertToParent, CurrentTime);
-  return target;
+  if (children) XFree(children);
 }
 
 // wails_cef_widget_size returns the widget's current allocation.
@@ -186,7 +139,6 @@ import "C"
 
 import (
 	"fmt"
-	"os"
 	"sync"
 	"unsafe"
 
@@ -206,9 +158,7 @@ type linuxCEFWebview struct {
 	// creation; CEF latches it with the first paint.
 	background uint32
 
-	// hostChild is the raw X child window under the drawing area that
-	// parents the CEF browser (GDK-owned parents break CEF's presenter).
-	hostChild uintptr
+	closed bool
 
 	// creating guards concurrent attach attempts; attached means the
 	// browser exists (and is only set on success so lazy retries work).
@@ -240,8 +190,12 @@ func init() {
 // newCEFWebview creates the GTK container widget used in place of a
 // WebKitWebView. The CEF browser itself is created when the widget is
 // mapped (its X11 window only exists then).
-func newCEFWebview(windowId uint, _ WebviewGpuPolicy) pointer {
+func newCEFWebview(windowId uint, gpuPolicy WebviewGpuPolicy) pointer {
+	if globalApplication.webviewBackend != WebviewBackendCEF {
+		return windowNewWebview(windowId, gpuPolicy)
+	}
 	widget := pointer(C.gtk_drawing_area_new())
+	C.wails_cef_set_default_visual((*C.GtkWidget)(widget))
 	C.gtk_widget_set_can_focus((*C.GtkWidget)(widget), C.gboolean(1))
 	e := &linuxCEFWebview{widget: widget, windowID: windowId}
 	cefEngines.Store(unsafe.Pointer(widget), e)
@@ -256,7 +210,7 @@ func newCEFWebview(windowId uint, _ WebviewGpuPolicy) pointer {
 // swallowed entirely).
 func (e *linuxCEFWebview) tryAttach() {
 	e.mu.Lock()
-	done := e.attached || e.creating || e.startURL == "" || e.browser != nil
+	done := e.closed || e.attached || e.creating || e.startURL == "" || e.browser != nil
 	e.mu.Unlock()
 	if done {
 		return
@@ -271,7 +225,7 @@ func (e *linuxCEFWebview) tryAttach() {
 // on the GTK main thread from the map handler.
 func (e *linuxCEFWebview) attach() {
 	e.mu.Lock()
-	if e.attached || e.creating {
+	if e.closed || e.attached || e.creating {
 		e.mu.Unlock()
 		return
 	}
@@ -283,7 +237,6 @@ func (e *linuxCEFWebview) attach() {
 		e.mu.Unlock()
 	}()
 
-	fmt.Fprintf(os.Stderr, "[cef-attach] attempt: startURL=%q\n", e.startURL)
 	if e.startURL == "" {
 		// The window's initial URL arrives via setURL after the first
 		// allocation; defer browser creation until then (loadURL calls
@@ -295,25 +248,8 @@ func (e *linuxCEFWebview) attach() {
 		e.attachErr = fmt.Errorf("CEF: widget has no X11 window")
 		return
 	}
-	// CEF cannot parent into a GDK-owned window; host it on a raw X child.
-	winWidth0, winHeight0 := e.parent.size()
-	hostChild := uintptr(C.wails_cef_create_host_child((*C.GtkWidget)(e.widget), C.int(winWidth0), C.int(winHeight0)))
-	if hostChild == 0 {
-		e.attachErr = fmt.Errorf("CEF: cannot create host child window")
-		return
-	}
-	e.mu.Lock()
-	e.hostChild = hostChild
-	e.mu.Unlock()
-	xid = hostChild
-	// Forward toplevel keyboard focus to the browser window once it exists
-	// (see focusBrowser).
-	if e.parent != nil {
-		C.wails_cef_connect_focus((*C.GtkWidget)(e.parent.window))
-	}
 
 	winWidth, winHeight := e.parent.size()
-	fmt.Fprintf(os.Stderr, "[cef-attach] creating browser host=0x%x url=%s\n", hostChild, e.startURL)
 	browser, err := cef.CreateBrowser(cef.CreateBrowserOptions{
 		WindowID:        e.windowID,
 		ParentXWindow:   xid,
@@ -358,7 +294,10 @@ func (e *linuxCEFWebview) openDevTools() {
 // focusBrowser moves the X keyboard focus onto the browser's native
 // window; called from the GTK toplevel's focus-in-event.
 func (e *linuxCEFWebview) focusBrowser() {
-	C.wails_cef_focus_input_child((*C.GtkWidget)(e.widget))
+	if b := e.browserOrWait(); b != nil && b.XWindow() != 0 {
+		b.Focus()
+		C.wails_cef_focus_browser(C.ulong(b.XWindow()))
+	}
 }
 
 // queryPointerDragState returns (button, rootX, rootY) of the pointer
@@ -423,35 +362,45 @@ func (e *linuxCEFWebview) stopAndClose() {
 	e.mu.Lock()
 	browser := e.browser
 	e.browser = nil
-	host := e.hostChild
-	e.hostChild = 0
+	e.closed = true
 	e.mu.Unlock()
+	cefEngines.Delete(unsafe.Pointer(e.widget))
 	if browser != nil {
-		browser.Close(false)
-	}
-	// The host window is a root child; remove it so it cannot outlive the
-	// GTK window it was overlaying.
-	if host != 0 {
-		C.wails_cef_destroy_window(C.ulong(host))
+		browser.Close(true)
 	}
 }
 
-// resizeBrowser sizes the native browser window to match the container.
-// Called from the GTK main thread (size-allocate) and right after attach.
+// resizeBrowser sizes the native browser child to match the GTK container.
+// Creation is asynchronous: retry from the pump until the native handle exists.
 func (e *linuxCEFWebview) resizeBrowser(width, height int) {
 	if width <= 1 || height <= 1 {
 		return
 	}
-	e.mu.Lock()
-	lastW, lastH := e.lastWidth, e.lastHeight
-	e.lastWidth, e.lastHeight = width, height
-	e.mu.Unlock()
-	if (lastW == width && lastH == height) || e.hostChild == 0 {
+	b := e.browserOrWait()
+	if b == nil {
 		return
 	}
-	C.wails_cef_sync_host((*C.GtkWidget)(e.widget), C.ulong(e.hostChild))
-	if child := uintptr(C.wails_cef_child_of(C.ulong(e.hostChild))); child != 0 {
-		C.wails_cef_resize_window(C.ulong(child), C.int(width), C.int(height))
+	xid := b.XWindow()
+	if xid == 0 {
+		return
+	}
+	e.mu.Lock()
+	if e.lastWidth == width && e.lastHeight == height {
+		e.mu.Unlock()
+		return
+	}
+	e.lastWidth, e.lastHeight = width, height
+	e.mu.Unlock()
+	C.wails_cef_resize_browser(C.ulong(xid), C.int(width), C.int(height))
+
+}
+
+func (e *linuxCEFWebview) syncSize() {
+	var width, height C.int
+	C.wails_cef_widget_size((*C.GtkWidget)(e.widget), &width, &height)
+	e.resizeBrowser(int(width), int(height))
+	if C.wails_cef_toplevel_has_xfocus((*C.GtkWidget)(e.widget)) != 0 {
+		e.focusBrowser()
 	}
 }
 
@@ -493,7 +442,9 @@ func engineForToplevel(toplevel unsafe.Pointer) *linuxCEFWebview {
 func (w *linuxWebviewWindow) attachCEFEngine() {
 	if e, ok := cefEngines.Load(unsafe.Pointer(w.webview)); ok {
 		engine := e.(*linuxCEFWebview)
+		C.wails_cef_set_default_visual((*C.GtkWidget)(w.window))
 		engine.parent = w
+		C.wails_cef_connect_focus((*C.GtkWidget)(w.window))
 		w.cefEngine = engine
 	}
 }

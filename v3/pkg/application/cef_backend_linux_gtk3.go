@@ -5,6 +5,7 @@ package application
 /*
 #cgo linux pkg-config: gtk+-3.0 webkit2gtk-4.1 gdk-3.0
 #include <gtk/gtk.h>
+unsigned int wails_cef_keyval(unsigned int keycode);
 
 // The pump callback: calls into the cef package's DoMessageLoopWork.
 extern gboolean wailsCEFPumpMessageLoop(gpointer user_data);
@@ -22,7 +23,6 @@ import "C"
 import (
 	"fmt"
 	"os"
-	"sync"
 	"unsafe"
 
 	"github.com/wailsapp/wails/v3/internal/assetserver"
@@ -61,15 +61,14 @@ func wailsCEFOnMap(widget *C.GtkWidget, userData C.gpointer) {
 	}
 }
 
-var pumpOnce sync.Once
-
 //export wailsCEFPumpMessageLoop
 func wailsCEFPumpMessageLoop(userData C.gpointer) C.gboolean {
-	pumpOnce.Do(func() { fmt.Fprintln(os.Stderr, "[cef-pump] first tick") })
 	cef.DoMessageLoopWork()
 	// Lazy attach driver (see tryAttach): runs on the GTK main thread.
 	cefEngines.Range(func(_, v any) bool {
-		v.(*linuxCEFWebview).tryAttach()
+		engine := v.(*linuxCEFWebview)
+		engine.tryAttach()
+		engine.syncSize()
 		return true
 	})
 	return C.gboolean(1) // keep the source
@@ -79,8 +78,10 @@ func wailsCEFPumpMessageLoop(userData C.gpointer) C.gboolean {
 func wailsCEFOnFocusIn(widget *C.GtkWidget, event *C.GdkEvent, userData C.gpointer) C.gboolean {
 	if e := engineForToplevel(unsafe.Pointer(widget)); e != nil {
 		e.focusBrowser()
+		// Match cefclient: GTK must not take focus back from the native browser.
+		return C.gboolean(1)
 	}
-	return C.gboolean(0) // let GTK continue default handling
+	return C.gboolean(0)
 }
 
 //export wailsCEFOnSizeAllocate
@@ -89,7 +90,7 @@ func wailsCEFOnSizeAllocate(widget *C.GtkWidget, allocation *C.GdkRectangle, use
 		engine := e.(*linuxCEFWebview)
 		// First valid allocation drives browser creation — the drawing
 		// area's absolute origin is only reliable after toplevel layout.
-		if engine.hostChild == 0 {
+		if engine.browserOrWait() == nil {
 			engine.attach()
 			return
 		}
@@ -199,7 +200,7 @@ func shutdownCEFBackend() {
 	cef.Shutdown()
 }
 
-// cefAccelerator converts a CEF key event (X keysym + EVENTFLAG modifier
+// cefAccelerator converts a CEF key event (X keycode + EVENTFLAG modifier
 // mask) into the wails accelerator string used by key bindings and menus.
 func cefAccelerator(nativeKeyCode, modifiers uint32) (string, bool) {
 	var acc accelerator
@@ -212,7 +213,7 @@ func cefAccelerator(nativeKeyCode, modifiers uint32) (string, bool) {
 	if modifiers&cef.EventFlagAltDown != 0 {
 		acc.Modifiers = append(acc.Modifiers, OptionOrAltKey)
 	}
-	keyString, ok := VirtualKeyCodes[uint(nativeKeyCode)]
+	keyString, ok := VirtualKeyCodes[uint(C.wails_cef_keyval(C.uint(nativeKeyCode)))]
 	if !ok {
 		return "", false
 	}

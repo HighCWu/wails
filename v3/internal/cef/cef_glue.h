@@ -110,6 +110,7 @@ cef_v8_context_t* wcef_v8_context_get_current(void);
 cef_v8_value_t* wcef_v8_value_create_object(void);
 cef_v8_value_t* wcef_v8_value_create_function(const cef_string_t* name, cef_v8_handler_t* handler);
 int wcef_v8_value_set_bykey(cef_v8_value_t* obj, const cef_string_t* key, cef_v8_value_t* value);
+void wcef_install_webview_bridge(cef_v8_value_t* global, cef_v8_value_t* fn);
 cef_v8_value_t* wcef_v8ctx_get_global(cef_v8_context_t* ctx);
 
 // ---------------------------------------------------------------------------
@@ -194,7 +195,7 @@ double wcef_host_get_zoom_level(cef_browser_host_t* h);
 void wcef_host_set_zoom_level(cef_browser_host_t* h, double zoom_level);
 
 // cef_browser_host_t (continued)
-void wcef_host_show_dev_tools(cef_browser_host_t* h);
+void wcef_host_show_dev_tools(cef_browser_host_t* h, cef_client_t* client);
 
 // cef_drag_data_t (browser process, drag handler)
 cef_string_list_t wcef_drag_data_get_file_paths(cef_drag_data_t* d);

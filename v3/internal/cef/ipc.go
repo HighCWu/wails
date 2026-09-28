@@ -4,7 +4,7 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15200
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
 */
 import "C"
 
@@ -29,6 +29,7 @@ func installWailsV8Binding(context *C.cef_v8_context_t) {
 	if global == nil {
 		return
 	}
+	defer C.wcef_obj_release(unsafe.Pointer(global))
 	obj := C.wcef_v8_value_create_object()
 	if obj == nil {
 		return
@@ -47,6 +48,7 @@ func installWailsV8Binding(context *C.cef_v8_context_t) {
 	wailsKey := newCefString("wails")
 	defer wailsKey.Clear()
 	C.wcef_v8_value_set_bykey(global, wailsKey.ptr(), obj)
+	C.wcef_install_webview_bridge(global, fn)
 }
 
 // v8Execute implements cef_v8_handler_t.execute in the renderer process:

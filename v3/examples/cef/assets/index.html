@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>CEF smoke</title>
+<style>
+body { margin: 0; background: white; color: #111; font: 18px sans-serif; }
+h1 { margin: 0; padding: 28px; height: 64px; background: rgb(30,102,245); color: white; }
+section { padding: 24px; }
+input, button { font: inherit; padding: 8px; }
+#size { position: fixed; right: 16px; bottom: 12px; }
+</style>
+<h1>Wails + CEF: native GTK embedding</h1>
+<section>
+<input id="name" placeholder="Type a name" aria-label="Name">
+<button id="greet">Call Go</button>
+<button id="red">Red</button>
+<button id="tools">DevTools</button>
+<p id="output">Loading runtime…</p>
+<p>Type a name and call Go. Ctrl+M tests Go → JavaScript.</p>
+</section>
+<div id="size"></div>
+<script type="module">
+import { Call, Window } from '/wails/runtime.js';
+const output = document.getElementById('output');
+const size = document.getElementById('size');
+function resized() { size.textContent = `${innerWidth} × ${innerHeight}`; }
+addEventListener('resize', resized); resized();
+output.textContent = `Runtime ready; invoke bridge: ${typeof window.chrome?.webview?.postMessage === 'function'}`;
+document.title = 'CEF smoke ready';
+document.getElementById('red').onclick = () => { document.body.style.background = 'red'; };
+document.getElementById('tools').onclick = () => Window.OpenDevTools();
+document.getElementById('greet').onclick = async () => {
+  try {
+    output.textContent = await Call.ByName('main.ProbeService.Greet', document.getElementById('name').value);
+    document.body.style.background = 'lime';
+    document.title = 'CEF smoke RPC OK';
+  } catch (e) { output.textContent = String(e); document.title = 'CEF smoke RPC ERROR'; }
+};
+</script>
+</html>

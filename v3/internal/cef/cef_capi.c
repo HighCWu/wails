@@ -28,13 +28,10 @@ typedef int (*wcef_string_multimap_append_fn)(cef_string_multimap_t, const cef_s
 typedef size_t (*wcef_string_multimap_size_fn)(cef_string_multimap_t);
 
 typedef cef_process_message_t* (*wcef_process_message_create_fn)(const cef_string_t*, cef_process_id_t);
-typedef void (*wcef_host_show_dev_tools_fn)(cef_browser_host_t*, const cef_window_info_t*, cef_client_t*, const cef_browser_settings_t*, const cef_point_t*);
-typedef cef_string_list_t (*wcef_drag_get_file_paths_fn)(cef_drag_data_t*, cef_string_list_t);
 typedef cef_string_list_t (*wcef_string_list_alloc_fn)(void);
 typedef void (*wcef_string_list_free_fn)(cef_string_list_t);
 typedef size_t (*wcef_string_list_size_fn)(cef_string_list_t);
 typedef int (*wcef_string_list_value_fn)(cef_string_list_t, size_t, cef_string_t*);
-typedef void (*wcef_media_cb_cont_fn)(void*, uint32_t);
 typedef cef_v8_context_t* (*wcef_v8_context_get_current_fn)(void);
 typedef cef_v8_value_t* (*wcef_v8_value_create_object_fn)(cef_v8_accessor_t*, cef_v8_interceptor_t*);
 typedef cef_v8_value_t* (*wcef_v8_value_create_function_fn)(const cef_string_t*, cef_v8_handler_t*);
@@ -71,13 +68,10 @@ static wcef_v8_value_create_object_fn g_v8_create_object;
 static wcef_v8_value_create_function_fn g_v8_create_function;
 static wcef_v8_value_set_bykey_fn g_v8_set_bykey;
 static wcef_register_scheme_handler_factory_fn g_register_factory;
-static wcef_host_show_dev_tools_fn g_show_dev_tools;
-static wcef_drag_get_file_paths_fn g_drag_file_paths;
 static wcef_string_list_alloc_fn g_sl_alloc;
 static wcef_string_list_free_fn g_sl_free;
 static wcef_string_list_size_fn g_sl_size;
 static wcef_string_list_value_fn g_sl_value;
-static wcef_media_cb_cont_fn g_media_cont;
 
 // wcef_sym resolves a symbol, recording the first failure.
 static void* wcef_sym(const char* name) {
@@ -122,13 +116,10 @@ int wcef_load(const char* libcef_path) {
 
   g_register_factory = (wcef_register_scheme_handler_factory_fn)wcef_sym("cef_register_scheme_handler_factory");
   g_api_hash = (wcef_api_hash_fn)wcef_sym("cef_api_hash");
-  g_show_dev_tools = (wcef_host_show_dev_tools_fn)wcef_sym("cef_browser_host_show_dev_tools");
-  g_drag_file_paths = (wcef_drag_get_file_paths_fn)wcef_sym("cef_drag_data_get_file_paths");
   g_sl_alloc = (wcef_string_list_alloc_fn)wcef_sym("cef_string_list_alloc");
   g_sl_free = (wcef_string_list_free_fn)wcef_sym("cef_string_list_free");
   g_sl_size = (wcef_string_list_size_fn)wcef_sym("cef_string_list_size");
   g_sl_value = (wcef_string_list_value_fn)wcef_sym("cef_string_list_value");
-  g_media_cont = (wcef_media_cb_cont_fn)wcef_sym("cef_media_access_callback_cont");
 
   if (g_api_hash != NULL) {
     // Configure the API version from the vendored headers BEFORE any
@@ -241,7 +232,33 @@ cef_v8_value_t* wcef_v8_value_create_function(const cef_string_t* name, cef_v8_h
 }
 
 int wcef_v8_value_set_bykey(cef_v8_value_t* obj, const cef_string_t* key, cef_v8_value_t* value) {
+  // CEF Unwrap consumes one reference for non-self object arguments.
+  // Keep the caller-owned value alive until its explicit release.
+  value->base.add_ref(&value->base);
   return obj->set_value_bykey(obj, key, value, V8_PROPERTY_ATTRIBUTE_NONE);
+}
+
+// Use the existing WebView2-compatible transport. runtime.js replaces
+// window.wails with its public exports, so an invoke property there is lost.
+void wcef_install_webview_bridge(cef_v8_value_t* global, cef_v8_value_t* fn) {
+  cef_string_t chrome_key = {0}, webview_key = {0}, post_key = {0};
+  g_str_u8u16("chrome", 6, &chrome_key);
+  g_str_u8u16("webview", 7, &webview_key);
+  g_str_u8u16("postMessage", 11, &post_key);
+  cef_v8_value_t* chrome = global->get_value_bykey(global, &chrome_key);
+  if (!chrome || !chrome->is_object(chrome)) {
+    if (chrome) chrome->base.release(&chrome->base);
+    chrome = g_v8_create_object(NULL, NULL);
+  }
+  cef_v8_value_t* webview = g_v8_create_object(NULL, NULL);
+  wcef_v8_value_set_bykey(webview, &post_key, fn);
+  wcef_v8_value_set_bykey(chrome, &webview_key, webview);
+  wcef_v8_value_set_bykey(global, &chrome_key, chrome);
+  webview->base.release(&webview->base);
+  chrome->base.release(&chrome->base);
+  g_str_u16clear(&chrome_key);
+  g_str_u16clear(&webview_key);
+  g_str_u16clear(&post_key);
 }
 
 cef_v8_value_t* wcef_v8ctx_get_global(cef_v8_context_t* ctx) { return ctx->get_global(ctx); }
@@ -379,13 +396,19 @@ double wcef_host_get_zoom_level(cef_browser_host_t* h) { return h->get_zoom_leve
 
 void wcef_host_set_zoom_level(cef_browser_host_t* h, double zoom_level) { h->set_zoom_level(h, zoom_level); }
 
-void wcef_host_show_dev_tools(cef_browser_host_t* h) {
-  g_show_dev_tools(h, NULL, NULL, NULL, NULL);
+void wcef_host_show_dev_tools(cef_browser_host_t* h, cef_client_t* client) {
+  cef_window_info_t wi = {0};
+  wi.size = sizeof(wi);
+  wi.bounds.width = 900;
+  wi.bounds.height = 640;
+  cef_browser_settings_t settings = {0};
+  settings.size = sizeof(settings);
+  h->show_dev_tools(h, &wi, client, &settings, NULL);
 }
 
 cef_string_list_t wcef_drag_data_get_file_paths(cef_drag_data_t* d) {
   cef_string_list_t list = g_sl_alloc();
-  g_drag_file_paths(d, list);
+  d->get_file_paths(d, list);
   return list;
 }
 

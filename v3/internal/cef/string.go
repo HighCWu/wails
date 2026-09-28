@@ -4,7 +4,7 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15200
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
 */
 import "C"
 

@@ -4,7 +4,7 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15200
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
 
 // Shims over the //export'ed callbacks in handlers.go.
 
@@ -150,7 +150,6 @@ static void wcef_init_displayh(void* p) {
 import "C"
 
 import (
-	"fmt"
 	"log/slog"
 	"math"
 	"os"
@@ -167,10 +166,12 @@ func pkgLogger() *slog.Logger {
 
 // Browser tracks one CEF browser instance created for a wails window.
 type Browser struct {
-	c        *C.cef_browser_t // addref'd in on_after_created
-	host     *C.cef_browser_host_t
-	windowID uint
-	client   *browserClient
+	c              *C.cef_browser_t // addref'd in on_after_created
+	host           *C.cef_browser_host_t
+	windowID       uint
+	client         *browserClient
+	devToolsClient *browserClient
+	closeRequested bool
 }
 
 var (
@@ -291,8 +292,12 @@ type CreateBrowserOptions struct {
 // bounded by timeout. Returns the number of browsers still alive.
 func CloseAllBrowsers(timeout time.Duration) int {
 	var browsers []*Browser
-	browsersByWin.Range(func(_, v any) bool {
+	browsersByID.Range(func(_, v any) bool {
 		browsers = append(browsers, v.(*Browser))
+		return true
+	})
+	pendingBrowsers.Range(func(_, v any) bool {
+		v.(*Browser).Close(true)
 		return true
 	})
 	for _, b := range browsers {
@@ -300,21 +305,25 @@ func CloseAllBrowsers(timeout time.Duration) int {
 	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		// The GTK loop has stopped; close notifications still need the CEF UI pump.
+		C.wcef_do_message_loop_work()
 		alive := 0
-		browsersByWin.Range(func(_, _ any) bool {
+		browsersByID.Range(func(_, _ any) bool {
 			alive++
 			return true
 		})
+		pendingBrowsers.Range(func(_, _ any) bool { alive++; return true })
 		if alive == 0 {
 			return 0
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	alive := 0
-	browsersByWin.Range(func(_, _ any) bool {
+	browsersByID.Range(func(_, _ any) bool {
 		alive++
 		return true
 	})
+	pendingBrowsers.Range(func(_, _ any) bool { alive++; return true })
 	return alive
 }
 
@@ -337,6 +346,7 @@ func CreateBrowser(opts CreateBrowserOptions) (*Browser, error) {
 	wi.bounds.height = C.int(opts.Height)
 	wi.parent_window = C.cef_window_handle_t(opts.ParentXWindow)
 	wi.windowless_rendering_enabled = 0
+	wi.runtime_style = C.CEF_RUNTIME_STYLE_ALLOY
 	defer C.free(unsafe.Pointer(wi))
 
 	settings := (*C.cef_browser_settings_t)(C.calloc(1, C.sizeof_cef_browser_settings_t))
@@ -353,17 +363,17 @@ func CreateBrowser(opts CreateBrowserOptions) (*Browser, error) {
 	// lifeSpanAfterCreated); associate the client with the window now so
 	// the mapping exists the moment the first scheme request arrives.
 	b := &Browser{windowID: opts.WindowID, client: bc}
-	pendingBrowsers.Store(opts.WindowID, b)
+	pendingBrowsers.Store(bc, b)
 
 	if C.wcef_create_browser(wi, bc.c, url.ptr(), settings) != 1 {
-		pendingBrowsers.Delete(opts.WindowID)
+		pendingBrowsers.Delete(bc)
 		return nil, errCreateBrowser
 	}
 	return b, nil
 }
 
 var (
-	pendingBrowsers sync.Map // uint windowID -> *Browser (until on_after_created)
+	pendingBrowsers sync.Map // *browserClient -> *Browser (until on_after_created)
 )
 
 var (
@@ -379,19 +389,19 @@ func (e errString) Error() string { return string(e) }
 // cef_life_span_handler_t.on_after_created.
 func lifeSpanAfterCreated(browser *C.cef_browser_t, client *browserClient) {
 	C.wcef_obj_add_ref(unsafe.Pointer(browser))
-	b := &Browser{
-		c:        browser,
-		host:     C.wcef_browser_get_host(browser),
-		windowID: client.windowID,
-		client:   client,
+	b := &Browser{client: client}
+	if pending, ok := pendingBrowsers.LoadAndDelete(client); ok {
+		// The GTK engine retains the pointer returned by CreateBrowser.
+		// Complete that same object, otherwise all host operations see nil.
+		b = pending.(*Browser)
+		browsersByWin.Store(client.windowID, b)
 	}
+	b.c = browser
+	b.host = C.wcef_browser_get_host(browser)
 	browsersByID.Store(int(C.wcef_browser_get_identifier(browser)), b)
-	if pending, ok := pendingBrowsers.LoadAndDelete(client.windowID); ok {
-		// Transfer any pre-created state (none today) — the canonical
-		// mapping is stored below either way.
-		_ = pending
+	if b.closeRequested {
+		b.Close(true)
 	}
-	browsersByWin.Store(client.windowID, b)
 }
 
 // lifeSpanDoClose implements cef_life_span_handler_t.do_close: let CEF
@@ -407,8 +417,11 @@ func lifeSpanBeforeClose(browser *C.cef_browser_t, client *browserClient) {
 	id := int(C.wcef_browser_get_identifier(browser))
 	if b, ok := browsersByID.LoadAndDelete(id); ok {
 		browser := b.(*Browser)
-		browsersByWin.Delete(browser.windowID)
+		browsersByWin.CompareAndDelete(browser.windowID, browser)
+		C.wcef_obj_release(unsafe.Pointer(browser.host))
 		C.wcef_obj_release(unsafe.Pointer(browser.c))
+		browser.host = nil
+		browser.c = nil
 	}
 	st := state.Load()
 	if st != nil && st.OnBrowserClosed != nil {
@@ -422,7 +435,6 @@ func loadStart(browser *C.cef_browser_t, frame *C.cef_frame_t, client *browserCl
 	if frame == nil || C.wcef_frame_is_main(frame) != 1 {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "[cef-nav] load start win=%d url=%s\n", client.windowID, userfreeToString(C.wcef_frame_get_url(frame)))
 	st := state.Load()
 	if st != nil && st.OnWindowLoadStart != nil {
 		st.OnWindowLoadStart(client.windowID)
@@ -623,16 +635,31 @@ func (b *Browser) OpenDevTools() {
 	if b == nil || b.host == nil {
 		return
 	}
-	C.wcef_host_show_dev_tools(b.host)
+	if b.devToolsClient == nil {
+		b.devToolsClient = newBrowserClient(0)
+		clients.Store(unsafe.Pointer(b.devToolsClient.c), b.devToolsClient)
+	}
+	C.wcef_host_show_dev_tools(b.host, b.devToolsClient.c)
 }
 
 // Close destroys the browser. The native child window is removed
 // asynchronously; OnBrowserClosed fires when it completes.
 func (b *Browser) Close(force bool) {
-	if b == nil || b.host == nil {
+	if b == nil {
+		return
+	}
+	b.closeRequested = true
+	if b.host == nil {
 		return
 	}
 	C.wcef_host_close_browser(b.host, gtkBoolC(force))
+}
+
+// Focus notifies Chromium and focuses its native embedded child.
+func (b *Browser) Focus() {
+	if b != nil && b.host != nil {
+		C.wcef_host_set_focus(b.host)
+	}
 }
 
 // XWindow returns the browser's native X11 window handle (0 while the

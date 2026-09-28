@@ -4,7 +4,7 @@ package cef
 
 /*
 #include "cef_glue.h"
-#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15200
+#cgo CFLAGS: -I${SRCDIR} -DCEF_API_VERSION=15400
 
 // Shims: thin C wrappers over the //export'ed Go callbacks in
 // handlers.go, with prototypes exactly matching the CEF struct fields.

@@ -2,7 +2,7 @@
 
 // Package cef provides a minimal, dependency-free cgo binding for the
 // Chromium Embedded Framework (CEF) C API, plus the Wails integration
-// pieces: process bootstrap, custom wails:// scheme serving and the
+// pieces: process bootstrap, http://wails.localhost asset serving and the
 // window.wails.invoke IPC bridge.
 //
 // libcef is loaded at runtime via dlopen from a CEF runtime directory
@@ -70,7 +70,7 @@ type State struct {
 	WindowName func(windowID uint) string
 
 	// OnKeyEvent reports a raw key press from the embedded browser.
-	// nativeKeyCode is the platform key code (X keysym on Linux),
+	// nativeKeyCode is the platform key code (X hardware keycode on Linux),
 	// modifiers is a bitmask of EventFlag* constants. Returns true when
 	// the host consumed the event (it must not reach the renderer).
 	OnKeyEvent func(windowID uint, nativeKeyCode uint32, modifiers uint32) bool
