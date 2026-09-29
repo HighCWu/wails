@@ -54,8 +54,8 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
                     # The runner pins the panel to the multiple/ folder,
                     # which the column browser shows selected: descend into
                     # it, then select both rows with mouse gestures — plain
-                    # click on the first row, shift-click on the second
-                    # (twice, in case the first lands on the row edge).
+                    # click on the first row, ONE shift-click on the second
+                    # (a second shift-click would toggle it back off).
                     # Select-all is a synthetic chord and gets dropped by
                     # the runner. Row centres measured from runner
                     # artifacts: 0.180h and 0.228h of the panel height.
@@ -63,7 +63,6 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
                     x0, y0, w0, h0 = rect
                     row_x = int(x0 + w0 * 0.72)
                     key('click', row_x, y0 + h0 * 0.180)
-                    key('shift-click', row_x, y0 + h0 * 0.228)
                     key('shift-click', row_x, y0 + h0 * 0.228)
                 else:
                     # The chooser opens with the file list focused (the

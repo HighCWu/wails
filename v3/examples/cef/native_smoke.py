@@ -774,9 +774,27 @@ with log.open("w") as output:
                         i += 3
                         continue
                     if k == "shift-click" and i + 2 < len(args):
-                        ui.keyDown("shift")
-                        ui.click(int(args[i + 1]), int(args[i + 2]))
-                        ui.keyUp("shift")
+                        x_c, y_c = int(args[i + 1]), int(args[i + 2])
+                        if sys.platform == "darwin":
+                            # Bake the shift flag into the mouse events
+                            # themselves: on the degraded runner a separate
+                            # shift keyDown can be dropped, turning the
+                            # extend-select into a plain click.
+                            import Quartz
+
+                            for kind in (Quartz.kCGEventLeftMouseDown,
+                                         Quartz.kCGEventLeftMouseUp):
+                                event = Quartz.CGEventCreateMouseEvent(
+                                    None, kind, (x_c, y_c),
+                                    Quartz.kCGMouseButtonLeft)
+                                Quartz.CGEventSetFlags(
+                                    event, Quartz.kCGEventFlagMaskShift)
+                                Quartz.CGEventPost(
+                                    Quartz.kCGHIDEventTap, event)
+                        else:
+                            ui.keyDown("shift")
+                            ui.click(x_c, y_c)
+                            ui.keyUp("shift")
                         i += 3
                         continue
                     if k == "ctrl-shift-click" and i + 2 < len(args):
