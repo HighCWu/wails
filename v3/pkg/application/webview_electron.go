@@ -1,15 +1,22 @@
 package application
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/wailsapp/wails/v3/internal/assetserver/webview"
 	"github.com/wailsapp/wails/v3/internal/electron"
 )
 
@@ -115,10 +122,108 @@ func startPlatformElectron(app *App) error {
 	if err != nil {
 		return err
 	}
+	proc.SetRequestHandler(func(method string, params json.RawMessage) (any, error) {
+		switch method {
+		case "webviewRequest":
+			return handleWebviewRequest(app, params)
+		}
+		return nil, fmt.Errorf("unknown electron request %q", method)
+	})
 	electronBackend.proc = proc
 	electronBackend.windows = make(map[uint]*electronWindow)
 
 	go pumpElectronEvents(proc)
+	return nil
+}
+
+// handleWebviewRequest serves a frontend /wails/runtime HTTP call that the
+// preload shim forwarded over the control protocol, bypassing the network
+// service and the loopback TCP hop (fetch-ipc experiment).
+func handleWebviewRequest(app *App, params json.RawMessage) (any, error) {
+	var p struct {
+		Method string `json:"method"`
+		URL    string `json:"url"`
+		Body   string `json:"body"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+	if p.Method == "" {
+		p.Method = http.MethodGet
+	}
+	header := http.Header{}
+	if u, err := url.Parse(p.URL); err == nil && u.Host != "" {
+		header.Set("Host", u.Host)
+	}
+	var body io.ReadCloser
+	if p.Body != "" {
+		body = io.NopCloser(strings.NewReader(p.Body))
+	}
+
+	rw := newStdioResponseWriter()
+	req := &stdioWebViewRequest{
+		method: p.Method,
+		url:    p.URL,
+		header: header,
+		body:   body,
+		rw:     rw,
+	}
+	app.assets.ServeWebViewRequest(req)
+
+	select {
+	case <-rw.done:
+	case <-time.After(15 * time.Second):
+		return nil, errors.New("webviewRequest timeout")
+	}
+	return map[string]any{
+		"status":      rw.code,
+		"body":        base64.StdEncoding.EncodeToString(rw.buf.Bytes()),
+		"contentType": rw.header.Get("Content-Type"),
+	}, nil
+}
+
+// stdioWebViewRequest adapts a control-protocol request to the
+// assetserver's webview.Request interface.
+type stdioWebViewRequest struct {
+	method string
+	url    string
+	header http.Header
+	body   io.ReadCloser
+	rw     *stdioResponseWriter
+}
+
+func (r *stdioWebViewRequest) URL() (string, error)             { return r.url, nil }
+func (r *stdioWebViewRequest) Method() (string, error)          { return r.method, nil }
+func (r *stdioWebViewRequest) Header() (http.Header, error)     { return r.header, nil }
+func (r *stdioWebViewRequest) Body() (io.ReadCloser, error)     { return r.body, nil }
+func (r *stdioWebViewRequest) Response() webview.ResponseWriter { return r.rw }
+func (r *stdioWebViewRequest) Close() error {
+	if r.body != nil {
+		return r.body.Close()
+	}
+	return nil
+}
+
+// stdioResponseWriter collects the response produced by the asset server.
+type stdioResponseWriter struct {
+	header http.Header
+	buf    bytes.Buffer
+	code   int
+	done   chan struct{}
+	once   sync.Once
+}
+
+func newStdioResponseWriter() *stdioResponseWriter {
+	return &stdioResponseWriter{header: make(http.Header), code: 200, done: make(chan struct{})}
+}
+
+func (w *stdioResponseWriter) Header() http.Header           { return w.header }
+func (w *stdioResponseWriter) Write(buf []byte) (int, error) { return w.buf.Write(buf) }
+func (w *stdioResponseWriter) WriteHeader(code int)          { w.code = code }
+func (w *stdioResponseWriter) Code() int                     { return w.code }
+func (w *stdioResponseWriter) Flush()                        {}
+func (w *stdioResponseWriter) Finish() error {
+	w.once.Do(func() { close(w.done) })
 	return nil
 }
 
