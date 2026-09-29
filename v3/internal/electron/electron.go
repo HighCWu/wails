@@ -184,7 +184,11 @@ func Start(exe, bootstrap, preload string, extraSwitches []string, cfg map[strin
 // main process. Must be called before Start returns processing begins.
 func (p *Process) SetRequestHandler(h RequestHandler) {
 	if debugEnabled() {
-		fmt.Fprintf(os.Stderr, "[wails-electron pid=%d] request handler installed\n", os.Getpid())
+		child := 0
+		if p.cmd != nil && p.cmd.Process != nil {
+			child = p.cmd.Process.Pid
+		}
+		fmt.Fprintf(os.Stderr, "[wails-electron gopid=%d child=%d] request handler installed\n", os.Getpid(), child)
 	}
 	p.handlerMu.Lock()
 	p.handler = h
@@ -257,7 +261,11 @@ func (p *Process) readLoop(stdout interface{ Read([]byte) (int, error) }) {
 			handler := p.getRequestHandler()
 			if handler == nil {
 				if debugEnabled() {
-					fmt.Fprintf(os.Stderr, "[wails-electron pid=%d] NO HANDLER for %s\n", os.Getpid(), m.M)
+					child := 0
+					if p.cmd != nil && p.cmd.Process != nil {
+						child = p.cmd.Process.Pid
+					}
+					fmt.Fprintf(os.Stderr, "[wails-electron gopid=%d child=%d] NO HANDLER for %s\n", os.Getpid(), child, m.M)
 				}
 				p.respond(m.ID, nil, errors.New("no request handler installed"))
 				continue
