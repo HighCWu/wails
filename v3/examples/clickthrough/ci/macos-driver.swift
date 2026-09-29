@@ -18,12 +18,12 @@ case "warp":
 case "click":
     let pt = CGPoint(x: x, y: y)
     guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseButtonClick: 1, mouseCursorPosition: pt, mouseButton: .left),
-          let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseButtonClick: 1, mouseCursorPosition: pt, mouseButton: .left) else {
+          let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: pt, mouseButton: .left) else {
         FileHandle.standardError.write("event creation failed\n".data(using: .utf8)!); exit(1)
     }
-    down.post(tap: .cghidEventTap)
+    down.post(tap: CGEventTapLocation.cghidEventTap)
     usleep(60_000)
-    up.post(tap: .cghidEventTap)
+    up.post(tap: CGEventTapLocation.cghidEventTap)
 default:
     FileHandle.standardError.write("unknown command \(args[1])\n".data(using: .utf8)!); exit(2)
 }
