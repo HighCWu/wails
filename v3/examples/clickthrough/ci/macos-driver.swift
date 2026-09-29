@@ -17,7 +17,7 @@ case "warp":
     if r != .success { FileHandle.standardError.write("warp failed: \(r)\n".data(using: .utf8)!); exit(1) }
 case "click":
     let pt = CGPoint(x: x, y: y)
-    guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseButtonClick: 1, mouseCursorPosition: pt, mouseButton: .left),
+    guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: pt, mouseButton: .left),
           let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: pt, mouseButton: .left) else {
         FileHandle.standardError.write("event creation failed\n".data(using: .utf8)!); exit(1)
     }
