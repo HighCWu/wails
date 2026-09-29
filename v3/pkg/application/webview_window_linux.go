@@ -198,7 +198,12 @@ func (w *linuxWebviewWindow) restore() {
 	// FIXME: never called!  - remove from webviewImpl interface
 }
 
-func newWindowImpl(parent *WebviewWindow) *linuxWebviewWindow {
+func newWindowImpl(parent *WebviewWindow) webviewWindowImpl {
+	// The electron backend replaces the whole window (BrowserWindow) rather
+	// than the webview inside a native window, so dispatch happens here.
+	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return newElectronWindow(parent)
+	}
 	//	(*C.struct__GtkWidget)(m.native)
 	//var menubar *C.struct__GtkWidget
 	result := &linuxWebviewWindow{

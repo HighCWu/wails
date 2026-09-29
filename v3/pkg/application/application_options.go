@@ -17,6 +17,12 @@ type Options struct {
 	// Description is the description of the application (used in the default about box)
 	Description string
 
+	// WebviewBackend selects which engine renders web content in windows:
+	// WebviewBackendAuto (default), WebviewBackendSystem or
+	// WebviewBackendElectron. The WAILS_WEBVIEW_BACKEND environment
+	// variable overrides this at runtime.
+	WebviewBackend WebviewBackend
+
 	// Icon is the icon of the application (used in the default about box)
 	Icon []byte
 
