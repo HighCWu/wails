@@ -21,6 +21,7 @@ public class Win32Input {
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
@@ -102,18 +103,27 @@ Wait-LogMarker "mask uploaded" 120
 # --- 2. locate the overlay: top-level window of our process sized 480x640 ---
 $script:overlayHwnd = [IntPtr]::Zero
 $script:underlayRect = $null
+$script:underlayHwnd = [IntPtr]::Zero
+$script:appWindows = New-Object System.Collections.ArrayList
 $cb = [Win32Input+EnumWindowsProc]{
   param($h, $l)
   $winPid = 0
   [Win32Input]::GetWindowThreadProcessId($h, [ref]$winPid) | Out-Null
-  if ($winPid -eq $script:proc.Id -and [Win32Input]::IsWindowVisible($h)) {
+  if ($winPid -eq $script:proc.Id) {
     $r = New-Object Win32Input+RECT
     [Win32Input]::GetWindowRect($h, [ref]$r) | Out-Null
-    $w = $r.Right - $r.Left; $ht = $r.Bottom - $r.Top
     $sb = New-Object System.Text.StringBuilder 256
     [Win32Input]::GetWindowText($h, $sb, 256) | Out-Null
-    if ($w -eq 480 -and $ht -eq 640) { $script:overlayHwnd = $h }
-    if ($sb.ToString() -like "Underlay*") { $script:underlayRect = $r }
+    $visible = [Win32Input]::IsWindowVisible($h)
+    $script:appWindows.Add("hwnd=$h vis=$visible rect=$($r.Left),$($r.Top) $($r.Right - $r.Left)x$($r.Bottom - $r.Top) title='$($sb.ToString())'") | Out-Null
+    if ($visible) {
+      $w = $r.Right - $r.Left; $ht = $r.Bottom - $r.Top
+      if ($w -eq 480 -and $ht -eq 640) { $script:overlayHwnd = $h }
+      if ($sb.ToString() -like "Underlay*" -or ($w -ge 690 -and $w -le 740 -and $ht -ge 490 -and $ht -le 560)) {
+        $script:underlayRect = $r
+        $script:underlayHwnd = $h
+      }
+    }
   }
   return $true
 }
@@ -124,17 +134,26 @@ while (((Get-Date) -lt $deadline)) {
   if ($script:overlayHwnd -ne [IntPtr]::Zero -and $script:underlayRect) { break }
   Start-Sleep -Milliseconds 500
 }
-if ($script:overlayHwnd -eq [IntPtr]::Zero) { throw "overlay window (480x640) not found for pid $($script:proc.Id)" }
+if ($script:overlayHwnd -eq [IntPtr]::Zero) {
+  throw "overlay window (480x640) not found for pid $($script:proc.Id); windows: $($script:appWindows -join ' | ')"
+}
+Write-Output "process windows: $($script:appWindows -join ' | ')"
+if (-not $script:underlayRect) { throw "underlay window not found; windows: $($script:appWindows -join ' | ')" }
+
+# The hosted-compute-agent window sits above normal windows and swallows
+# synthesized clicks; raise both test windows into the topmost band with the
+# overlay above the underlay so clicks route overlay -> underlay.
+$HWND_TOPMOST = [IntPtr](-1); $SWP_NOSIZE = 0x1; $SWP_NOMOVE = 0x2; $SWP_NOACTIVATE = 0x10
+[Win32Input]::SetWindowPos($script:underlayHwnd, $HWND_TOPMOST, 0, 0, 0, 0, ($SWP_NOSIZE -bor $SWP_NOMOVE -bor $SWP_NOACTIVATE)) | Out-Null
+Start-Sleep -Milliseconds 200
+[Win32Input]::SetWindowPos($script:overlayHwnd, $HWND_TOPMOST, 0, 0, 0, 0, ($SWP_NOSIZE -bor $SWP_NOMOVE -bor $SWP_NOACTIVATE)) | Out-Null
+Start-Sleep -Milliseconds 200
 $rect = New-Object Win32Input+RECT
 [Win32Input]::GetWindowRect($script:overlayHwnd, [ref]$rect) | Out-Null
 $ox = $rect.Left; $oy = $rect.Top
 Write-Output "overlay window $script:overlayHwnd at $ox,$oy"
-if ($script:underlayRect) {
-  $u = $script:underlayRect
-  Write-Output "underlay window at $($u.Left),$($u.Top) ($($u.Right - $u.Left)x$($u.Bottom - $u.Top))"
-} else {
-  Write-Output "WARNING: underlay window (700x500) not found"
-}
+$u = $script:underlayRect
+Write-Output "underlay window at $($u.Left),$($u.Top) ($($u.Right - $u.Left)x$($u.Bottom - $u.Top))"
 
 # --- 3. home the cursor outside the window: engine must go passthrough -------
 Move-Cursor 10 10
