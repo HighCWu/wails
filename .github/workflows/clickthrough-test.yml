@@ -39,6 +39,16 @@ jobs:
           WAILS_ELECTRON_DIR: /opt/electron
           WAILS_ELECTRON_DISABLE_SANDBOX: "1"
         run: v3/examples/clickthrough/ci/test-linux.sh /tmp/clickthrough
+      - name: Build API compat scenario
+        run: go build -tags gtk3 -o /tmp/webview-compat ./v3/examples/webview-compat/
+      - name: Run API compat scenario (system backend)
+        run: v3/examples/webview-compat/ci/test-compat.sh /tmp/webview-compat system
+      - name: Run API compat scenario (electron backend)
+        env:
+          WAILS_WEBVIEW_BACKEND: electron
+          WAILS_ELECTRON_DIR: /opt/electron
+          WAILS_ELECTRON_DISABLE_SANDBOX: "1"
+        run: v3/examples/webview-compat/ci/test-compat.sh /tmp/webview-compat electron
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>webview-compat</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #101418; color: #e6e6e6; padding: 24px; }
+  #rpc { font-size: 14px; white-space: pre; }
+</style>
+</head>
+<body>
+<h2>webview-compat</h2>
+<div id="rpc">benchmark running…</div>
+
+<script type="module">
+  import * as wails from "/wails/runtime.js";
+
+  const PAYLOAD = "0123456789abcdef".repeat(4); // 64 bytes
+  const METHOD = "main.CompatService.Ping";
+
+  function pct(sorted, p) {
+    const i = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
+    return sorted[Math.max(0, i)];
+  }
+
+  async function bench() {
+    try {
+      // service availability warm-up (first call may include lazy setup)
+      for (let i = 0; i < 20; i++) await wails.Call.ByName(METHOD, PAYLOAD);
+      const samples = [];
+      for (let i = 0; i < 200; i++) {
+        const t0 = performance.now();
+        const r = await wails.Call.ByName(METHOD, PAYLOAD);
+        const t1 = performance.now();
+        if (r !== PAYLOAD) { document.getElementById("rpc").textContent = "echo mismatch!"; return; }
+        samples.push(t1 - t0);
+      }
+      samples.sort((a, b) => a - b);
+      const p50 = pct(samples, 50).toFixed(3);
+      const p95 = pct(samples, 95).toFixed(3);
+      const avg = (samples.reduce((a, b) => a + b, 0) / samples.length).toFixed(3);
+      document.getElementById("rpc").textContent =
+        `rpc round trip n=${samples.length}  avg=${avg}ms  p50=${p50}ms  p95=${p95}ms`;
+      wails.Events.Emit("compat:rpc", {
+        n: samples.length, avg: Number(avg), p50: Number(p50), p95: Number(p95),
+      });
+    } catch (e) {
+      document.getElementById("rpc").textContent = "bench error: " + e;
+      wails.Events.Emit("compat:rpc-error", String(e && e.message || e));
+    }
+  }
+
+  bench();
+</script>
+</body>
+</html>
