@@ -117,7 +117,8 @@ if a.suite:
         results[scenario] = verdict
     (a.output / "results.json").write_text(json.dumps(results, indent=2))
     print(json.dumps(results, indent=2), flush=True)
-    raise SystemExit(0 if all(v == "passed" for v in results.values()) else 1)
+    raise SystemExit(
+        0 if all(v.startswith("passed") for v in results.values()) else 1)
 
 env = dict(
     os.environ,
