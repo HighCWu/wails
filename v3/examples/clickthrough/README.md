@@ -85,7 +85,12 @@ input), and macOS (CGWarp + CGEventPost). The macOS driver grants itself
 Accessibility by inserting into the system TCC database (SIP is disabled on
 hosted runner images) and restarting tccd; if a future runner image blocks
 that, the click phase degrades to a documented SKIP while the flip
-assertions keep the job honest.
+assertions keep the job honest. The cursor-shape assertion (I-beam through
+the transparent region) is hard on Linux via an XFixes probe; hosted
+Windows runners render the pointer client-side in their RDP-attached Hyper-V
+session (GetCursorInfo flags=CURSOR_SUPPRESSED even with a working mouse
+device and no digitizer), so Windows logs that state as a diagnostic — the
+same driver asserts fully once pointed at a machine with a local console.
 
 ## Verified locally (Xvfb :95 + openbox, 2026-09-29)
 
