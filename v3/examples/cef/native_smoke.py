@@ -773,6 +773,12 @@ with log.open("w") as output:
                         ui.click(int(args[i + 1]), int(args[i + 2]))
                         i += 3
                         continue
+                    if k == "shift-click" and i + 2 < len(args):
+                        ui.keyDown("shift")
+                        ui.click(int(args[i + 1]), int(args[i + 2]))
+                        ui.keyUp("shift")
+                        i += 3
+                        continue
                     if k == "ctrl-shift-click" and i + 2 < len(args):
                         mod = "ctrl" if sys.platform == "win32" else "command"
                         ui.keyDown(mod)
