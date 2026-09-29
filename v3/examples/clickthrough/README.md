@@ -76,6 +76,17 @@ window resizes.
 - Wayland: no global cursor position in the protocol; the engine fails open
   (fully interactive window).
 
+## CI status
+
+The GitHub Actions workflow (`.github/workflows/clickthrough-test.yml`) runs
+the full scenario — mask upload, engine flips, and real click delivery — on
+all three platforms: Linux (Xvfb + xdotool), Windows (user32 injected
+input), and macOS (CGWarp + CGEventPost). The macOS driver grants itself
+Accessibility by inserting into the system TCC database (SIP is disabled on
+hosted runner images) and restarting tccd; if a future runner image blocks
+that, the click phase degrades to a documented SKIP while the flip
+assertions keep the job honest.
+
 ## Verified locally (Xvfb :95 + openbox, 2026-09-29)
 
 - pointer over opaque region → `flip ignoring=false`, card button clickable
