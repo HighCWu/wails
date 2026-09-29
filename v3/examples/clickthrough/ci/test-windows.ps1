@@ -107,12 +107,18 @@ $cb = [Win32Input+EnumWindowsProc]{
     $r = New-Object Win32Input+RECT
     [Win32Input]::GetWindowRect($h, [ref]$r) | Out-Null
     $w = $r.Right - $r.Left; $ht = $r.Bottom - $r.Top
-    if ($w -eq 480 -and $ht -eq 640) { $script:overlayHwnd = $h; return $false }
+    if ($w -eq 480 -and $ht -eq 640) { $script:overlayHwnd = $h }
     if ($w -eq 700 -and $ht -eq 500) { $script:underlayRect = $r }
   }
   return $true
 }
-[Win32Input]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
+# windows may still be settling right after page load — poll until both appear
+$deadline = (Get-Date).AddSeconds(20)
+while (((Get-Date) -lt $deadline)) {
+  [Win32Input]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
+  if ($script:overlayHwnd -ne [IntPtr]::Zero -and $script:underlayRect) { break }
+  Start-Sleep -Milliseconds 500
+}
 if ($script:overlayHwnd -eq [IntPtr]::Zero) { throw "overlay window (480x640) not found for pid $($script:proc.Id)" }
 $rect = New-Object Win32Input+RECT
 [Win32Input]::GetWindowRect($script:overlayHwnd, [ref]$rect) | Out-Null
