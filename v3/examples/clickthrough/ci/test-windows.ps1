@@ -196,13 +196,22 @@ Move-And-Click $px $py
 Wait-State "true"
 
 # The underlay is a full-page text input, so the cursor showing through the
-# transparent region must be the I-beam set by the window below.
-$ci = New-Object Win32Input+CURSORINFO
-$ci.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type][Win32Input+CURSORINFO])
-[Win32Input]::GetCursorInfo([ref]$ci) | Out-Null
+# transparent region must be the I-beam set by the window below. Chromium
+# updates the cursor asynchronously around clicks — sample for a few seconds.
 $ibeam = [Win32Input]::LoadCursor([IntPtr]::Zero, 32513)  # IDC_IBEAM
-if ($ci.hCursor -ne $ibeam) {
-  throw "cursor over the transparent region is not the I-beam from the underlay (hCursor=$($ci.hCursor), expected $ibeam)"
+$deadline = (Get-Date).AddSeconds(8)
+$got = $false
+$last = "n/a"
+while ((Get-Date) -lt $deadline) {
+  $ci = New-Object Win32Input+CURSORINFO
+  $ci.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type][Win32Input+CURSORINFO])
+  [Win32Input]::GetCursorInfo([ref]$ci) | Out-Null
+  $last = "flags=$($ci.flags) hCursor=$($ci.hCursor)"
+  if ($ci.hCursor -eq $ibeam) { $got = $true; break }
+  Start-Sleep -Milliseconds 300
+}
+if (-not $got) {
+  throw "cursor over the transparent region never became the I-beam (last: $last)"
 }
 Write-Output "PASS: cursor over transparent region is the underlay's I-beam"
 
