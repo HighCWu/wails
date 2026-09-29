@@ -112,6 +112,11 @@ $proc = Start-Process -FilePath $AppPath -RedirectStandardOutput $log `
 # with an absolute mouse move — then verify the cursor is actually shown.
 Write-Output ("SM_DIGITIZER={0} SM_MAXIMUMTOUCHES={1}" -f `
   [Win32Input]::GetSystemMetrics(94), [Win32Input]::GetSystemMetrics(95))
+Write-Output "== pointing/display hardware =="
+Get-CimInstance Win32_PointingDevice -ErrorAction SilentlyContinue |
+  ForEach-Object { Write-Output "pointing: $($_.Name) status=$($_.Status)" }
+Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+  ForEach-Object { Write-Output "display: $($_.Name) status=$($_.Status)" }
 Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
   Where-Object { $_.Class -eq 'HIDClass' -and $_.FriendlyName -match 'touch|digitizer' } |
   ForEach-Object {
