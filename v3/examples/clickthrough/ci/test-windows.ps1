@@ -19,8 +19,11 @@ public class Win32Input {
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc proc, IntPtr lparam);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
 }
 "@
 
@@ -107,8 +110,10 @@ $cb = [Win32Input+EnumWindowsProc]{
     $r = New-Object Win32Input+RECT
     [Win32Input]::GetWindowRect($h, [ref]$r) | Out-Null
     $w = $r.Right - $r.Left; $ht = $r.Bottom - $r.Top
+    $sb = New-Object System.Text.StringBuilder 256
+    [Win32Input]::GetWindowText($h, $sb, 256) | Out-Null
     if ($w -eq 480 -and $ht -eq 640) { $script:overlayHwnd = $h }
-    if ($w -eq 700 -and $ht -eq 500) { $script:underlayRect = $r }
+    if ($sb.ToString() -like "Underlay*") { $script:underlayRect = $r }
   }
   return $true
 }
@@ -153,6 +158,13 @@ foreach ($c in $candidates) {
 }
 if ($null -eq $px) { throw "no transparent point intersects the underlay rect" }
 Write-Output "transparent click point: $px,$py"
+Move-Cursor $px $py
+$pt = New-Object Win32Input+POINT
+$pt.X = $px; $pt.Y = $py
+$wfp = [Win32Input]::WindowFromPoint($pt)
+$sb = New-Object System.Text.StringBuilder 256
+[Win32Input]::GetWindowText($wfp, $sb, 256) | Out-Null
+Write-Output ("WindowFromPoint({0},{1}) = {2} '{3}'" -f $px, $py, $wfp, $sb.ToString())
 Move-And-Click $px $py
 Wait-State "true"
 try {
