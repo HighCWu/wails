@@ -22,6 +22,7 @@ public class Win32Input {
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
@@ -199,6 +200,24 @@ try {
 }
 
 # --- 6. opaque card receives clicks after flipping back -----------------------
+# The passthrough click activated the underlay, moving it to the top of the
+# topmost band (above the overlay). Re-assert the overlay on top — clicking
+# a window activates it, so verify routing right before the click.
+$HWND_TOPMOST = [IntPtr](-1); $SWP = 0x13  # NOSIZE|NOMOVE|NOACTIVATE
+function Assert-OverlayTop([int]$x, [int]$y) {
+  for ($i = 0; $i -lt 3; $i++) {
+    [Win32Input]::SetCursorPos($x, $y) | Out-Null
+    Start-Sleep -Milliseconds 400
+    $pt = New-Object Win32Input+POINT
+    $pt.X = $x; $pt.Y = $y
+    $root = [Win32Input]::GetAncestor([Win32Input]::WindowFromPoint($pt), 2)
+    if ($root -eq $script:overlayHwnd) { Write-Output "PASS: overlay is top at $x,$y"; return }
+    [Win32Input]::SetWindowPos($script:overlayHwnd, $HWND_TOPMOST, 0, 0, 0, 0, $SWP) | Out-Null
+    Start-Sleep -Milliseconds 300
+  }
+  throw "overlay is not the top window at $x,$y after re-raise attempts"
+}
+Assert-OverlayTop ($ox + 118) ($oy + 537)
 Move-And-Click ($ox + 118) ($oy + 537)
 Wait-State "false"
 Wait-LogMarker "card-clicks=1"
