@@ -1,9 +1,10 @@
 name: Clickthrough Test
 
-# Transparent-window per-pixel hit-testing (examples/clickthrough) on the
-# platforms where the engine supports it. macOS is excluded: MousePosition
-# is a fail-closed stub there and synthetic input needs accessibility
-# permissions hosted runners do not grant.
+# Transparent-window per-pixel hit-testing (examples/clickthrough).
+# Linux/Windows assert the full scenario including real click delivery.
+# macOS asserts the hit-test engine (cursor warps need no permission); the
+# click phase is best-effort behind an Accessibility TCC grant attempt and
+# degrades to a SKIP when the grant does not take effect on hosted runners.
 
 on:
   push:
@@ -49,3 +50,17 @@ jobs:
       - name: Run hit-test scenario
         shell: pwsh
         run: ./v3/examples/clickthrough/ci/test-windows.ps1 -AppPath clickthrough.exe
+
+  macos:
+    name: macOS (flips hard, click best-effort)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v3/go.mod
+      - name: Build
+        working-directory: v3
+        run: go build -o /tmp/clickthrough ./examples/clickthrough/
+      - name: Run hit-test scenario
+        run: v3/examples/clickthrough/ci/test-macos.sh /tmp/clickthrough
