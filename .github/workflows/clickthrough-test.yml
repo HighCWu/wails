@@ -24,7 +24,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev xvfb openbox xdotool imagemagick x11-utils
       - name: Build
-        run: go build -tags gtk3 -o /tmp/clickthrough ./v3/examples/clickthrough/
+        working-directory: v3
+        run: go build -tags gtk3 -o /tmp/clickthrough ./examples/clickthrough/
       - name: Run hit-test scenario
         run: v3/examples/clickthrough/ci/test-linux.sh /tmp/clickthrough
       - name: Upload artifacts
@@ -43,7 +44,8 @@ jobs:
         with:
           go-version-file: v3/go.mod
       - name: Build
-        run: go build -o clickthrough.exe ./v3/examples/clickthrough/
+        working-directory: v3
+        run: go build -o ..\clickthrough.exe ./examples/clickthrough/
       - name: Run hit-test scenario
         shell: pwsh
         run: ./v3/examples/clickthrough/ci/test-windows.ps1 -AppPath clickthrough.exe
