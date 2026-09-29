@@ -64,6 +64,7 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
                     row_x = int(x0 + w0 * 0.72)
                     key('click', row_x, y0 + h0 * 0.180)
                     key('shift-click', row_x, y0 + h0 * 0.228)
+                    screenshot('file-multiple-selected')
                 else:
                     # The chooser opens with the file list focused (the
                     # first row is highlighted on open), so select-all in

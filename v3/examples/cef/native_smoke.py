@@ -1033,19 +1033,24 @@ with log.open("w") as output:
         # Open DevTools, return to the host content and request graceful exit.
         click(*control("main", "quit"))
         wait_log("CEF_SMOKE_QUIT requested")
-        click(*control("main", "tools"))
-        time.sleep(2)
-        screenshot("devtools")
-        if sys.platform == "darwin":
-            import Quartz
+        for _ in range(3):
+            click(*control("main", "tools"))
+            time.sleep(1.2)
+            if sys.platform == "darwin":
+                import Quartz
 
-            windows = Quartz.CGWindowListCopyWindowInfo(
-                Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
-            )
-            titles = [str(w.get(Quartz.kCGWindowName, "")) for w in windows]
-        else:
-            titles = ui.getAllTitles()
-        (a.output / "window-titles.json").write_text(json.dumps(titles))
+                windows = Quartz.CGWindowListCopyWindowInfo(
+                    Quartz.kCGWindowListOptionOnScreenOnly,
+                    Quartz.kCGNullWindowID
+                )
+                titles = [str(w.get(Quartz.kCGWindowName, "")) for w in windows]
+            else:
+                titles = ui.getAllTitles()
+            if any("DevTools" in title for title in titles):
+                break
+        screenshot("devtools")
+        (a.output / "window-titles.json").write_text(json.dumps(
+            list(titles)))
         assert any("DevTools" in title for title in titles), titles
         # A loaded runner can need well over 30s to finish the graceful
         # CEF shutdown with DevTools open; keep the bound generous.
