@@ -10,7 +10,6 @@ APP="${1:?usage: test-linux.sh <app-path>}"
 DISP="${CLICKTHROUGH_DISPLAY:-:97}"
 LOG="$(mktemp /tmp/clickthrough-log.XXXXXX)"
 ARTDIR="${CLICKTHROUGH_ARTIFACTS:-/tmp}"
-FAIL=0
 
 cleanup() {
   [[ -n "${APP_PID:-}" ]] && kill "$APP_PID" 2>/dev/null
@@ -19,7 +18,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-die() { echo "FAIL: $*"; tail -30 "$LOG"; FAIL=1; exit 1; }
+die() { echo "FAIL: $*"; tail -30 "$LOG"; exit 1; }
 
 app_died() {
   if ! kill -0 "$APP_PID" 2>/dev/null; then die "app process exited early"; fi
@@ -39,20 +38,34 @@ wait_log() {
   echo "PASS: log marker '$pattern'"
 }
 
-count_flip() { grep -c "ignoring=$1" "$LOG" || true; }
+# last_state echoes true|false|none — the engine's most recently logged state
+last_state() {
+  local line
+  line=$(grep "ignoring=" "$LOG" | tail -1)
+  case "$line" in
+    *"ignoring=true"*) echo true ;;
+    *"ignoring=false"*) echo false ;;
+    *) echo none ;;
+  esac
+}
 
-# wait_flip <true|false> <baseline-count> — waits for one more flip to value
-wait_flip() {
-  local want="$1" base="$2" start
+# wait_state <true|false> — waits until the engine's state equals the value;
+# no flip logged yet counts as false (pre-mask fail-open is interactive).
+wait_state() {
+  local want="$1" start
   start=$(date +%s)
-  until [ "$(count_flip "$want")" -gt "$base" ]; do
+  while :; do
+    st=$(last_state)
+    if [ "$st" = "$want" ] || { [ "$st" = "none" ] && [ "$want" = "false" ]; }; then
+      echo "PASS: state ignoring=$want"
+      return
+    fi
     app_died
-    if [ $(( $(date +%s) - start )) -gt 20 ]; then
-      die "timeout waiting for flip ignoring=$want"
+    if [ $(( $(date +%s) - start )) -gt 25 ]; then
+      die "timeout waiting for state ignoring=$want (last: $st)"
     fi
     sleep 0.2
   done
-  echo "PASS: flip ignoring=$want"
 }
 
 move() { xdotool mousemove "$1" "$2"; sleep 0.6; }
@@ -64,10 +77,10 @@ DISPLAY="$DISP" openbox >/dev/null 2>&1 & WM_PID=$!
 sleep 1
 DISPLAY="$DISP" "$APP" >"$LOG" 2>&1 & APP_PID=$!
 
-# --- 1. frontend uploads the alpha mask ------------------------------------
-wait_log "mask uploaded"
+# --- 1. frontend uploads the alpha mask (webkit cold start can be slow) -----
+wait_log "mask uploaded" 120
 
-# --- 2. locate the overlay (frameless: match by size 480x640) --------------
+# --- 2. locate the overlay (frameless: match by size 480x640) ---------------
 OL=$(DISPLAY="$DISP" xwininfo -root -tree | grep -F '480x640' | head -1 | awk '{print $1}')
 [ -n "$OL" ] || die "overlay window (480x640) not found in window tree"
 OX=$(DISPLAY="$DISP" xwininfo -id "$OL" | awk '/Absolute upper-left X/{print $4}')
@@ -75,15 +88,17 @@ OY=$(DISPLAY="$DISP" xwininfo -id "$OL" | awk '/Absolute upper-left Y/{print $4}
 echo "overlay window $OL at $OX,$OY"
 export DISPLAY="$DISP"
 
-# --- 3. opaque region stays interactive -------------------------------------
-B=$(count_flip false)
-move $((OX+200)) $((OY+160))   # circle centre
-wait_flip false "$B"
+# --- 3. home the cursor outside the window: engine must go passthrough ------
+move 10 10
+wait_state true
 
-# --- 4. transparent region passes through -----------------------------------
-B=$(count_flip true)
+# --- 4. opaque region goes interactive ---------------------------------------
+move $((OX+200)) $((OY+160))   # circle centre
+wait_state false
+
+# --- 5. transparent region passes through ------------------------------------
 move $((OX+460)) $((OY+320))
-wait_flip true "$B"
+wait_state true
 LOC=$(xdotool getmouselocation)
 WIN=$(echo "$LOC" | grep -o 'window:[0-9]*' | cut -d: -f2)
 WIN_HEX=$(printf '0x%x' "${WIN:-0}")
@@ -96,10 +111,9 @@ xdotool click 1
 sleep 0.5
 wait_log "underlay-clicks=1"
 
-# --- 5. opaque card receives clicks after flip back --------------------------
-B=$(count_flip false)
+# --- 6. opaque card receives clicks after flipping back ----------------------
 move $((OX+118)) $((OY+537))   # card button
-wait_flip false "$B"
+wait_state false
 xdotool click 1
 sleep 0.5
 wait_log "card-clicks=1"

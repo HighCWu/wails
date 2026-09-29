@@ -8,11 +8,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public class Win32Input {
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
@@ -51,40 +51,52 @@ function Wait-LogMarker([string]$pattern, [int]$timeoutSec = 30) {
   throw "timeout waiting for log marker: $pattern; log:`n$(Dump-Log)"
 }
 
-function Wait-Flip([string]$want, [int]$baseline) {
-  $deadline = (Get-Date).AddSeconds(20)
-  while ((Get-Date) -lt $deadline) {
+# The engine's most recently logged state; no flip yet counts as false
+# (pre-mask fail-open is interactive).
+function Get-LastState {
+  $m = Select-String -Path $log, $errlog -Pattern "ignoring=(true|false)" -ErrorAction SilentlyContinue |
+    Select-Object -Last 1
+  if (-not $m) { return "none" }
+  if ($m.Line -match "ignoring=(true|false)") { return $Matches[1] }
+  return "none"
+}
+
+function Wait-State([string]$want, [int]$timeoutSec = 25) {
+  $deadline = (Get-Date).AddSeconds($timeoutSec)
+  while ($true) {
+    $st = Get-LastState
+    if ($st -eq $want -or ($st -eq "none" -and $want -eq "false")) {
+      Write-Output "PASS: state ignoring=$want"
+      return
+    }
     if ($script:proc -and $script:proc.HasExited) { throw "app exited early" }
-    $matches = Select-String -Path $log, $errlog -Pattern ("ignoring=" + $want) -ErrorAction SilentlyContinue
-    if ($matches -and $matches.Count -gt $baseline) { Write-Output "PASS: flip ignoring=$want"; return }
+    if ((Get-Date) -gt $deadline) { throw "timeout waiting for state ignoring=$want (last: $st); log:`n$(Dump-Log)" }
     Start-Sleep -Milliseconds 300
   }
-  throw "timeout waiting for flip ignoring=$want"
 }
 
-function Count-Flip([string]$want) {
-  $m = Select-String -Path $log, $errlog -Pattern ("ignoring=" + $want) -ErrorAction SilentlyContinue
-  if ($m) { return $m.Count } else { return 0 }
-}
-
-function Click-At([int]$x, [int]$y) {
+function Move-And-Click([int]$x, [int]$y) {
   [Win32Input]::SetCursorPos($x, $y) | Out-Null
-  Start-Sleep -Milliseconds 500
+  Start-Sleep -Milliseconds 600
   [Win32Input]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)  # LEFTDOWN
   Start-Sleep -Milliseconds 60
   [Win32Input]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)  # LEFTUP
   Start-Sleep -Milliseconds 400
 }
 
+function Move-Cursor([int]$x, [int]$y) {
+  [Win32Input]::SetCursorPos($x, $y) | Out-Null
+  Start-Sleep -Milliseconds 600
+}
+
 # --- launch -----------------------------------------------------------------
 $proc = Start-Process -FilePath $AppPath -RedirectStandardOutput $log `
-  -RedirectStandardError ($log + ".err") -WindowStyle Hidden -PassThru
+  -RedirectStandardError $errlog -WindowStyle Hidden -PassThru
 
-# --- 1. mask uploaded --------------------------------------------------------
-Wait-LogMarker "mask uploaded"
+# --- 1. mask uploaded (first webview start can be slow) ----------------------
+Wait-LogMarker "mask uploaded" 120
 
 # --- 2. locate the overlay: top-level window of our process sized 480x640 ---
-# (frameless windows may not expose their title to FindWindow)
 $script:overlayHwnd = [IntPtr]::Zero
 $cb = [Win32Input+EnumWindowsProc]{
   param($h, $l)
@@ -107,21 +119,22 @@ $rect = New-Object Win32Input+RECT
 $ox = $rect.Left; $oy = $rect.Top
 Write-Output "overlay window $script:overlayHwnd at $ox,$oy"
 
-# --- 3. opaque region stays interactive ---------------------------------------
-$b = Count-Flip "false"
-Click-At ($ox + 200) ($oy + 160)
-Wait-Flip "false" $b
+# --- 3. home the cursor outside the window: engine must go passthrough -------
+Move-Cursor 10 10
+Wait-State "true"
 
-# --- 4. transparent region passes through to the underlay ---------------------
-$b = Count-Flip "true"
-Click-At ($ox + 460) ($oy + 320)
-Wait-Flip "true" $b
+# --- 4. opaque region goes interactive ----------------------------------------
+Move-Cursor ($ox + 200) ($oy + 160)
+Wait-State "false"
+
+# --- 5. transparent region passes through to the underlay ---------------------
+Move-And-Click ($ox + 460) ($oy + 320)
+Wait-State "true"
 Wait-LogMarker "underlay-clicks=1"
 
-# --- 5. opaque card receives clicks after flipping back -----------------------
-$b = Count-Flip "false"
-Click-At ($ox + 118) ($oy + 537)
-Wait-Flip "false" $b
+# --- 6. opaque card receives clicks after flipping back -----------------------
+Move-And-Click ($ox + 118) ($oy + 537)
+Wait-State "false"
 Wait-LogMarker "card-clicks=1"
 
 Cleanup
