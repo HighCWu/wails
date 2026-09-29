@@ -97,6 +97,7 @@ func (e *engine) run() {
 
 		mode, mask := e.mode, e.mask
 		var ignore bool
+		cursor, winpos := "-1,-1", "-1,-1"
 		switch mode {
 		case "ignore":
 			ignore = true
@@ -104,35 +105,40 @@ func (e *engine) run() {
 			if mask == nil {
 				ignore = false // fail open until the frontend uploads a mask
 			} else {
-				ignore = !e.hitTest(mask)
+				var interactive bool
+				interactive, cursor = e.hitTest(mask)
+				ignore = !interactive
 			}
 		default: // "off"
 			ignore = false
 		}
-
 		if ignore != e.lastIgnore {
 			e.lastIgnore = ignore
 			e.window.SetIgnoreMouseEvents(ignore)
-			e.app.Logger.Info("clickthrough: flip", "ignoring", ignore, "mode", mode)
+			wx, wy := e.window.Position()
+			winpos = fmt.Sprintf("%d,%d", wx, wy)
+			e.app.Logger.Info("clickthrough: flip", "ignoring", ignore, "mode", mode,
+				"cursor", cursor, "winpos", winpos)
 			e.app.Event.Emit("ct:state", map[string]any{"mode": mode, "ignoring": ignore})
 		}
 	}
 }
 
 // hitTest maps the global cursor into overlay-local coordinates and looks
-// up the mask. Scale caveat: window Position() is logical while
-// MousePosition() is physical; at scale factor 1 they coincide (Xvfb CI and
-// typical Linux setups). Mixed-DPI handling is future work.
-func (e *engine) hitTest(mask *hitMask) bool {
+// up the mask; it also returns the raw cursor position for diagnostics.
+// Scale caveat: window Position() is logical while MousePosition() is
+// physical; at scale factor 1 they coincide (CI runners and typical Linux).
+// Mixed-DPI handling is future work.
+func (e *engine) hitTest(mask *hitMask) (bool, string) {
 	if mask == nil {
-		return false
+		return false, "nil-mask"
 	}
 	x, y, ok := application.MousePosition()
 	if !ok {
-		return false
+		return false, "cursor-unavailable"
 	}
 	wx, wy := e.window.Position()
-	return mask.interactive(x-wx, y-wy)
+	return mask.interactive(x-wx, y-wy), fmt.Sprintf("%d,%d", x, y)
 }
 
 func main() {
