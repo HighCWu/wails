@@ -8,8 +8,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Drawing
-
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -18,6 +16,10 @@ public class Win32Input {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc proc, IntPtr lparam);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 }
 "@
@@ -81,13 +83,29 @@ $proc = Start-Process -FilePath $AppPath -RedirectStandardOutput $log `
 # --- 1. mask uploaded --------------------------------------------------------
 Wait-LogMarker "mask uploaded"
 
-# --- 2. locate the overlay by title ------------------------------------------
-$hwnd = [Win32Input]::FindWindow($null, "Overlay (transparent hit-test)")
-if ($hwnd -eq [IntPtr]::Zero) { throw "overlay window not found by title" }
+# --- 2. locate the overlay: top-level window of our process sized 480x640 ---
+# (frameless windows may not expose their title to FindWindow)
+$script:overlayHwnd = [IntPtr]::Zero
+$cb = [Win32Input+EnumWindowsProc]{
+  param($h, $l)
+  $winPid = 0
+  [Win32Input]::GetWindowThreadProcessId($h, [ref]$winPid) | Out-Null
+  if ($winPid -eq $script:proc.Id -and [Win32Input]::IsWindowVisible($h)) {
+    $r = New-Object Win32Input+RECT
+    [Win32Input]::GetWindowRect($h, [ref]$r) | Out-Null
+    if (($r.Right - $r.Left) -eq 480 -and ($r.Bottom - $r.Top) -eq 640) {
+      $script:overlayHwnd = $h
+      return $false
+    }
+  }
+  return $true
+}
+[Win32Input]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
+if ($script:overlayHwnd -eq [IntPtr]::Zero) { throw "overlay window (480x640) not found for pid $($script:proc.Id)" }
 $rect = New-Object Win32Input+RECT
-[Win32Input]::GetWindowRect($hwnd, [ref]$rect) | Out-Null
+[Win32Input]::GetWindowRect($script:overlayHwnd, [ref]$rect) | Out-Null
 $ox = $rect.Left; $oy = $rect.Top
-Write-Output "overlay window at $ox,$oy"
+Write-Output "overlay window $script:overlayHwnd at $ox,$oy"
 
 # --- 3. opaque region stays interactive ---------------------------------------
 $b = Count-Flip "false"
