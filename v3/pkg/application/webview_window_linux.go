@@ -505,7 +505,8 @@ func (w *linuxWebviewWindow) isIgnoreMouseEvents() bool {
 }
 
 func (w *linuxWebviewWindow) setIgnoreMouseEvents(ignore bool) {
-	w.ignoreMouse(w.ignoreMouseEvents)
+	w.ignoreMouseEvents = ignore
+	w.ignoreMouse(ignore)
 }
 
 func (w *linuxWebviewWindow) show() {

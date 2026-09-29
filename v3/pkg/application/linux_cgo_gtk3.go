@@ -2005,11 +2005,11 @@ func (w *linuxWebviewWindow) position() (int, int) {
 }
 
 func (w *linuxWebviewWindow) ignoreMouse(ignore bool) {
-	if ignore {
-		C.gtk_widget_set_events((*C.GtkWidget)(unsafe.Pointer(w.window)), C.GDK_ENTER_NOTIFY_MASK|C.GDK_LEAVE_NOTIFY_MASK)
-	} else {
-		C.gtk_widget_set_events((*C.GtkWidget)(unsafe.Pointer(w.window)), C.GDK_ALL_EVENTS_MASK)
-	}
+	// True passthrough needs X11 input shapes on both the toplevel and the
+	// webview GDK windows: the webview is a separate X11 window and keeps
+	// consuming clicks if only the toplevel's event mask changes (and
+	// gtk_widget_set_events is a no-op on an already-realised widget).
+	w.setInputShape(ignore)
 }
 
 // FIXME Change this to reflect mouse button!
