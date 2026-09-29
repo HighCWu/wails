@@ -110,6 +110,7 @@ sleep 2
 echo "== accessibility rows now =="
 sudo sqlite3 "$TCC_DB" "SELECT client,auth_value FROM access WHERE service='kTCCServiceAccessibility';" 2>&1 | head -12
 
+"$DRIVER" locate $((OX+460)) $((OY+320)) || true
 "$DRIVER" click $((OX+460)) $((OY+320)) 2>&1 || true
 # cliclick ships on runner images and may carry its own pre-granted context.
 command -v cliclick >/dev/null && cliclick c:$((OX+460)),$((OY+320)) || true

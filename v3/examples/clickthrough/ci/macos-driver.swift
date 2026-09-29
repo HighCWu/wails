@@ -24,6 +24,21 @@ case "click":
     down.post(tap: CGEventTapLocation.cghidEventTap)
     usleep(60_000)
     up.post(tap: CGEventTapLocation.cghidEventTap)
+case "locate":
+    // dump every on-screen window covering (X,Y): owner, layer, bounds
+    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { exit(0) }
+    for w in list {
+        guard let b = w[kCGWindowBounds as String] as? [String: Any],
+              let bx = b["X"] as? Double, let by = b["Y"] as? Double,
+              let bw = b["Width"] as? Double, let bh = b["Height"] as? Double else { continue }
+        if x >= bx, x <= bx + bw, y >= by, y <= by + bh {
+            let owner = w[kCGWindowOwnerName as String] as? String ?? "?"
+            let pid = w[kCGWindowOwnerPID as String] as? Int ?? -1
+            let name = w[kCGWindowName as String] as? String ?? ""
+            let layer = w[kCGWindowLayer as String] as? Int ?? -1
+            print("covering: owner=\(owner) pid=\(pid) layer=\(layer) bounds=\(bx),\(by) \(bw)x\(bh) name='\(name)'")
+        }
+    }
 default:
     FileHandle.standardError.write("unknown command \(args[1])\n".data(using: .utf8)!); exit(2)
 }
