@@ -9,12 +9,17 @@
 // Node integration.
 const { ipcRenderer } = require('electron');
 
+const expMode = process.env.WAILS_ELECTRON_EXPERIMENT || '';
+try {
+  process.stderr.write(`[wails-electron preload] exp="${expMode}" ppid=${process.ppid}\n`);
+} catch (e) {}
+
 window.chrome = window.chrome || {};
 window.chrome.webview = {
   postMessage: (msg) => { ipcRenderer.send('wails:message', msg); },
 };
 
-if (process.env.WAILS_ELECTRON_EXPERIMENT === 'fetch-ipc') {
+if (expMode === 'fetch-ipc') {
   const origFetch = window.fetch.bind(window);
   window.fetch = async (input, init) => {
     let url = typeof input === 'string' ? input : (input && input.url) || String(input);
@@ -35,4 +40,5 @@ if (process.env.WAILS_ELECTRON_EXPERIMENT === 'fetch-ipc') {
     }
     return origFetch(input, init);
   };
+  try { process.stderr.write('[wails-electron preload] fetch-ipc override installed\n'); } catch (e) {}
 }
