@@ -51,6 +51,11 @@ type Event struct {
 	Params   json.RawMessage
 }
 
+// RequestHandler processes a request originating from the Electron main
+// process (e.g. a /wails/runtime call forwarded by the preload shim). The
+// returned value is marshalled back as the response result.
+type RequestHandler func(method string, params json.RawMessage) (any, error)
+
 // Process is a running Electron main process speaking the JSON-lines
 // control protocol.
 type Process struct {
@@ -63,6 +68,9 @@ type Process struct {
 	mu      sync.Mutex
 	nextID  uint64
 	pending map[uint64]chan callResult
+
+	handlerMu sync.Mutex
+	handler   RequestHandler
 
 	eventsMu sync.Mutex
 	events   []chan Event
@@ -172,6 +180,45 @@ func Start(exe, bootstrap, preload string, extraSwitches []string, cfg map[strin
 	return p, nil
 }
 
+// SetRequestHandler installs the handler for requests sent by the Electron
+// main process. Must be called before Start returns processing begins.
+func (p *Process) SetRequestHandler(h RequestHandler) {
+	p.handlerMu.Lock()
+	p.handler = h
+	p.handlerMu.Unlock()
+}
+
+func (p *Process) getRequestHandler() RequestHandler {
+	p.handlerMu.Lock()
+	defer p.handlerMu.Unlock()
+	return p.handler
+}
+
+// respond sends a response for a host-handled request back to Electron.
+func (p *Process) respond(id uint64, result any, err error) {
+	if err != nil {
+		p.send(wireMessage{T: "resp", ID: id, Ok: false, Err: err.Error()})
+		return
+	}
+	raw, mErr := json.Marshal(result)
+	if mErr != nil {
+		p.send(wireMessage{T: "resp", ID: id, Ok: false, Err: mErr.Error()})
+		return
+	}
+	p.send(wireMessage{T: "resp", ID: id, Ok: true, R: raw})
+}
+
+func (p *Process) send(m wireMessage) {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	p.writeMu.Lock()
+	_, _ = fmt.Fprintln(p.stdin, string(raw))
+	_ = p.stdin.Flush()
+	p.writeMu.Unlock()
+}
+
 func (p *Process) readLoop(stdout interface{ Read([]byte) (int, error) }) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
@@ -199,6 +246,17 @@ func (p *Process) readLoop(stdout interface{ Read([]byte) (int, error) }) {
 					ch <- callResult{err: errors.New(m.Err)}
 				}
 			}
+		case "req":
+			handler := p.getRequestHandler()
+			if handler == nil {
+				p.respond(m.ID, nil, errors.New("no request handler installed"))
+				continue
+			}
+			id := m.ID
+			go func() {
+				result, err := handler(m.M, m.P)
+				p.respond(id, result, err)
+			}()
 		case "ev":
 			p.emitEvent(Event{Name: m.E, Params: m.P, WindowID: windowIDFromParams(m.P)})
 		}
@@ -252,7 +310,7 @@ func (p *Process) Call(method string, windowID uint, params map[string]any, out 
 		return errors.New("electron process has exited")
 	}
 	p.nextID++
-	id := p.nextID
+	id := p.nextID * 2 // even ids: Go-initiated (odd ids are Electron-initiated)
 	ch := make(chan callResult, 1)
 	p.pending[id] = ch
 	p.mu.Unlock()

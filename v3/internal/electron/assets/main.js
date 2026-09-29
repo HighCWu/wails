@@ -3,6 +3,7 @@
 //   request : {"t":"req","id":N,"m":"<method>","p":{...,"id":windowID}}
 //   response: {"t":"resp","id":N,"ok":true,"r":{...}} | {"t":"resp","id":N,"ok":false,"err":"..."}
 //   event   : {"t":"ev","e":"<name>","p":{...,"id":windowID}}
+// id space: even ids are Go-initiated, odd ids are Electron-initiated.
 // Quitting: when stdin closes the host is gone — exit immediately so no
 // orphaned Electron processes outlive the Wails application.
 const { app, BrowserWindow, ipcMain } = require('electron');
@@ -20,9 +21,33 @@ function winEvent(id, name, extra) {
   send({ t: 'ev', e: name, p: p });
 }
 
+// Electron-initiated requests to the Go host (odd ids).
+let reqSeq = 0;
+const pendingGo = new Map();
+function callGo(method, params) {
+  return new Promise((resolve, reject) => {
+    const id = ++reqSeq * 2 + 1;
+    pendingGo.set(id, { resolve, reject });
+    send({ t: 'req', id: id, m: method, p: params });
+    setTimeout(() => {
+      if (pendingGo.has(id)) {
+        pendingGo.delete(id);
+        reject(new Error('go ipc timeout: ' + method));
+      }
+    }, 15000);
+  });
+}
+
 function respond(id, fn) {
   try {
     const r = fn();
+    if (r && typeof r.then === 'function') {
+      r.then(
+        (v) => send({ t: 'resp', id: id, ok: true, r: v === undefined ? null : v }),
+        (e) => send({ t: 'resp', id: id, ok: false, err: String(e) }),
+      );
+      return;
+    }
     send({ t: 'resp', id: id, ok: true, r: r === undefined ? null : r });
   } catch (e) {
     send({ t: 'resp', id: id, ok: false, err: String(e) });
@@ -48,7 +73,7 @@ function createWindow(p) {
     backgroundColor: p.transparent ? '#00000000' : undefined,
     webPreferences: {
       preload: p.preload || cfg.preload,
-      contextIsolation: true,
+      contextIsolation: false,
       nodeIntegration: false,
       sandbox: false,
     },
@@ -117,6 +142,9 @@ const methods = {
   selectAll: (p) => getWindow(p).webContents.selectAll(),
   delete: (p) => getWindow(p).webContents.delete(),
   quit: () => app.quit(),
+  // Forwards a frontend /wails/runtime HTTP call into the Go host over the
+  // control protocol (preload fetch-ipc experiment), returning the response.
+  webviewRequest: (p) => callGo('webviewRequest', p),
 };
 
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
@@ -137,6 +165,16 @@ app.whenReady().then(() => {
       if (!line.trim()) continue;
       let m;
       try { m = JSON.parse(line); } catch (e) { continue; }
+      if (m.t === 'resp') {
+        // response to an Electron-initiated request (callGo)
+        const p = pendingGo.get(m.id);
+        if (p) {
+          pendingGo.delete(m.id);
+          if (m.ok) p.resolve(m.r);
+          else p.reject(new Error(m.err || 'request failed'));
+        }
+        continue;
+      }
       const fn = methods[m.m];
       if (!fn) { send({ t: 'resp', id: m.id, ok: false, err: 'unknown method ' + m.m }); continue; }
       respond(m.id, () => fn(m.p || {}));
@@ -171,3 +209,7 @@ ipcMain.on('wails:message', (event, msg) => {
   const id = byWebContents.get(event.sender) || 0;
   send({ t: 'ev', e: 'message', p: { id: id, payload: msg } });
 });
+
+// Preload fetch-ipc experiment: a /wails/runtime call forwarded from the
+// renderer is routed over the control protocol to the Go host.
+ipcMain.handle('wails:runtime', (_event, payload) => callGo('webviewRequest', payload || {}));
