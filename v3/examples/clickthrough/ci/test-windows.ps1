@@ -125,6 +125,11 @@ Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
   }
 New-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\ImmersiveShell' `
   -Name TabletMode -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
+# The documented lever for cursor suppression (Windows 10+ design change).
+# Read by winlogon at session creation, so on a self-hosted runner it takes
+# effect after the one-time reboot; hosted runners cannot reboot mid-job.
+New-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+  -Name EnableCursorSuppression -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
 # absolute move to the screen centre (65535-normalised) wakes pointer routing
 [Win32Input]::mouse_event(0x8001, 32767, 32767, 0, [UIntPtr]::Zero)
 Start-Sleep -Seconds 2
