@@ -98,6 +98,7 @@ Wait-LogMarker "mask uploaded" 120
 
 # --- 2. locate the overlay: top-level window of our process sized 480x640 ---
 $script:overlayHwnd = [IntPtr]::Zero
+$script:underlayRect = $null
 $cb = [Win32Input+EnumWindowsProc]{
   param($h, $l)
   $winPid = 0
@@ -105,10 +106,9 @@ $cb = [Win32Input+EnumWindowsProc]{
   if ($winPid -eq $script:proc.Id -and [Win32Input]::IsWindowVisible($h)) {
     $r = New-Object Win32Input+RECT
     [Win32Input]::GetWindowRect($h, [ref]$r) | Out-Null
-    if (($r.Right - $r.Left) -eq 480 -and ($r.Bottom - $r.Top) -eq 640) {
-      $script:overlayHwnd = $h
-      return $false
-    }
+    $w = $r.Right - $r.Left; $ht = $r.Bottom - $r.Top
+    if ($w -eq 480 -and $ht -eq 640) { $script:overlayHwnd = $h; return $false }
+    if ($w -eq 700 -and $ht -eq 500) { $script:underlayRect = $r }
   }
   return $true
 }
@@ -118,6 +118,12 @@ $rect = New-Object Win32Input+RECT
 [Win32Input]::GetWindowRect($script:overlayHwnd, [ref]$rect) | Out-Null
 $ox = $rect.Left; $oy = $rect.Top
 Write-Output "overlay window $script:overlayHwnd at $ox,$oy"
+if ($script:underlayRect) {
+  $u = $script:underlayRect
+  Write-Output "underlay window at $($u.Left),$($u.Top) ($($u.Right - $u.Left)x$($u.Bottom - $u.Top))"
+} else {
+  Write-Output "WARNING: underlay window (700x500) not found"
+}
 
 # --- 3. home the cursor outside the window: engine must go passthrough -------
 Move-Cursor 10 10
@@ -128,9 +134,28 @@ Move-Cursor ($ox + 200) ($oy + 160)
 Wait-State "false"
 
 # --- 5. transparent region passes through to the underlay ---------------------
-Move-And-Click ($ox + 460) ($oy + 320)
+# pick a transparent scene point that is also inside the underlay's rect
+$candidates = @(@(460, 320), @(240, 300), @(460, 240), @(460, 620))
+$px = $null; $py = $null
+foreach ($c in $candidates) {
+  $gx = $ox + $c[0]; $gy = $oy + $c[1]
+  if (-not $script:underlayRect) { $px = $gx; $py = $gy; break }
+  $u = $script:underlayRect
+  if ($gx -gt $u.Left -and $gx -lt $u.Right -and $gy -gt $u.Top -and $gy -lt $u.Bottom) {
+    $px = $gx; $py = $gy; break
+  }
+}
+if ($null -eq $px) { throw "no transparent point intersects the underlay rect" }
+Write-Output "transparent click point: $px,$py"
+Move-And-Click $px $py
 Wait-State "true"
-Wait-LogMarker "underlay-clicks=1"
+try {
+  Wait-LogMarker "underlay-clicks=1" 15
+} catch {
+  $swallowed = Select-String -Path $log, $errlog -Pattern "overlay-clicks" -Quiet -ErrorAction SilentlyContinue
+  if ($swallowed) { throw "passthrough FAILED: the click was consumed by the overlay; log:`n$(Dump-Log)" }
+  throw
+}
 
 # --- 6. opaque card receives clicks after flipping back -----------------------
 Move-And-Click ($ox + 118) ($oy + 537)

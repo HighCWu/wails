@@ -143,6 +143,11 @@
     current = { mode: d.mode, ignoring: d.ignoring };
     refresh();
   });
+  // diagnostic trap: a click reaching the overlay while it is ignoring
+  // mouse events means passthrough failed — CI asserts this marker's absence
+  document.addEventListener("click", (e) => {
+    wails.Events.Emit("ct:overlay-clicks", e.clientX + "," + e.clientY);
+  });
   refresh();
 </script>
 </body>

@@ -201,6 +201,11 @@ func main() {
 			app.Logger.Info(fmt.Sprintf("clickthrough: card-clicks=%d", int(n)))
 		}
 	})
+	app.Event.On("ct:overlay-clicks", func(e *application.CustomEvent) {
+		if pos, ok := e.Data.(string); ok {
+			app.Logger.Info("clickthrough: overlay-clicks=" + pos)
+		}
+	})
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		go engine.run()
 	})
