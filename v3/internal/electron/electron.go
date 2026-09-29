@@ -183,6 +183,9 @@ func Start(exe, bootstrap, preload string, extraSwitches []string, cfg map[strin
 // SetRequestHandler installs the handler for requests sent by the Electron
 // main process. Must be called before Start returns processing begins.
 func (p *Process) SetRequestHandler(h RequestHandler) {
+	if debugEnabled() {
+		fmt.Fprintf(os.Stderr, "[wails-electron pid=%d] request handler installed\n", os.Getpid())
+	}
 	p.handlerMu.Lock()
 	p.handler = h
 	p.handlerMu.Unlock()
@@ -192,6 +195,10 @@ func (p *Process) getRequestHandler() RequestHandler {
 	p.handlerMu.Lock()
 	defer p.handlerMu.Unlock()
 	return p.handler
+}
+
+func debugEnabled() bool {
+	return strings.TrimSpace(os.Getenv("WAILS_ELECTRON_DEBUG")) == "1"
 }
 
 // respond sends a response for a host-handled request back to Electron.
@@ -249,6 +256,9 @@ func (p *Process) readLoop(stdout interface{ Read([]byte) (int, error) }) {
 		case "req":
 			handler := p.getRequestHandler()
 			if handler == nil {
+				if debugEnabled() {
+					fmt.Fprintf(os.Stderr, "[wails-electron pid=%d] NO HANDLER for %s\n", os.Getpid(), m.M)
+				}
 				p.respond(m.ID, nil, errors.New("no request handler installed"))
 				continue
 			}
