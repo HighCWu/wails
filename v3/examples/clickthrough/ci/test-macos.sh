@@ -85,21 +85,41 @@ wait_state false
 sleep 1
 wait_state true
 
-# --- click phase: best-effort behind Accessibility -------------------------------
-# TCC grant attempts are version-sensitive; all failures degrade to a SKIP.
-for client in /bin/bash /usr/bin/env /usr/bin/sshd com.apple.Terminal; do
-  sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" \
+# --- click phase: Accessibility grants are loud and verified -------------------
+TCC_DB="/Library/Application Support/com.apple.TCC/TCC.db"
+echo "== TCC access schema =="
+sudo sqlite3 "$TCC_DB" '.schema access' 2>&1 | head -4 || true
+echo "== session/runner processes =="
+launchctl managername 2>/dev/null || true
+ps -axo comm= | grep -iE "Runner\.Worker|Runner\.Listener|node$" | sort -u | head -6
+
+# Grant Accessibility to every plausible responsible process: TCC attributes
+# CGEventPost to the process chain that launched the driver, not to the
+# driver binary itself.
+CLIENTS=("/bin/bash" "/bin/zsh" "/usr/bin/env" "/usr/bin/sshd" "/usr/sbin/sshd")
+while IFS= read -r p; do CLIENTS+=("$p"); done < <(ps -axo comm= | grep -iE "Runner\.Worker|Runner\.Listener" | sort -u)
+for client in "${CLIENTS[@]}"; do
+  echo "grant kTCCServiceAccessibility -> $client"
+  sudo sqlite3 "$TCC_DB" \
     "INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified) VALUES ('kTCCServiceAccessibility','$client',1,2,2,1,NULL,NULL,NULL,'UNUSED',NULL,0,NULL);" \
-    >/dev/null 2>&1 || true
+    2>&1 | head -3
 done
-"$DRIVER" click $((OX+460)) $((OY+320)) 2>/dev/null || true
+# TCC daemon caches grants — restart it so the rows take effect.
+sudo pkill -9 tccd 2>/dev/null || true
+sleep 2
+echo "== accessibility rows now =="
+sudo sqlite3 "$TCC_DB" "SELECT client,auth_value FROM access WHERE service='kTCCServiceAccessibility';" 2>&1 | head -12
+
+"$DRIVER" click $((OX+460)) $((OY+320)) 2>&1 || true
+# cliclick ships on runner images and may carry its own pre-granted context.
+command -v cliclick >/dev/null && cliclick c:$((OX+460)),$((OY+320)) || true
 sleep 2
 if grep -q "underlay-clicks=1" "$LOG"; then
   echo "PASS: click passed through to the underlay"
 elif grep -q "overlay-clicks" "$LOG"; then
   die "passthrough FAILED: click was consumed by the overlay"
 else
-  echo "SKIP: click phase inconclusive (Accessibility grant unavailable); flip assertions passed"
+  echo "SKIP: click phase inconclusive (click not delivered); flip assertions passed"
 fi
 
 echo "ALL PASS"
