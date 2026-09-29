@@ -217,7 +217,9 @@ try:
         print("PASS: IBus Chinese preedit, composition events, commit and RPC", flush=True)
     run("xdotool", "windowsize", window, "1000", "700")
     time.sleep(.5)
-    assert screenshot("resized")[(0, 255, 0)] > 500000
+    # "Mostly green" — an absolute count this tight flips with a single
+    # extra page row (the Stability button pushed it just under 500k).
+    assert screenshot("resized")[(0, 255, 0)] > 450000
     tree = run("xwininfo", "-id", window, "-tree")
     (out / "window-tree.txt").write_text(tree)
     geometry = run("xwininfo", "-id", window)
