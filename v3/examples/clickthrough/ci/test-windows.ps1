@@ -23,9 +23,12 @@ public class Win32Input {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+  [DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CURSORINFO info);
+  [DllImport("user32.dll")] public static extern IntPtr LoadCursor(IntPtr hInstance, int lpCursorName);
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+  [StructLayout(LayoutKind.Sequential)] public struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT screenPos; }
 }
 "@
 
@@ -191,6 +194,18 @@ $sb = New-Object System.Text.StringBuilder 256
 Write-Output ("WindowFromPoint({0},{1}) = {2} '{3}'" -f $px, $py, $wfp, $sb.ToString())
 Move-And-Click $px $py
 Wait-State "true"
+
+# The underlay is a full-page text input, so the cursor showing through the
+# transparent region must be the I-beam set by the window below.
+$ci = New-Object Win32Input+CURSORINFO
+$ci.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type][Win32Input+CURSORINFO])
+[Win32Input]::GetCursorInfo([ref]$ci) | Out-Null
+$ibeam = [Win32Input]::LoadCursor([IntPtr]::Zero, 32513)  # IDC_IBEAM
+if ($ci.hCursor -ne $ibeam) {
+  throw "cursor over the transparent region is not the I-beam from the underlay (hCursor=$($ci.hCursor), expected $ibeam)"
+}
+Write-Output "PASS: cursor over transparent region is the underlay's I-beam"
+
 try {
   Wait-LogMarker "underlay-clicks=1" 15
 } catch {

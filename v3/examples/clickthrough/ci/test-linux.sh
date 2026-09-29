@@ -8,6 +8,7 @@ set -uo pipefail
 
 APP="${1:?usage: test-linux.sh <app-path>}"
 DISP="${CLICKTHROUGH_DISPLAY:-:97}"
+DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG="$(mktemp /tmp/clickthrough-log.XXXXXX)"
 ARTDIR="${CLICKTHROUGH_ARTIFACTS:-/tmp}"
 
@@ -107,6 +108,27 @@ if [ "$WIN_HEX" = "$OL" ]; then
 else
   echo "PASS: pointer attributed below the overlay ($LOC)"
 fi
+
+# --- 5b. cursor shape follows the window below (XFixes) ----------------------
+# The underlay is a full-page text input: over the transparent region the
+# cursor must be the I-beam from the underlay, not the overlay's arrow.
+PROBE=/tmp/clickthrough-cursor-probe
+cc -O2 -o "$PROBE" "$DIR/cursor-probe.c" $(pkg-config --cflags --libs x11 xfixes) \
+  || die "cursor probe compile failed"
+CUR_OVER=$("$PROBE" "$ARTDIR/clickthrough-linux-cursor-ibeam.ppm")
+echo "cursor over transparent region: $CUR_OVER"
+move 10 10
+CUR_HOME=$("$PROBE")
+echo "cursor over desktop:            $CUR_HOME"
+S_OVER=$(echo "$CUR_OVER" | grep -o 'serial=[0-9]*')
+S_HOME=$(echo "$CUR_HOME" | grep -o 'serial=[0-9]*')
+[ -n "$S_OVER" ] || die "cursor probe returned no serial at transparent point"
+[ "$S_OVER" != "$S_HOME" ] || die "cursor shape did not follow the window below ($CUR_OVER vs $CUR_HOME)"
+echo "PASS: cursor shape follows the window below the transparent region"
+
+# --- 5c. real click passes through to the underlay ----------------------------
+move $((OX+460)) $((OY+320))   # back over the transparent region
+wait_state true
 xdotool click 1
 sleep 0.5
 wait_log "underlay-clicks=1"
