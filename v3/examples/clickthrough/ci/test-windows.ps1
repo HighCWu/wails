@@ -23,6 +23,7 @@ public class Win32Input {
 "@
 
 $log = Join-Path $env:TEMP ("clickthrough-log-" + [guid]::NewGuid().ToString('N') + ".txt")
+$errlog = $log + ".err"
 $script:proc = $null
 
 function Cleanup {
@@ -30,24 +31,29 @@ function Cleanup {
 }
 trap { Cleanup }
 
+# Wails logs markers to stderr on some paths — always search both streams.
+function Dump-Log {
+  (Get-Content $log, $errlog -ErrorAction SilentlyContinue) -join "`n"
+}
+
 function Wait-LogMarker([string]$pattern, [int]$timeoutSec = 30) {
   $deadline = (Get-Date).AddSeconds($timeoutSec)
   while ((Get-Date) -lt $deadline) {
-    if ($script:proc -and $script:proc.HasExited) { throw "app exited early; log:`n$(Get-Content $log -Raw)" }
-    if ((Test-Path $log) -and (Select-String -Path $log -Pattern $pattern -Quiet)) {
+    if ($script:proc -and $script:proc.HasExited) { throw "app exited early; log:`n$(Dump-Log)" }
+    if ((Test-Path $log) -and (Select-String -Path $log, $errlog -Pattern $pattern -Quiet)) {
       Write-Output "PASS: log marker '$pattern'"
       return
     }
     Start-Sleep -Milliseconds 300
   }
-  throw "timeout waiting for log marker: $pattern; log:`n$(Get-Content $log -Raw -ErrorAction SilentlyContinue)"
+  throw "timeout waiting for log marker: $pattern; log:`n$(Dump-Log)"
 }
 
 function Wait-Flip([string]$want, [int]$baseline) {
   $deadline = (Get-Date).AddSeconds(20)
   while ((Get-Date) -lt $deadline) {
     if ($script:proc -and $script:proc.HasExited) { throw "app exited early" }
-    $matches = Select-String -Path $log -Pattern ("ignoring=" + $want)
+    $matches = Select-String -Path $log, $errlog -Pattern ("ignoring=" + $want) -ErrorAction SilentlyContinue
     if ($matches -and $matches.Count -gt $baseline) { Write-Output "PASS: flip ignoring=$want"; return }
     Start-Sleep -Milliseconds 300
   }
@@ -55,7 +61,7 @@ function Wait-Flip([string]$want, [int]$baseline) {
 }
 
 function Count-Flip([string]$want) {
-  $m = Select-String -Path $log -Pattern ("ignoring=" + $want) -ErrorAction SilentlyContinue
+  $m = Select-String -Path $log, $errlog -Pattern ("ignoring=" + $want) -ErrorAction SilentlyContinue
   if ($m) { return $m.Count } else { return 0 }
 }
 
