@@ -374,6 +374,52 @@ void wcef_host_close_browser(cef_browser_host_t* h, int force_close) {
 
 void wcef_host_set_focus(cef_browser_host_t* h) { h->set_focus(h, 1); }
 
+void wcef_host_was_resized(cef_browser_host_t* h) { h->was_resized(h); }
+
+void wcef_host_send_mouse_move(cef_browser_host_t* h, int x, int y,
+                               int modifiers, int leave) {
+  cef_mouse_event_t e = {0};
+  e.x = x;
+  e.y = y;
+  e.modifiers = (uint32_t)modifiers;
+  h->send_mouse_move_event(h, &e, leave);
+}
+
+void wcef_host_send_mouse_click(cef_browser_host_t* h, int x, int y,
+                                int modifiers, int button, int up, int count) {
+  cef_mouse_event_t e = {0};
+  e.x = x;
+  e.y = y;
+  e.modifiers = (uint32_t)modifiers;
+  h->send_mouse_click_event(h, &e, (cef_mouse_button_type_t)button, up, count);
+}
+
+void wcef_host_send_mouse_wheel(cef_browser_host_t* h, int x, int y,
+                                int modifiers, int delta_x, int delta_y) {
+  cef_mouse_event_t e = {0};
+  e.x = x;
+  e.y = y;
+  e.modifiers = (uint32_t)modifiers;
+  h->send_mouse_wheel_event(h, &e, delta_x, delta_y);
+}
+
+void wcef_host_send_key_event(cef_browser_host_t* h, int key_type,
+                              int modifiers, int windows_key_code,
+                              int native_key_code, unsigned short character,
+                              unsigned short unmodified_character,
+                              int is_system_key, int focus_on_editable_field) {
+  cef_key_event_t e = {0};
+  e.type = (cef_key_event_type_t)key_type;
+  e.modifiers = (uint32_t)modifiers;
+  e.windows_key_code = windows_key_code;
+  e.native_key_code = native_key_code;
+  e.character = character;
+  e.unmodified_character = unmodified_character;
+  e.is_system_key = is_system_key;
+  e.focus_on_editable_field = focus_on_editable_field;
+  h->send_key_event(h, &e);
+}
+
 cef_string_userfree_utf16_t wcef_request_get_url(cef_request_t* r) { return r->get_url(r); }
 
 cef_string_userfree_utf16_t wcef_request_get_method(cef_request_t* r) { return r->get_method(r); }

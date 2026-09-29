@@ -4,6 +4,7 @@
 #include "include/capi/cef_app_capi.h"
 #include "include/capi/cef_browser_capi.h"
 #include "include/capi/cef_client_capi.h"
+#include "include/capi/cef_render_handler_capi.h"
 #include "include/capi/cef_callback_capi.h"
 #include "include/capi/cef_command_line_capi.h"
 #include "include/capi/cef_process_message_capi.h"
@@ -201,6 +202,11 @@ void wcef_host_set_zoom_level(cef_browser_host_t* h, double zoom_level);
 
 // cef_browser_host_t (continued)
 void wcef_host_close_dev_tools(cef_browser_host_t* h);
+void wcef_host_was_resized(cef_browser_host_t* h);
+void wcef_host_send_mouse_move(cef_browser_host_t* h, int x, int y, int modifiers, int leave);
+void wcef_host_send_mouse_click(cef_browser_host_t* h, int x, int y, int modifiers, int button, int up, int count);
+void wcef_host_send_mouse_wheel(cef_browser_host_t* h, int x, int y, int modifiers, int delta_x, int delta_y);
+void wcef_host_send_key_event(cef_browser_host_t* h, int key_type, int modifiers, int windows_key_code, int native_key_code, unsigned short character, unsigned short unmodified_character, int is_system_key, int focus_on_editable_field);
 void wcef_host_show_dev_tools(cef_browser_host_t* h, cef_client_t* client);
 
 // cef_drag_data_t (browser process, drag handler)

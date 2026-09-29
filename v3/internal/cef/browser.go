@@ -106,6 +106,62 @@ static struct _cef_request_handler_t* wails_cef_client_get_requesth(struct _cef_
   return wailsCEFClientGetRequestH(self);
 }
 
+struct _cef_render_handler_t* wailsCEFClientGetRenderH(struct _cef_client_t* self);
+static struct _cef_render_handler_t* wails_cef_client_get_renderh(struct _cef_client_t* self) {
+  return wailsCEFClientGetRenderH(self);
+}
+
+// OSR render handler callbacks (implemented in handlers.go). Every shim
+// forwards the COMPLETE argument list — a dropped argument misaligns the
+// cgo bridge (see the render_terminated defect in git history).
+void wailsCEFRenderGetViewRect(struct _cef_render_handler_t* self,
+                               struct _cef_browser_t* browser,
+                               cef_rect_t* rect);
+static void wails_cef_render_get_view_rect(struct _cef_render_handler_t* self,
+                                           struct _cef_browser_t* browser,
+                                           cef_rect_t* rect) {
+  wailsCEFRenderGetViewRect(self, browser, rect);
+}
+int wailsCEFRenderGetScreenInfo(struct _cef_render_handler_t* self,
+                                struct _cef_browser_t* browser,
+                                cef_screen_info_t* screen_info);
+static int wails_cef_render_get_screen_info(struct _cef_render_handler_t* self,
+                                            struct _cef_browser_t* browser,
+                                            cef_screen_info_t* screen_info) {
+  return wailsCEFRenderGetScreenInfo(self, browser, screen_info);
+}
+void wailsCEFRenderOnPaint(struct _cef_render_handler_t* self,
+                           struct _cef_browser_t* browser,
+                           cef_paint_element_type_t type,
+                           size_t dirty_rects_count,
+                           cef_rect_t const* dirty_rects,
+                           const void* buffer, int width, int height);
+static void wails_cef_render_on_paint(struct _cef_render_handler_t* self,
+                                      struct _cef_browser_t* browser,
+                                      cef_paint_element_type_t type,
+                                      size_t dirty_rects_count,
+                                      cef_rect_t const* dirty_rects,
+                                      const void* buffer, int width,
+                                      int height) {
+  wailsCEFRenderOnPaint(self, browser, type, dirty_rects_count, dirty_rects,
+                        buffer, width, height);
+}
+void wailsCEFRenderOnPopupShow(struct _cef_render_handler_t* self,
+                               struct _cef_browser_t* browser, int show);
+static void wails_cef_render_on_popup_show(struct _cef_render_handler_t* self,
+                                           struct _cef_browser_t* browser,
+                                           int show) {
+  wailsCEFRenderOnPopupShow(self, browser, show);
+}
+void wailsCEFRenderOnPopupSize(struct _cef_render_handler_t* self,
+                               struct _cef_browser_t* browser,
+                               const cef_rect_t* rect);
+static void wails_cef_render_on_popup_size(struct _cef_render_handler_t* self,
+                                           struct _cef_browser_t* browser,
+                                           const cef_rect_t* rect) {
+  wailsCEFRenderOnPopupSize(self, browser, rect);
+}
+
 // Struct initialisers (see app.go for why wiring happens in C).
 static void wcef_init_client(void* p) {
   cef_client_t* c = (cef_client_t*)p;
@@ -116,7 +172,16 @@ static void wcef_init_client(void* p) {
   c->get_permission_handler = wails_cef_client_get_permissionh;
   c->get_drag_handler = wails_cef_client_get_dragh;
   c->get_request_handler = wails_cef_client_get_requesth;
+  c->get_render_handler = wails_cef_client_get_renderh;
   c->on_process_message_received = wails_cef_client_process_message;
+}
+static void wcef_init_renderh(void* p) {
+  cef_render_handler_t* h = (cef_render_handler_t*)p;
+  h->get_view_rect = wails_cef_render_get_view_rect;
+  h->get_screen_info = wails_cef_render_get_screen_info;
+  h->on_paint = wails_cef_render_on_paint;
+  h->on_popup_show = wails_cef_render_on_popup_show;
+  h->on_popup_size = wails_cef_render_on_popup_size;
 }
 static void wcef_init_keyboardh(void* p) {
   cef_keyboard_handler_t* h = (cef_keyboard_handler_t*)p;
@@ -229,10 +294,22 @@ type browserClient struct {
 	// navigation can be blocked. GTK delivers actual drops with coordinates.
 	dragPending []string
 	dragMu      sync.Mutex
+	// Windowless (OSR) state: the render handler plus the latest
+	// composited frame. Guarded by renderMu.
+	renderH    *C.cef_render_handler_t
+	windowless bool
+	osrW       int
+	osrH       int
+	renderMu   sync.Mutex
+	frameBuf   []byte
+	frameW     int
+	frameHt    int
+	frameVer   uint64
+	onFrame    func()
 }
 
-func newBrowserClient(windowID uint) *browserClient {
-	bc := &browserClient{windowID: windowID}
+func newBrowserClient(windowID uint, windowless bool) *browserClient {
+	bc := &browserClient{windowID: windowID, windowless: windowless}
 
 	bc.lsh = (*C.cef_life_span_handler_t)(allocStruct(C.sizeof_cef_life_span_handler_t))
 	C.wcef_init_lsh(unsafe.Pointer(bc.lsh))
@@ -255,6 +332,11 @@ func newBrowserClient(windowID uint) *browserClient {
 	bc.requestH = (*C.cef_request_handler_t)(allocStruct(C.sizeof_cef_request_handler_t))
 	C.wcef_init_requesth(unsafe.Pointer(bc.requestH))
 
+	if windowless {
+		bc.renderH = (*C.cef_render_handler_t)(allocStruct(C.sizeof_cef_render_handler_t))
+		C.wcef_init_renderh(unsafe.Pointer(bc.renderH))
+	}
+
 	bc.c = (*C.cef_client_t)(allocStruct(C.sizeof_cef_client_t))
 	C.wcef_init_client(unsafe.Pointer(bc.c))
 
@@ -265,6 +347,9 @@ func newBrowserClient(windowID uint) *browserClient {
 	handlerOwners.Store(unsafe.Pointer(bc.permissionH), bc)
 	handlerOwners.Store(unsafe.Pointer(bc.dragH), bc)
 	handlerOwners.Store(unsafe.Pointer(bc.requestH), bc)
+	if bc.renderH != nil {
+		handlerOwners.Store(unsafe.Pointer(bc.renderH), bc)
+	}
 	return bc
 }
 
@@ -303,6 +388,13 @@ type CreateBrowserOptions struct {
 	// BackgroundColor is the base cef_color_t (CEF_COLOR_ARGB layout:
 	// 0xAARRGGBB) applied before the first paint; 0 keeps CEF's default.
 	BackgroundColor uint32
+	// Windowless switches the browser to off-screen rendering: CEF stops
+	// creating its native child window and hands composited BGRA frames
+	// to the host through the render handler. Required for per-pixel
+	// transparent windows.
+	Windowless bool
+	// FrameRate is the OSR frame rate in fps (1..60); 0 selects 30.
+	FrameRate int
 }
 
 var closingBrowsers atomic.Bool
@@ -360,7 +452,7 @@ func CreateBrowser(opts CreateBrowserOptions) (*Browser, error) {
 		return nil, errNotInitialized
 	}
 
-	bc := newBrowserClient(opts.WindowID)
+	bc := newBrowserClient(opts.WindowID, opts.Windowless)
 	clients.Store(unsafe.Pointer(bc.c), bc)
 
 	wi := (*C.cef_window_info_t)(C.calloc(1, C.sizeof_cef_window_info_t))
@@ -369,15 +461,29 @@ func CreateBrowser(opts CreateBrowserOptions) (*Browser, error) {
 	wi.bounds.y = C.int(0)
 	wi.bounds.width = C.int(opts.Width)
 	wi.bounds.height = C.int(opts.Height)
-	C.wcef_window_parent(wi, C.uintptr_t(opts.ParentXWindow))
-	wi.windowless_rendering_enabled = 0
 	wi.runtime_style = C.CEF_RUNTIME_STYLE_ALLOY
+	if opts.Windowless {
+		// No native child window is created; frames arrive through the
+		// render handler instead. Transparent painting is the windowless
+		// default and stays on as long as background_color is not opaque
+		// (0x00 alpha = transparent per the CEF contract).
+		wi.windowless_rendering_enabled = 1
+	} else {
+		C.wcef_window_parent(wi, C.uintptr_t(opts.ParentXWindow))
+	}
 	defer C.free(unsafe.Pointer(wi))
 
 	settings := (*C.cef_browser_settings_t)(C.calloc(1, C.sizeof_cef_browser_settings_t))
 	settings.size = C.sizeof_cef_browser_settings_t
 	if opts.BackgroundColor != 0 {
 		settings.background_color = C.cef_color_t(opts.BackgroundColor)
+	} else if opts.Windowless {
+		settings.background_color = C.cef_color_t(0x00000000)
+	}
+	if opts.FrameRate > 0 && opts.FrameRate <= 60 {
+		settings.windowless_frame_rate = C.int(opts.FrameRate)
+	} else if opts.Windowless {
+		settings.windowless_frame_rate = 30
 	}
 	defer C.free(unsafe.Pointer(settings))
 
@@ -747,7 +853,9 @@ func (b *Browser) OpenDevTools() {
 		return
 	}
 	if b.devToolsClient == nil {
-		b.devToolsClient = newBrowserClient(0)
+		// The DevTools window is always natively windowed, even for OSR
+		// browsers.
+		b.devToolsClient = newBrowserClient(0, false)
 		clients.Store(unsafe.Pointer(b.devToolsClient.c), b.devToolsClient)
 	}
 	C.wcef_host_show_dev_tools(b.host, b.devToolsClient.c)
