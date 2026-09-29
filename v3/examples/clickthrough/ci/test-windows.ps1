@@ -25,6 +25,7 @@ public class Win32Input {
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
   [DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CURSORINFO info);
   [DllImport("user32.dll")] public static extern IntPtr LoadCursor(IntPtr hInstance, int lpCursorName);
+  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
@@ -103,6 +104,33 @@ function Move-Cursor([int]$x, [int]$y) {
 # leaving it invisible and click-dead for the whole run.
 $proc = Start-Process -FilePath $AppPath -RedirectStandardOutput $log `
   -RedirectStandardError $errlog -NoNewWindow -PassThru
+
+# --- switch the session to mouse semantics -----------------------------------
+# Hosted Server 2025 VMs expose a touch digitizer, which makes Windows
+# suppress the cursor (GetCursorInfo flags=CURSOR_SUPPRESSED). Disable the
+# digitizer, force the shell out of tablet mode, and wake pointer routing
+# with an absolute mouse move — then verify the cursor is actually shown.
+Write-Output ("SM_DIGITIZER={0} SM_MAXIMUMTOUCHES={1}" -f `
+  [Win32Input]::GetSystemMetrics(94), [Win32Input]::GetSystemMetrics(95))
+Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
+  Where-Object { $_.Class -eq 'HIDClass' -and $_.FriendlyName -match 'touch|digitizer' } |
+  ForEach-Object {
+    Write-Output "disabling touch device: $($_.FriendlyName) [$($_.InstanceId)]"
+    Disable-PnpDevice -InstanceId $_.InstanceId -Confirm:$false -ErrorAction SilentlyContinue
+  }
+New-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\ImmersiveShell' `
+  -Name TabletMode -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
+# absolute move to the screen centre (65535-normalised) wakes pointer routing
+[Win32Input]::mouse_event(0x8001, 32767, 32767, 0, [UIntPtr]::Zero)
+Start-Sleep -Seconds 2
+function Test-CursorSuppressed {
+  $c = New-Object Win32Input+CURSORINFO
+  $c.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type][Win32Input+CURSORINFO])
+  [Win32Input]::GetCursorInfo([ref]$c) | Out-Null
+  Write-Output ("cursor state: flags={0} hCursor={1}" -f $c.flags, $c.hCursor)
+  return (($c.flags -band 2) -ne 0)  # CURSOR_SUPPRESSED
+}
+$script:cursorSuppressed = Test-CursorSuppressed
 
 # --- 1. mask uploaded (first webview start can be slow) ----------------------
 Wait-LogMarker "mask uploaded" 120
@@ -195,22 +223,20 @@ Write-Output ("WindowFromPoint({0},{1}) = {2} '{3}'" -f $px, $py, $wfp, $sb.ToSt
 Move-And-Click $px $py
 Wait-State "true"
 
-# The underlay is a full-page text input, so ideally the cursor showing
-# through the transparent region is the I-beam set by the window below.
-# Hosted Windows Server 2025 runners run with a suppressed cursor
-# (GetCursorInfo flags=CURSOR_SUPPRESSED, hCursor=0 by design), so the
-# shape cannot be observed there — log it as a diagnostic only. The hard
-# assertion lives in the Linux driver (XFixes cursor probe).
-$ci = New-Object Win32Input+CURSORINFO
-$ci.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type][Win32Input+CURSORINFO])
-[Win32Input]::GetCursorInfo([ref]$ci) | Out-Null
-$ibeam = [Win32Input]::LoadCursor([IntPtr]::Zero, 32513)  # IDC_IBEAM
-if ($ci.flags -eq 2) {
-  Write-Output "NOTE: cursor suppressed on this runner (flags=2, hCursor=$($ci.hCursor)); I-beam routing not observable here"
-} elseif ($ci.hCursor -eq $ibeam) {
-  Write-Output "PASS: cursor over transparent region is the underlay's I-beam"
+# The underlay is a full-page text input, so with the cursor unsuppressed
+# the pointer over the transparent region shows the I-beam set by the
+# window below. On a cursor-suppressed session it cannot be observed.
+if ($script:cursorSuppressed) {
+  Write-Output "NOTE: cursor still suppressed after mouse-mode switch; I-beam routing not observable on this runner"
 } else {
-  Write-Output "NOTE: cursor over transparent region is not the I-beam (flags=$($ci.flags) hCursor=$($ci.hCursor))"
+  $ci = New-Object Win32Input+CURSORINFO
+  $ci.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type][Win32Input+CURSORINFO])
+  [Win32Input]::GetCursorInfo([ref]$ci) | Out-Null
+  $ibeam = [Win32Input]::LoadCursor([IntPtr]::Zero, 32513)  # IDC_IBEAM
+  if ($ci.hCursor -ne $ibeam) {
+    throw "cursor over the transparent region is not the I-beam from the underlay (hCursor=$($ci.hCursor), expected $ibeam)"
+  }
+  Write-Output "PASS: cursor over transparent region is the underlay's I-beam"
 }
 
 try {
