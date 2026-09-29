@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Overlay</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 480px; height: 640px;
+    background: transparent; overflow: hidden;
+    user-select: none; font-family: system-ui, sans-serif;
+  }
+  #scene { position: absolute; inset: 0; }
+  #card {
+    position: absolute; left: 40px; top: 440px; width: 400px; height: 168px;
+    background: #ffffff; border-radius: 16px; padding: 14px 18px;
+    box-sizing: border-box; box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  }
+  #card h3 { margin: 0 0 8px 0; font-size: 15px; }
+  .row { display: flex; gap: 6px; margin-bottom: 8px; }
+  button { font-size: 13px; padding: 5px 10px; cursor: pointer; }
+  button.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+  #status { font-size: 12px; color: #444; white-space: pre-line; }
+</style>
+</head>
+<body>
+<canvas id="scene" width="480" height="640"></canvas>
+<div id="card">
+  <h3>Overlay — transparent hit-test</h3>
+  <div class="row">
+    <button id="mode-off">Off</button>
+    <button id="mode-alpha" class="active">Alpha mask</button>
+    <button id="mode-ignore">Ignore all</button>
+  </div>
+  <div class="row">
+    <button id="cardClicks">Card clicks: 0</button>
+  </div>
+  <div id="status">loading…</div>
+</div>
+
+<script type="module">
+  import * as wails from "/wails/runtime.js";
+
+  // Test geometry (overlay-local CSS px):
+  //   circle   centre (200,160) r=120          -> opaque
+  //   ring     rect (40,40)-(420,360), lw 24   -> opaque edges only
+  //   card     (40,440)-(440,608)              -> opaque
+  //   (20,20), (460,300) etc.                  -> transparent
+  const CARD = { x: 40, y: 440, w: 400, h: 168, r: 16 };
+  const CELL = 8;
+
+  const scene = document.getElementById("scene");
+  const ctx2d = scene.getContext("2d");
+
+  function drawScene(ctx) {
+    ctx.clearRect(0, 0, 480, 640);
+    ctx.fillStyle = "rgb(80,160,255)";
+    ctx.beginPath();
+    ctx.arc(200, 160, 120, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgb(255,120,80)";
+    ctx.lineWidth = 24;
+    ctx.strokeRect(52, 52, 356, 296);
+    ctx.fillStyle = "#ffffff";
+    if (ctx.roundRect) {
+      ctx.beginPath();
+      ctx.roundRect(CARD.x, CARD.y, CARD.w, CARD.h, CARD.r);
+      ctx.fill();
+    } else {
+      ctx.fillRect(CARD.x, CARD.y, CARD.w, CARD.h);
+    }
+  }
+
+  function uploadMask() {
+    const dpr = window.devicePixelRatio || 1;
+    const W = Math.ceil(480 * dpr), H = Math.ceil(640 * dpr);
+    const off = document.createElement("canvas");
+    off.width = W; off.height = H;
+    const octx = off.getContext("2d", { willReadFrequently: true });
+    octx.scale(dpr, dpr);
+    drawScene(octx);
+
+    const img = octx.getImageData(0, 0, W, H).data;
+    const cellPhys = CELL * dpr;
+    const gw = Math.ceil(W / cellPhys), gh = Math.ceil(H / cellPhys);
+    const bits = new Uint8Array(Math.ceil((gw * gh) / 8));
+    for (let gy = 0; gy < gh; gy++) {
+      for (let gx = 0; gx < gw; gx++) {
+        // a block counts as opaque when any pixel alpha exceeds the threshold
+        let opaque = 0;
+        const x0 = Math.floor(gx * cellPhys), y0 = Math.floor(gy * cellPhys);
+        const x1 = Math.min(W, Math.ceil((gx + 1) * cellPhys));
+        const y1 = Math.min(H, Math.ceil((gy + 1) * cellPhys));
+        for (let y = y0; y < y1 && !opaque; y++) {
+          for (let x = x0; x < x1; x++) {
+            if (img[(y * W + x) * 4 + 3] > 20) { opaque = 1; break; }
+          }
+        }
+        const idx = gy * gw + gx;
+        if (opaque) bits[idx >> 3] |= 1 << (idx & 7);
+      }
+    }
+    wails.Events.Emit("ct:mask", { cell: CELL, w: gw, h: gh, bits: Array.from(bits) });
+    document.getElementById("status").textContent +=
+      "\nmask " + gw + "x" + gh + " uploaded";
+  }
+
+  drawScene(ctx2d);
+  uploadMask();
+
+  const buttons = {
+    "mode-off": "off",
+    "mode-alpha": "alpha",
+    "mode-ignore": "ignore",
+  };
+  let cardClicks = 0;
+  const cardBtn = document.getElementById("cardClicks");
+  const status = document.getElementById("status");
+  let current = { mode: "alpha", ignoring: false };
+
+  function refresh() {
+    for (const [id, mode] of Object.entries(buttons)) {
+      document.getElementById(id).classList.toggle("active", mode === current.mode);
+    }
+    status.textContent =
+      "mode: " + current.mode + "  ignoring: " + current.ignoring;
+  }
+
+  for (const [id, mode] of Object.entries(buttons)) {
+    document.getElementById(id).addEventListener("click", () => {
+      current.mode = mode;
+      refresh();
+      wails.Events.Emit("ct:mode", mode);
+    });
+  }
+  cardBtn.addEventListener("click", () => {
+    cardClicks++;
+    cardBtn.textContent = "Card clicks: " + cardClicks;
+  });
+
+  wails.Events.On("ct:state", (ev) => {
+    const d = ev && ev.data !== undefined ? ev.data : ev;
+    current = { mode: d.mode, ignoring: d.ignoring };
+    refresh();
+  });
+  refresh();
+</script>
+</body>
+</html>
