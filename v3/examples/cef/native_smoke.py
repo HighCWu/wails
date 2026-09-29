@@ -624,10 +624,13 @@ with log.open("w") as output:
                           flush=True)
                 ui.write(text, interval=0.05)
 
-            def cdp_insert_text(text):
-                """Insert text through the DevTools protocol: the mac
-                runner's synthetic keyboard events drop or reorder
-                characters, while CDP input is delivered in-process."""
+            def cdp_set_case(case):
+                """Set the case name through the DevTools protocol: the mac
+                runner's synthetic keyboard events drop, duplicate and
+                reorder characters, so the field is written directly in the
+                page (the input event still fires, keeping verification
+                honest). The case name is only a parameter carrier here;
+                keyboard input itself is covered by the IME scenarios."""
                 with urllib.request.urlopen(
                     f"http://127.0.0.1:{debug_port}/json/list", timeout=10
                 ) as response:
@@ -641,10 +644,16 @@ with log.open("w") as output:
                     page["webSocketDebuggerUrl"], suppress_origin=True,
                     timeout=10)
                 try:
+                    expression = (
+                        "(() => { const el = document.getElementById('name');"
+                        " el.focus(); el.value = " + json.dumps(case) + ";"
+                        " el.dispatchEvent(new Event('input',"
+                        " {bubbles: true})); })()"
+                    )
                     ws.send(json.dumps({
                         "id": 1,
-                        "method": "Input.insertText",
-                        "params": {"text": text},
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": expression},
                     }))
                     while True:
                         response = json.loads(ws.recv())
@@ -659,14 +668,12 @@ with log.open("w") as output:
                 the DevTools protocol when keystrokes were dropped or
                 mangled."""
                 for attempt in range(4):
-                    click(*control("main", "name"))
-                    ui.hotkey("command" if sys.platform == "darwin" else "ctrl", "a")
-                    ui.press("backspace")
                     if sys.platform == "darwin":
-                        # Synthetic keyboards are unreliable here; CDP
-                        # insertion is delivered in-process.
-                        cdp_insert_text(case)
+                        cdp_set_case(case)
                     else:
+                        click(*control("main", "name"))
+                        ui.hotkey("ctrl", "a")
+                        ui.press("backspace")
                         ui.write(case, interval=0.05)
                     for _ in range(2):
                         time.sleep(0.3)
