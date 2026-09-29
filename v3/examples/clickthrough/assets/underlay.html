@@ -21,7 +21,8 @@
   <div id="count">0</div>
   <div id="last">click anywhere on this page</div>
 </div>
-<script>
+<script type="module">
+  import * as wails from "/wails/runtime.js";
   let n = 0;
   const count = document.getElementById("count");
   const last = document.getElementById("last");
@@ -29,6 +30,7 @@
     n++;
     count.textContent = n;
     last.textContent = "last click at " + Math.round(e.clientX) + "," + Math.round(e.clientY);
+    wails.Events.Emit("ct:underlay-clicks", n);
   });
 </script>
 </body>

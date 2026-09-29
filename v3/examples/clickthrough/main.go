@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"log"
 	"time"
 
@@ -180,6 +181,18 @@ func main() {
 	app.Event.On("ct:mask", func(e *application.CustomEvent) {
 		if data, ok := e.Data.(map[string]any); ok {
 			engine.setMask(data)
+		}
+	})
+	// CI counters: clicks landing on the underlay prove passthrough, clicks
+	// on the card button prove the opaque region stays interactive.
+	app.Event.On("ct:underlay-clicks", func(e *application.CustomEvent) {
+		if n, ok := e.Data.(float64); ok {
+			app.Logger.Info(fmt.Sprintf("clickthrough: underlay-clicks=%d", int(n)))
+		}
+	})
+	app.Event.On("ct:card-clicks", func(e *application.CustomEvent) {
+		if n, ok := e.Data.(float64); ok {
+			app.Logger.Info(fmt.Sprintf("clickthrough: card-clicks=%d", int(n)))
 		}
 	})
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {

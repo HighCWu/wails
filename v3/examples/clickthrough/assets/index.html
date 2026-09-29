@@ -135,6 +135,7 @@
   cardBtn.addEventListener("click", () => {
     cardClicks++;
     cardBtn.textContent = "Card clicks: " + cardClicks;
+    wails.Events.Emit("ct:card-clicks", cardClicks);
   });
 
   wails.Events.On("ct:state", (ev) => {

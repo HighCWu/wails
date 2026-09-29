@@ -1,0 +1,49 @@
+name: Clickthrough Test
+
+# Transparent-window per-pixel hit-testing (examples/clickthrough) on the
+# platforms where the engine supports it. macOS is excluded: MousePosition
+# is a fail-closed stub there and synthetic input needs accessibility
+# permissions hosted runners do not grant.
+
+on:
+  push:
+    branches: [electron-backend]
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux GTK3 (Xvfb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v3/go.mod
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev xvfb openbox xdotool imagemagick x11-utils
+      - name: Build
+        run: go build -tags gtk3 -o /tmp/clickthrough ./v3/examples/clickthrough/
+      - name: Run hit-test scenario
+        run: v3/examples/clickthrough/ci/test-linux.sh /tmp/clickthrough
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clickthrough-linux
+          path: /tmp/clickthrough-*.png
+
+  windows:
+    name: Windows WebView2
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v3/go.mod
+      - name: Build
+        run: go build -o clickthrough.exe ./v3/examples/clickthrough/
+      - name: Run hit-test scenario
+        shell: pwsh
+        run: ./v3/examples/clickthrough/ci/test-windows.ps1 -AppPath clickthrough.exe
