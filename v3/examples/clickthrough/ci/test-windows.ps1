@@ -94,8 +94,11 @@ function Move-Cursor([int]$x, [int]$y) {
 }
 
 # --- launch -----------------------------------------------------------------
+# -NoNewWindow (not -WindowStyle Hidden): -WindowStyle puts SW_HIDE into
+# STARTUPINFO and the app's first-created window (the underlay) inherits it,
+# leaving it invisible and click-dead for the whole run.
 $proc = Start-Process -FilePath $AppPath -RedirectStandardOutput $log `
-  -RedirectStandardError $errlog -WindowStyle Hidden -PassThru
+  -RedirectStandardError $errlog -NoNewWindow -PassThru
 
 # --- 1. mask uploaded (first webview start can be slow) ----------------------
 Wait-LogMarker "mask uploaded" 120
@@ -130,6 +133,7 @@ $cb = [Win32Input+EnumWindowsProc]{
 # windows may still be settling right after page load — poll until both appear
 $deadline = (Get-Date).AddSeconds(20)
 while (((Get-Date) -lt $deadline)) {
+  $script:appWindows.Clear()
   [Win32Input]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
   if ($script:overlayHwnd -ne [IntPtr]::Zero -and $script:underlayRect) { break }
   Start-Sleep -Milliseconds 500
