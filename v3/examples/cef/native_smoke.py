@@ -776,12 +776,16 @@ with log.open("w") as output:
                     if k == "shift-click" and i + 2 < len(args):
                         x_c, y_c = int(args[i + 1]), int(args[i + 2])
                         if sys.platform == "darwin":
-                            # Bake the shift flag into the mouse events
-                            # themselves: on the degraded runner a separate
-                            # shift keyDown can be dropped, turning the
-                            # extend-select into a plain click.
+                            # Combine both delivery paths: hold shift down
+                            # (global modifier state) AND bake the shift
+                            # flag into the mouse events themselves, with
+                            # small gaps so the window server can merge
+                            # them — the degraded runner drops rapid
+                            # synthetic events.
                             import Quartz
 
+                            ui.keyDown("shift")
+                            time.sleep(0.15)
                             for kind in (Quartz.kCGEventLeftMouseDown,
                                          Quartz.kCGEventLeftMouseUp):
                                 event = Quartz.CGEventCreateMouseEvent(
@@ -791,6 +795,9 @@ with log.open("w") as output:
                                     event, Quartz.kCGEventFlagMaskShift)
                                 Quartz.CGEventPost(
                                     Quartz.kCGHIDEventTap, event)
+                                time.sleep(0.08)
+                            time.sleep(0.15)
+                            ui.keyUp("shift")
                         else:
                             ui.keyDown("shift")
                             ui.click(x_c, y_c)
