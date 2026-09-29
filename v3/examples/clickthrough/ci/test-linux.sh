@@ -110,6 +110,10 @@ fi
 xdotool click 1
 sleep 0.5
 wait_log "underlay-clicks=1"
+# the click activated the underlay, raising it within the keep-above layer —
+# raise the overlay back on top so the card click reaches the overlay
+xdotool windowraise "$OL"
+sleep 0.5
 
 # --- 6. opaque card receives clicks after flipping back ----------------------
 move $((OX+118)) $((OY+537))   # card button

@@ -149,18 +149,18 @@ func main() {
 		},
 	})
 
-	// The underlay carries AlwaysOnTop so it sits in the same window level as
-	// the overlay: runner/desktop agent windows at the normal level can no
-	// longer swallow the passthrough clicks the CI scenario relies on.
+	// The underlay sits below the overlay and counts clicks that pass
+	// through the overlay's transparent regions. It must stay at the normal
+	// window level: making it always-on-top lets the passthrough click's
+	// activation raise it above the overlay, stealing the next click.
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:        "underlay",
-		Title:       "Underlay (pass-through click counter)",
-		X:           260,
-		Y:           260,
-		Width:       700,
-		Height:      500,
-		URL:         "/underlay.html",
-		AlwaysOnTop: true,
+		Name:   "underlay",
+		Title:  "Underlay (pass-through click counter)",
+		X:      260,
+		Y:      260,
+		Width:  700,
+		Height: 500,
+		URL:    "/underlay.html",
 	})
 
 	overlay := app.Window.NewWithOptions(application.WebviewWindowOptions{
