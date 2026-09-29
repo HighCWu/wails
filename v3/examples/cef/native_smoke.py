@@ -773,6 +773,35 @@ with log.open("w") as output:
                         ui.click(int(args[i + 1]), int(args[i + 2]))
                         i += 3
                         continue
+                    if k == "confirm-replace" and sys.platform == "darwin":
+                        # The macOS replace alert ignores synthetic Enter
+                        # chords on the degraded runner. Find the small
+                        # alert window of our own process (the only
+                        # ~square window in it) and click its Replace
+                        # button — bottom-right — with pure mouse.
+                        import Quartz
+
+                        for _ in range(10):
+                            windows = Quartz.CGWindowListCopyWindowInfo(
+                                Quartz.kCGWindowListOptionOnScreenOnly,
+                                Quartz.kCGNullWindowID)
+                            hit = False
+                            for w in windows:
+                                if w.get(Quartz.kCGWindowOwnerPID) != app.pid:
+                                    continue
+                                b = w[Quartz.kCGWindowBounds]
+                                if 150 <= b["Width"] <= 350 and 150 <= b["Height"] <= 350:
+                                    ui.click(
+                                        int(b["X"] + b["Width"] - 70),
+                                        int(b["Y"] + b["Height"] - 28))
+                                    hit = True
+                                    break
+                            if hit:
+                                time.sleep(0.5)
+                                break
+                            time.sleep(0.5)
+                        i += 1
+                        continue
                     if k == "shift-click" and i + 2 < len(args):
                         x_c, y_c = int(args[i + 1]), int(args[i + 2])
                         if sys.platform == "darwin":

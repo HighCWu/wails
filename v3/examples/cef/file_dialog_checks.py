@@ -129,14 +129,10 @@ def check_file_dialogs(root, platform, request, opened, key, paste, result, scre
                 else:
                     key('enter')
                     if platform == 'darwin':
-                        # Confirm chords get dropped by the runner; repeat
-                        # the Enter — on the sheet it is the default
-                        # Replace, once the sheet is gone it lands on the
-                        # host as a harmless extra greet.
-                        time.sleep(.8)
-                        key('enter')
-                        time.sleep(.8)
-                        key('enter')
+                        # Enter chords do not reach the replace alert on
+                        # the degraded runner; click the alert's Replace
+                        # button directly (pure mouse).
+                        key('confirm-replace')
             answer = result(case)
             assert not answer['error'], answer
             # GTK save dialogs append the active filter extension when the
