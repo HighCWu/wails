@@ -19,7 +19,7 @@ input, button { font: inherit; padding: 8px; }
 <div id="drop" data-file-drop-target style="padding:20px;border:2px dashed #555">Drop files here</div>
 <p id="output">Loading runtime…</p>
 <p>Type a name and call Go. Ctrl+M tests Go → JavaScript.</p>
-<p><button id="dialog">Dialog</button> <button id="attached">Attached dialog</button> <button id="close">Close window</button> <button id="overlay">Passthrough overlay</button> <button id="capture">Capture overlay</button> <button id="close-overlay">Close overlay</button></p>
+<p><button id="dialog">Dialog</button> <button id="attached">Attached dialog</button> <button id="close">Close window</button> <button id="overlay">Passthrough overlay</button> <button id="capture">Capture overlay</button> <button id="close-overlay">Close overlay</button> <button id="stab">Stability</button></p>
 </section>
 <div id="size"></div>
 <script type="module">
@@ -36,6 +36,11 @@ addEventListener('resize', () => {resized(); report(`size:${innerWidth}x${innerH
 output.textContent = `Runtime ready; invoke bridge: ${typeof window.chrome?.webview?.postMessage === 'function'}`;
 document.title = role === 'main' ? 'CEF smoke ready' : `CEF smoke ${role} ready`;
 report('ready');
+if (role.startsWith('stab-')) {
+ // Stability windows announce readiness through their own bridge, which
+ // is the RPC proof for the create/close churn scenario.
+ Call.ByName('main.ProbeService.StabReady', role);
+}
 document.addEventListener('pointerdown', e => report(`pointer:${e.clientX},${e.clientY}`));
 for (const type of ['dragenter', 'drop']) document.addEventListener(type, e => report(`${type}:${e.clientX},${e.clientY}:types=${Array.from(e.dataTransfer?.types || [])}:enabled=${window._wails?.flags?.enableFileDrop}`), true);
 document.getElementById('overlay').onclick = () => Call.ByName('main.ProbeService.Overlay', true);
@@ -47,6 +52,7 @@ controls(); addEventListener('resize', controls);
 // Runner automation verifies what it typed against this before driving
 // the dialog, so dropped or mangled keystrokes are recoverable.
 document.getElementById('name').addEventListener('input', e => report('input:' + e.target.value));
+document.getElementById('stab').onclick = () => Call.ByName('main.ProbeService.Stability', 5);
 document.getElementById('dialog').onclick = () => Call.ByName('main.ProbeService.Dialog', false);
 document.getElementById('attached').onclick = () => Call.ByName('main.ProbeService.Dialog', true);
 document.getElementById('close').onclick = () => Window.Close();

@@ -87,6 +87,62 @@ func (*ProbeService) NewWindow() {
 	w.SetPosition(20, 40)
 }
 
+// stabReady carries per-window readiness signals for Stability: the stab
+// page calls StabReady through its own bridge once loaded, proving the
+// freshly created window's RPC path works.
+var stabReady = map[string]chan struct{}{}
+
+func (*ProbeService) StabReady(name string) {
+	fmt.Printf("CEF_SMOKE_STAB ready %s\n", name)
+	if ch, ok := stabReady[name]; ok {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// Stability runs create/ready/close churn in a goroutine and logs each
+// step for the isolated runners to assert. Even cycles wait for the page
+// to announce readiness before closing; odd cycles close while the page
+// is still loading (the pending-creation path). The final live-browsers
+// assertion in the runners covers CEF-side cleanup, which this loop
+// deliberately does not measure itself.
+func (*ProbeService) Stability(cycles int) {
+	app := application.Get()
+	go func() {
+		for i := 0; i < cycles; i++ {
+			name := fmt.Sprintf("stab-%d", i)
+			fmt.Printf("CEF_SMOKE_STAB create %s\n", name)
+			w := newWindow(app, name, false, application.PermissionDeny)
+			if i%2 == 0 {
+				ch := make(chan struct{}, 1)
+				stabReady[name] = ch
+				select {
+				case <-ch:
+				case <-time.After(15 * time.Second):
+					fmt.Printf("CEF_SMOKE_STAB timeout %s\n", name)
+				}
+				delete(stabReady, name)
+			} else {
+				// Still loading: exercise the pending-creation close path.
+				time.Sleep(150 * time.Millisecond)
+			}
+			w.Close()
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				if _, ok := app.Window.GetByName(name); !ok {
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			_, stillThere := app.Window.GetByName(name)
+			fmt.Printf("CEF_SMOKE_STAB closed %s removed=%t\n", name, !stillThere)
+		}
+		fmt.Printf("CEF_SMOKE_STAB done cycles=%d\n", cycles)
+	}()
+}
+
 // Overlay probes whole-window mouse passthrough, independently of alpha rendering.
 func (*ProbeService) Overlay(ignore bool) {
 	app := application.Get()

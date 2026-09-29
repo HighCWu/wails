@@ -21,10 +21,6 @@ jobs:
             Write-Host ("Lang: " + $_.LanguageTag)
             $_.InputMethodTips | ForEach-Object { Write-Host ("  TIP: " + $_) }
           }
-          Write-Host "== Keyboard layouts (active sessions) =="
-          Get-KeyboardLayout | ForEach-Object {
-            Write-Host ("  Layout: " + $_)
-          }
           Write-Host "== Layout list via registry =="
           Get-ItemProperty 'HKU:._keyboard layout\Preload' -ErrorAction SilentlyContinue | Format-List
           Write-Host "== CTF profiles (TSF) =="
@@ -44,7 +40,8 @@ jobs:
           defaults read com.apple.HIToolbox AppleInputSourceHistory || true
           defaults read com.apple.HIToolbox AppleSelectedInputSources || true
           # Full list of installable/available input sources via TIS.
-          python3 - <<'PY'
+          # Best effort: pyobjc may be missing on the runner python.
+          (python3 - <<'PY' || true
           import objc
           from Foundation import NSBundle
           Carbon = NSBundle.bundleWithIdentifier_("com.apple.Carbon")
@@ -78,3 +75,4 @@ jobs:
               chinese = [x for x in seen if "Chinese" in x[0] or "Pinyin" in x[0] or "PY" in x[0]]
               print("CHINESE SOURCES:", chinese)
           PY
+          ) || true

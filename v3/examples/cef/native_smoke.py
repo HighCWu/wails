@@ -26,6 +26,7 @@ p.add_argument(
         "composition",
         "media",
         "crash",
+        "stability",
         "dialogs",
         "file-dialogs",
         "multiwindow",
@@ -64,6 +65,7 @@ if a.suite:
         "composition",
         "media",
         "crash",
+        "stability",
         "dialogs",
         "multiwindow",
         "mouse",
@@ -484,6 +486,32 @@ with log.open("w") as output:
             screenshot("crash-recovered")
             print(
                 "PASS: renderer crash event, single auto-reload and recovered RPC",
+                flush=True,
+            )
+        if a.scenario in ("all", "stability"):
+            # Create/ready/close churn with the pending-creation close
+            # path; the common quit sequence then proves no CEF browser
+            # leaked (the graceful exit asserts in this file's tail).
+            click(*control("main", "stab"))
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                if "CEF_SMOKE_STAB done cycles=5" in log.read_text(
+                        encoding="utf-8", errors="replace"):
+                    break
+                time.sleep(0.3)
+            text = log.read_text(encoding="utf-8", errors="replace")
+            assert "CEF_SMOKE_STAB done cycles=5" in text, \
+                "stability churn did not finish"
+            for i in range(5):
+                assert f"CEF_SMOKE_STAB create stab-{i}" in text, text
+                assert f"CEF_SMOKE_STAB closed stab-{i} removed=true" in text, text
+            # Even cycles must reach ready; odd cycles close while
+            # loading, so their (racy) ready reports are not asserted.
+            assert text.count("CEF_SMOKE_STAB ready stab-0") == 1, text
+            assert text.count("CEF_SMOKE_STAB ready stab-2") == 1, text
+            screenshot("stability")
+            print(
+                "PASS: five create/ready/close cycles incl. pending-creation close",
                 flush=True,
             )
         if a.scenario in ("all", "composition"):

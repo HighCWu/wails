@@ -142,6 +142,9 @@ jobs:
       - name: Test renderer crash event and auto-reload recovery
         working-directory: v3
         run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --runtime "$RUNNER_TEMP/cef-runtime" --switches "use-gl=angle,use-angle=swiftshader,enable-unsafe-swiftshader" --crash --output "$RUNNER_TEMP/cef-results/crash"
+      - name: Test window create/close stability churn
+        working-directory: v3
+        run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --runtime "$RUNNER_TEMP/cef-runtime" --switches "use-gl=angle,use-angle=swiftshader,enable-unsafe-swiftshader" --stability --output "$RUNNER_TEMP/cef-results/stability"
       - name: Test Chinese IME composition
         working-directory: v3
         run: /usr/bin/python3 examples/cef/smoke.py "$RUNNER_TEMP/cef-smoke" --runtime "$RUNNER_TEMP/cef-runtime" --switches "use-gl=angle,use-angle=swiftshader,enable-unsafe-swiftshader" --ime --output "$RUNNER_TEMP/cef-results/ime"

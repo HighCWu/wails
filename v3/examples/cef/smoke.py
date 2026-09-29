@@ -30,6 +30,8 @@ parser.add_argument("--file-dialogs", action="store_true",
                     help="Exercise native open/save/multiple/directory/filter/cancel/overwrite dialogs")
 parser.add_argument("--crash", action="store_true",
                     help="SIGKILL the CEF renderer and verify crash event, auto-reload and RPC recovery")
+parser.add_argument("--stability", action="store_true",
+                    help="Churn five create/ready/close windows, including the pending-creation close path")
 parser.add_argument("--switches", default="", help="Additional comma-separated Chromium switches")
 args = parser.parse_args()
 if args.upstream and not args.extended:
@@ -536,6 +538,32 @@ try:
             fd_result, screenshot, is_open=fd_is_open)
         run("xdotool", "windowactivate", "--sync", window)
         print("PASS: native file dialogs (open/save/multiple/directory/filter/cancel/overwrite)", flush=True)
+
+    if args.stability:
+        # Repeated create/ready/close churn with CEF registry proof: the
+        # final quit must not log "live browsers remaining", which the
+        # common shutdown assertion below already checks.
+        run("xdotool", "windowactivate", "--sync", window)
+        controls = re.findall(r'main:controls:(\{[^\n]+\})',
+                              (out / "application.log").read_text())
+        sx, sy = json.loads(controls[-1])["stab"]
+        click(int(sx), int(sy))
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if "CEF_SMOKE_STAB done cycles=5" in (out / "application.log").read_text():
+                break
+            time.sleep(.3)
+        text = (out / "application.log").read_text()
+        assert "CEF_SMOKE_STAB done cycles=5" in text, "stability churn did not finish"
+        for i in range(5):
+            assert f"CEF_SMOKE_STAB create stab-{i}" in text, text
+            assert f"CEF_SMOKE_STAB closed stab-{i} removed=true" in text, text
+        # Even cycles must reach ready; odd cycles close while loading,
+        # so their (racy) ready reports are not asserted.
+        assert text.count("CEF_SMOKE_STAB ready stab-0") == 1, text
+        assert text.count("CEF_SMOKE_STAB ready stab-2") == 1, text
+        screenshot("stability")
+        print("PASS: five create/ready/close cycles incl. pending-creation close", flush=True)
 
     if args.crash:
         # SIGKILL the renderer subprocess — the abnormal termination real
