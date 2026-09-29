@@ -23,18 +23,28 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev xvfb openbox xdotool imagemagick x11-utils
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev xvfb openbox xdotool imagemagick x11-utils libxfixes-dev
       - name: Build
         working-directory: v3
         run: go build -tags gtk3 -o /tmp/clickthrough ./examples/clickthrough/
       - name: Run hit-test scenario
+        run: v3/examples/clickthrough/ci/test-linux.sh /tmp/clickthrough
+      - name: Download Electron runtime
+        run: |
+          curl -sL -o /tmp/electron.zip https://github.com/electron/electron/releases/download/v44.4.5/electron-v44.4.5-linux-x64.zip
+          mkdir -p /opt/electron && unzip -q /tmp/electron.zip -d /opt/electron
+      - name: Run hit-test scenario (electron backend)
+        env:
+          WAILS_WEBVIEW_BACKEND: electron
+          WAILS_ELECTRON_DIR: /opt/electron
+          WAILS_ELECTRON_DISABLE_SANDBOX: "1"
         run: v3/examples/clickthrough/ci/test-linux.sh /tmp/clickthrough
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: clickthrough-linux
-          path: /tmp/clickthrough-*.png
+          path: /tmp/clickthrough-*
 
   windows:
     name: Windows WebView2
