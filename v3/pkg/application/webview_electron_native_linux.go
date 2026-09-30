@@ -5,6 +5,7 @@ package application
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -32,7 +34,7 @@ var nativeBridge struct {
 	ln    net.Listener
 }
 
-func startNativeBridgeListener(serveHTTP func(method, rawURL, body string) (int, string, string, error)) (string, string, error) {
+func startNativeBridgeListener(serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, string, error)) (string, string, error) {
 	dir, err := dirForBridgeSocket()
 	if err != nil {
 		return "", "", err
@@ -72,7 +74,7 @@ func nativeBridgePath() string {
 	return nativeBridge.path
 }
 
-func serveNativeBridgeConn(conn net.Conn, expectedToken string, serveHTTP func(method, rawURL, body string) (int, string, string, error)) {
+func serveNativeBridgeConn(conn net.Conn, expectedToken string, serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, string, error)) {
 	defer conn.Close()
 	// HELLO handshake: the first frame must carry the per-instance token;
 	// anything else is a foreign local process and gets dropped silently.
@@ -119,7 +121,7 @@ func serveNativeBridgeConn(conn net.Conn, expectedToken string, serveHTTP func(m
 // serveHTTPFrame handles one {"id":N,"type":"http",...} frame: run the
 // request through the asset server and answer with
 // {"id":N,"status":..,"contentType":..,"payload":"<base64>"}.
-func serveHTTPFrame(conn net.Conn, line []byte, serveHTTP func(method, rawURL, body string) (int, string, string, error)) {
+func serveHTTPFrame(conn net.Conn, line []byte, serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, string, error)) {
 	// Two-level parse: the frame wraps the request in its payload string
 	// (the addon's wire format carries one payload field per frame).
 	var outer struct {
@@ -131,20 +133,41 @@ func serveHTTPFrame(conn net.Conn, line []byte, serveHTTP func(method, rawURL, b
 		return
 	}
 	var req struct {
-		Method string `json:"method"`
-		URL    string `json:"url"`
-		Body   string `json:"body"`
+		Method  string            `json:"method"`
+		URL     string            `json:"url"`
+		Body    string            `json:"body"`
+		BodyEnc string            `json:"bodyEnc"`
+		Headers map[string]string `json:"headers"`
 	}
 	if err := json.Unmarshal([]byte(outer.Payload), &req); err != nil {
 		fmt.Println("[httpframe] payload unmarshal err:", err)
 		return
 	}
+	if req.BodyEnc == "base64" {
+		decoded, derr := base64.StdEncoding.DecodeString(req.Body)
+		if derr != nil {
+			fmt.Println("[httpframe] body base64 decode err:", derr)
+			return
+		}
+		req.Body = string(decoded)
+	}
+	hdr := http.Header{}
+	for k, v := range req.Headers {
+		hdr.Set(k, v)
+	}
 	fmt.Println("[httpframe] recv id=", outer.ID, "method=", req.Method, "url=", req.URL, "bodylen=", len(req.Body))
+	if len(req.Body) >= 65536 {
+		sum := uint32(0)
+		for i := 0; i < len(req.Body); i++ {
+			sum += uint32(req.Body[i]) * uint32(i%7+1)
+		}
+		fmt.Println("[httpframe] RX body len=", len(req.Body), "head=", strconv.Quote(req.Body[:24]), "tail=", strconv.Quote(req.Body[len(req.Body)-24:]), "sum=", sum)
+	}
 	if req.Method == "" {
 		req.Method = http.MethodGet
 	}
 	inner := map[string]any{}
-	status, contentType, bodyB64, err := serveHTTP(req.Method, req.URL, req.Body)
+	status, contentType, bodyB64, err := serveHTTP(req.Method, req.URL, req.Body, hdr)
 	if err != nil {
 		inner["err"] = err.Error()
 	} else {

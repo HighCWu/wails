@@ -36,12 +36,31 @@ function installNativeHttpFetch() {
     let url = typeof input === 'string' ? input : (input && input.url) || String(input);
     if (url.indexOf('/wails/runtime') !== -1 && window.__nativeCall) {
       url = new URL(url, location.href).toString();
-      const body = init && init.body != null ? String(init.body) : '';
+      // The runtime uploads large call bodies as Uint8Array chunks
+      // (>512KB goes through its chunked path) — String() on one of
+      // those yields a decimal byte listing, so binary bodies travel
+      // base64-encoded with an explicit marker.
+      const rawBody = init && init.body != null ? init.body : '';
+      let body, bodyEnc;
+      if (typeof rawBody === 'string') {
+        body = rawBody;
+      } else {
+        body = Buffer.from(rawBody).toString('base64');
+        bodyEnc = 'base64';
+      }
+      // headers must ride along: the runtime's chunked upload protocol
+      // (x-wails-chunk-*) and call association (x-wails-call-id) live there
+      const hdrObj = {};
+      if (init && init.headers) {
+        for (const [k, v] of new Headers(init.headers).entries()) hdrObj[k] = v;
+      }
       const resp = await window.__nativeCall(__nativeSeq++, JSON.stringify({
         type: 'http',
         method: (init && init.method) || 'GET',
         url: url,
         body: body,
+        ...(bodyEnc ? { bodyEnc } : {}),
+        headers: hdrObj,
       }));
       const parsed = JSON.parse(resp);
       if (parsed.err) throw new Error(parsed.err);

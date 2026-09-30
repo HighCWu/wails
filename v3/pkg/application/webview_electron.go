@@ -30,7 +30,7 @@ var platformSetAssetBaseURL func(scheme, host string)
 // renderer's native transport addon dials.
 // serveHTTP runs a /wails/runtime request through the asset server and
 // returns status, content type and base64 body for the native transport.
-var platformStartNativeBridge func(serveHTTP func(method, rawURL, body string) (int, string, string, error)) (string, string, error)
+var platformStartNativeBridge func(serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, string, error)) (string, string, error)
 
 type electronBackendState struct {
 	mu        sync.Mutex
@@ -137,8 +137,8 @@ func startPlatformElectron(app *App) error {
 		}
 	}
 	if hasNative && nativeAddon != "" && platformStartNativeBridge != nil {
-		path, token, err := platformStartNativeBridge(func(method, rawURL, body string) (int, string, string, error) {
-			return serveWebviewRequestDirect(app, method, rawURL, body)
+		path, token, err := platformStartNativeBridge(func(method, rawURL, body string, hdr http.Header) (int, string, string, error) {
+			return serveWebviewRequestDirect(app, method, rawURL, body, hdr)
 		})
 		if err != nil {
 			return err
@@ -188,7 +188,7 @@ func handleWebviewRequest(app *App, params json.RawMessage) (any, error) {
 	if p.Method == "" {
 		p.Method = http.MethodGet
 	}
-	status, contentType, bodyB64, err := serveWebviewRequestDirect(app, p.Method, p.URL, p.Body)
+	status, contentType, bodyB64, err := serveWebviewRequestDirect(app, p.Method, p.URL, p.Body, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -202,13 +202,15 @@ func handleWebviewRequest(app *App, params json.RawMessage) (any, error) {
 // serveWebviewRequestDirect runs a /wails/runtime request through the
 // asset server in-process. Shared by the control protocol (fetch-ipc)
 // and the native UDS transport (native-uds promotion).
-func serveWebviewRequestDirect(app *App, method, rawURL, body string) (status int, contentType string, bodyB64 string, err error) {
-	// KNOWN ISSUE (native-http sub-mode): empty-URL http frames arrive on
-	// this endpoint while that mode is enabled — 48 occurrences in one
-	// run, independent of renderer crashes, with the override's own
-	// passthrough logging silent. Source not yet identified; the mode
-	// stays gated (see preload native-http).
+func serveWebviewRequestDirect(app *App, method, rawURL, body string, hdr http.Header) (status int, contentType string, bodyB64 string, err error) {
 	header := http.Header{}
+	if hdr != nil {
+		for k, vs := range hdr {
+			for _, v := range vs {
+				header.Add(k, v)
+			}
+		}
+	}
 	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
 		header.Set("Host", u.Host)
 	}
