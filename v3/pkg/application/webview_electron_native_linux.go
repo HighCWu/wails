@@ -5,6 +5,7 @@ package application
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/wailsapp/wails/v3/internal/v8serde"
 )
 
 // nativeBridgeListener hosts the per-instance Unix socket endpoint that
@@ -33,7 +36,7 @@ var nativeBridge struct {
 	ln    net.Listener
 }
 
-func startNativeBridgeListener(serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, string, error)) (string, string, error) {
+func startNativeBridgeListener(serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, []byte, error)) (string, string, error) {
 	dir, err := dirForBridgeSocket()
 	if err != nil {
 		return "", "", err
@@ -73,7 +76,7 @@ func nativeBridgePath() string {
 	return nativeBridge.path
 }
 
-func serveNativeBridgeConn(conn net.Conn, expectedToken string, serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, string, error)) {
+func serveNativeBridgeConn(conn net.Conn, expectedToken string, serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, []byte, error)) {
 	defer conn.Close()
 	// HELLO handshake: the first frame must carry the per-instance token;
 	// anything else is a foreign local process and gets dropped silently.
@@ -90,29 +93,42 @@ func serveNativeBridgeConn(conn net.Conn, expectedToken string, serveHTTP func(m
 		return
 	}
 	conn.Write([]byte(`{"ready":true}` + "\n"))
-	// Echo benchmark frames verbatim: the sweep measures the pure
-	// transport, so the host does not re-parse megabyte payloads here.
-	// http frames are the promoted bindings data plane — they carry the
-	// /wails/runtime request and get a structured response frame.
-	// A fixed-slice reader would turn a 1MB frame into dozens of read
-	// syscalls; a self-managed buffer read straight from the conn keeps
-	// the host cost at a handful of reads + one writev per frame.
+	// After the (line-framed) HELLO, all frames are protocol v3:
+	// 4-byte LE length + raw bytes of a v8-serialized invoke object
+	// {id, channel, method, url, bodyLen, body, headers}. Channels:
+	// "http" rides the bindings data plane through the asset server;
+	// "echo" is answered verbatim (benchmark diagnostics).
 	buf := make([]byte, 0, 256*1024)
 	for {
-		line, err := readFrame(conn, &buf)
+		msg, err := readMessage(conn, &buf)
 		if err != nil {
 			return
 		}
-		if len(line) == 0 {
+		if len(msg) == 0 {
 			continue
 		}
-		// the http marker travels inside the JSON-escaped payload string
-		if bytes.Contains(line, []byte("\\\"type\\\":\\\"http\\\"")) {
-			serveHTTPFrame(conn, line, &buf, serveHTTP)
-			continue
-		}
-		if err := writeFrame(conn, line); err != nil {
+		decoded, derr := v8serde.Deserialize(msg)
+		if derr != nil {
+			fmt.Println("[bridge] decode err:", derr)
 			return
+		}
+		obj, ok := decoded.(map[string]any)
+		if !ok {
+			continue
+		}
+		channel, _ := obj["channel"].(string)
+		if channel == "echo" {
+			if err := writeMessage(conn, msg); err != nil {
+				return
+			}
+			continue
+		}
+		if channel == "http" {
+			if err := serveInvokeMessage(conn, obj, serveHTTP); err != nil {
+				fmt.Println("[bridge] invoke err:", err)
+				return
+			}
+			continue
 		}
 	}
 }
@@ -120,7 +136,7 @@ func serveNativeBridgeConn(conn net.Conn, expectedToken string, serveHTTP func(m
 // serveHTTPFrame handles one {"id":N,"type":"http",...} frame: run the
 // request through the asset server and answer with
 // {"id":N,"status":..,"contentType":..,"payload":"<base64>"}.
-func serveHTTPFrame(conn net.Conn, line []byte, buf *[]byte, serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, string, error)) {
+func serveHTTPFrame(conn net.Conn, line []byte, buf *[]byte, serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, []byte, error)) {
 	var req struct {
 		ID      int               `json:"id"`
 		Method  string            `json:"method"`
@@ -229,6 +245,79 @@ func readExactBody(conn net.Conn, buf *[]byte, n int) ([]byte, error) {
 func writeFrame(conn net.Conn, line []byte) error {
 	buffers := net.Buffers{line, []byte{'\n'}}
 	_, err := buffers.WriteTo(conn)
+	return err
+}
+
+// serveInvokeMessage runs one http-channel invoke through the asset
+// server and answers with a v8-serialized response message.
+func serveInvokeMessage(conn net.Conn, obj map[string]any, serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, []byte, error)) error {
+	id, _ := obj["id"].(float64)
+	method, _ := obj["method"].(string)
+	rawURL, _ := obj["url"].(string)
+	body, _ := obj["body"].(string)
+	hdr := http.Header{}
+	if hm, ok := obj["headers"].(map[string]any); ok {
+		for k, v := range hm {
+			if sv, ok := v.(string); ok {
+				hdr.Set(k, sv)
+			}
+		}
+	}
+	if method == "" {
+		method = http.MethodGet
+	}
+	status, contentType, respBody, err := serveHTTP(method, rawURL, body, hdr)
+	if err != nil {
+		respBody = []byte(err.Error())
+		status = 500
+		contentType = "text/plain"
+	}
+	resp, merr := v8serde.Serialize(map[string]any{
+		"id":          id,
+		"status":      float64(status),
+		"contentType": contentType,
+		"body":        string(respBody),
+	})
+	if merr != nil {
+		return merr
+	}
+	return writeMessage(conn, resp)
+}
+
+// readMessage reads one length-prefixed message (4-byte LE length +
+// bytes). Bytes already buffered in *buf from a previous read's
+// look-ahead are consumed first.
+func readMessage(conn net.Conn, buf *[]byte) ([]byte, error) {
+	var lenBuf [4]byte
+	taken := copy(lenBuf[:], *buf)
+	copy(*buf, (*buf)[taken:])
+	*buf = (*buf)[:len(*buf)-taken]
+	if taken < 4 {
+		if _, err := io.ReadFull(conn, lenBuf[taken:]); err != nil {
+			return nil, err
+		}
+	}
+	n := binary.LittleEndian.Uint32(lenBuf[:])
+	msg := make([]byte, n)
+	taken = copy(msg, *buf)
+	copy(*buf, (*buf)[taken:])
+	*buf = (*buf)[:len(*buf)-taken]
+	if uint32(taken) < n {
+		if _, err := io.ReadFull(conn, msg[taken:]); err != nil {
+			return nil, err
+		}
+	}
+	return msg, nil
+}
+
+// writeMessage emits one length-prefixed message.
+func writeMessage(conn net.Conn, msg []byte) error {
+	var lenBuf [4]byte
+	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(msg)))
+	if _, err := conn.Write(lenBuf[:]); err != nil {
+		return err
+	}
+	_, err := conn.Write(msg)
 	return err
 }
 

@@ -644,6 +644,143 @@ static napi_value CallBin(napi_env env, napi_callback_info info) {
   return promise;
 }
 
+// Invoke(msgBytes) -> Promise<responseBytes>
+// Frame v3: 4-byte LE length + raw message bytes (a v8-serialized
+// invoke object). Fully synchronous on the JS thread behind the io
+// mutex — sequential RPC by design, mirroring the handshake.
+static napi_value Invoke(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  if (argc < 1) {
+    napi_throw_error(env, NULL, "invoke(msg) requires 1 arg");
+    return NULL;
+  }
+  if (!g_connected) {
+    napi_throw_error(env, NULL, "not connected");
+    return NULL;
+  }
+  // msg: Buffer / TypedArray / ArrayBuffer / string
+  char *msg = NULL;
+  size_t mlen = 0;
+  bool is_buf = false, is_ta = false, is_ab = false;
+  napi_is_buffer(env, argv[0], &is_buf);
+  napi_is_typedarray(env, argv[0], &is_ta);
+  napi_is_arraybuffer(env, argv[0], &is_ab);
+  if (is_buf) {
+    void *d = NULL;
+    napi_get_buffer_info(env, argv[0], &d, &mlen);
+    msg = malloc(mlen + 1);
+    memcpy(msg, d, mlen);
+  } else if (is_ta) {
+    void *d = NULL;
+    size_t alen = 0;
+    napi_get_typedarray_info(env, argv[0], NULL, &alen, &d, NULL, NULL);
+    mlen = alen;
+    msg = malloc(mlen + 1);
+    memcpy(msg, d, mlen);
+  } else if (is_ab) {
+    void *d = NULL;
+    size_t alen = 0;
+    napi_get_arraybuffer_info(env, argv[0], &d, &alen);
+    mlen = alen;
+    msg = malloc(mlen + 1);
+    memcpy(msg, d, mlen);
+  } else {
+    size_t slen = 0;
+    napi_get_value_string_utf8(env, argv[0], NULL, 0, &slen);
+    msg = malloc(slen + 1);
+    napi_get_value_string_utf8(env, argv[0], msg, slen + 1, &slen);
+    mlen = slen;
+  }
+
+  napi_value promise;
+  napi_deferred deferred;
+  napi_create_promise(env, &deferred, &promise);
+
+  pthread_mutex_lock(&g_io_mu);
+  if (!g_connected) {
+    pthread_mutex_unlock(&g_io_mu);
+    free(msg);
+    napi_throw_error(env, NULL, "not connected");
+    return NULL;
+  }
+  uint8_t lenbuf[4];
+  uint32_t be = (uint32_t)mlen;
+  lenbuf[0] = (uint8_t)(be & 0xFF);
+  lenbuf[1] = (uint8_t)((be >> 8) & 0xFF);
+  lenbuf[2] = (uint8_t)((be >> 16) & 0xFF);
+  lenbuf[3] = (uint8_t)((be >> 24) & 0xFF);
+  int werr = write_all(g_fd, (char *)lenbuf, 4) != 0 ? errno : 0;
+  if (werr == 0) werr = write_all(g_fd, msg, mlen) != 0 ? errno : 0;
+  free(msg);
+
+  // response: 4-byte LE length + bytes
+  uint8_t rl[4];
+  size_t got = 0;
+  while (got < 4 && werr == 0) {
+    ssize_t n = read(g_fd, rl + got, 4 - got);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      werr = errno;
+      break;
+    }
+    if (n == 0) {
+      werr = ECONNRESET;
+      break;
+    }
+    got += (size_t)n;
+  }
+  if (werr != 0) {
+    pthread_mutex_unlock(&g_io_mu);
+    teardown_connection();
+    char msg2[160];
+    snprintf(msg2, sizeof(msg2), "response read failed: %s",
+             werr == ECONNRESET ? "connection lost" : strerror(werr));
+    napi_value mv;
+    napi_create_string_utf8(env, msg2, NAPI_AUTO_LENGTH, &mv);
+    napi_reject_deferred(env, deferred, mv);
+    return promise;
+  }
+  uint32_t rlen = (uint32_t)rl[0] | ((uint32_t)rl[1] << 8) |
+                  ((uint32_t)rl[2] << 16) | ((uint32_t)rl[3] << 24);
+  char *resp = malloc(rlen + 1);
+  got = 0;
+  while (got < rlen) {
+    ssize_t n = read(g_fd, resp + got, rlen - got);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      werr = errno;
+      break;
+    }
+    if (n == 0) {
+      werr = ECONNRESET;
+      break;
+    }
+    got += (size_t)n;
+  }
+  if (werr != 0) {
+    pthread_mutex_unlock(&g_io_mu);
+    free(resp);
+    teardown_connection();
+    char msg2[160];
+    snprintf(msg2, sizeof(msg2), "response read failed: %s", strerror(werr));
+    napi_value mv;
+    napi_create_string_utf8(env, msg2, NAPI_AUTO_LENGTH, &mv);
+    napi_reject_deferred(env, deferred, mv);
+    return promise;
+  }
+  pthread_mutex_unlock(&g_io_mu);
+
+  void *copy = NULL;
+  napi_value bodyVal;
+  napi_create_buffer(env, rlen, &copy, &bodyVal);
+  if (copy) memcpy(copy, resp, rlen);
+  free(resp);
+  napi_resolve_deferred(env, deferred, bodyVal);
+  return promise;
+}
+
 static napi_value Init(napi_env env, napi_value exports) {
   napi_value fn;
   napi_create_function(env, "connect", NAPI_AUTO_LENGTH, Connect, NULL, &fn);
@@ -654,6 +791,8 @@ static napi_value Init(napi_env env, napi_value exports) {
   napi_set_named_property(env, exports, "callBin", fn);
   napi_create_function(env, "close", NAPI_AUTO_LENGTH, Close, NULL, &fn);
   napi_set_named_property(env, exports, "close", fn);
+  napi_create_function(env, "invoke", NAPI_AUTO_LENGTH, Invoke, NULL, &fn);
+  napi_set_named_property(env, exports, "invoke", fn);
   return exports;
 }
 

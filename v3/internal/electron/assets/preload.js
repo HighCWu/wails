@@ -113,6 +113,13 @@ window.__wailsNativeInit = (initConfig) => {
   if (window.__nativeCall) return; // idempotent across navigations
   const bridge = require(initConfig.addon);
   bridge.connect(initConfig.endpoint, initConfig.token);
+  // echo diagnostics ride the v3 invoke frame (channel: "echo")
+  window.__nativeEcho = (payload) => {
+    const msg = new TextEncoder().encode(JSON.stringify({
+      id: 0, channel: 'echo', payload: payload,
+    }));
+    return bridge.invoke(msg).then((r) => JSON.parse(new TextDecoder().decode(r)).payload);
+  };
   window.__nativeCall = (id, payload) => bridge.call(id, payload);
   console.log('[wails-electron preload] native-uds transport ready');
   // gated: the ipcRenderer onMessage path SIGABRTs under this mode

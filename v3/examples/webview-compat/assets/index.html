@@ -62,7 +62,7 @@
     while (!window.__nativeCall && Date.now() - nativeDeadline < 10000) {
       await new Promise((r) => setTimeout(r, 50));
     }
-    if (window.__nativeCall) paths.push(["native-uds", (p) => window.__nativeCall(1, p)]);
+    if (window.__nativeEcho) paths.push(["native-uds", (p) => window.__nativeEcho(p)]);
 
     for (const [name, fn] of paths) {
       for (const size of PAYLOAD_SIZES) {
