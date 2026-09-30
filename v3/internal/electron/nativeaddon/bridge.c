@@ -6,8 +6,14 @@
 // Wire format mirrors pkg/application/webview_electron_native_linux.go:
 //   {"hello":1,"token":"..."}\n   -> {"ready":true}\n
 //   {"id":N,"payload":"..."}\n    -> {"id":N,"payload":"..."}\n
-// Calls are serialized behind a mutex and executed as one blocking async
-// work each: correct for sequential RPC; concurrent callers queue.
+//
+// Concurrency model mirrors Electron's ipc_renderer Invoke (serialize on
+// the JS thread, dispatch the reply via a callback when it arrives):
+// call() writes the frame on the JS thread and registers the deferred in
+// a JS-thread-only pending table; a reader thread blocks on the socket
+// and delivers replies through a napi_threadsafe_function. No threadpool
+// worker is held hostage per call, and concurrent calls are supported.
+// Replies for unknown ids (stale after a reuse) are dropped.
 #include <node_api.h>
 #include <errno.h>
 #include <pthread.h>
@@ -17,12 +23,38 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #define BRIDGE_TIMEOUT_SEC 10
+#define PENDING_MAX 512
 
 static int g_fd = -1;
-static pthread_mutex_t g_io_mu = PTHREAD_MUTEX_INITIALIZER;
+static int g_connected = 0;
+static pthread_t g_reader;
+static napi_threadsafe_function g_tsfn;
+
+// Pending calls live only on the JS thread (inserted by call(), consumed
+// by the tsfn callback), so the table needs no lock.
+typedef struct {
+  int id;
+  napi_deferred deferred;
+} pending_t;
+static pending_t g_pending[PENDING_MAX];
+static size_t g_pending_n;
+
+// Reader-thread -> JS-thread message, malloc'd, freed in the callback.
+typedef struct {
+  int id;        // matching call id; -1 = connection lost
+  char *payload; // malloc'd on success
+  char *err;     // malloc'd on failure
+} result_msg_t;
+
+static void free_msg(result_msg_t *m) {
+  free(m->payload);
+  free(m->err);
+  free(m);
+}
 
 #define TRACE_ON() (getenv("WAILS_BRIDGE_TRACE") && getenv("WAILS_BRIDGE_TRACE")[0] == '1')
 
@@ -54,8 +86,9 @@ static int write_all(int fd, const char *buf, size_t len) {
 
 // Read one '\n'-terminated line into a growable buffer. Returns malloc'd
 // line (without '\n', NUL-terminated) or NULL on EOF/error/timeout.
-// Bulk copies with memchr/memcpy — the payload sweep benches 1MB lines,
-// so per-byte loops here would dominate the round trip.
+// Bulk copies with memchr; the buffer is sized from the socket's pending
+// byte count (FIONREAD) so megabyte frames allocate once instead of
+// walking a realloc+copy chain.
 static char *read_line(int fd, size_t *out_len) {
   size_t cap = 16384, len = 0;
   char *buf = malloc(cap);
@@ -65,16 +98,13 @@ static char *read_line(int fd, size_t *out_len) {
     if (nl) {
       size_t line_len = (size_t)(nl - buf);
       *nl = '\0';
-      // Calls are strictly sequential (one outstanding frame), so a line
-      // is always followed by exactly one newline at EOF of that frame —
-      // trailing residue would mean a protocol violation; drop it.
+      // Calls are dispatched by id, so responses cannot interleave
+      // inside one frame; residue after a line means a protocol
+      // violation and is dropped.
       *out_len = line_len;
       return buf;
     }
     if (len == cap) {
-      // Ask the socket how many bytes are pending and jump straight to
-      // that size — avoids the realloc+copy growth chain on megabyte
-      // frames (FIONREAD works on Unix sockets; fall back to doubling).
       size_t want = cap * 2;
       int pending = 0;
       if (ioctl(fd, FIONREAD, &pending) == 0 && pending > 0) {
@@ -105,17 +135,15 @@ static char *read_line(int fd, size_t *out_len) {
 
 static void json_escape(const char *in, size_t len, char **out, size_t *out_len) {
   // Fast path: nothing needs escaping — one bound check pass + one memcpy
-  // (the bench payloads are megabytes of plain characters).
+  // (the bench payloads are megabytes of plain characters). *out == NULL
+  // signals the caller that the payload can go out as-is (writev).
   size_t i = 0;
   for (; i < len; i++) {
     unsigned char c = (unsigned char)in[i];
     if (c < 0x20 || c == '"' || c == '\\') break;
   }
   if (i == len) {
-    char *b = malloc(len + 1);
-    memcpy(b, in, len);
-    b[len] = '\0';
-    *out = b;
+    *out = NULL;
     *out_len = len;
     return;
   }
@@ -216,91 +244,110 @@ static char *json_payload_of(const char *line, size_t *out_len) {
   return b;
 }
 
-typedef struct {
-  int id;
-  char *payload; // owned copy
-  size_t payload_len;
-  // results
-  char *result;
-  size_t result_len;
-  char errbuf[192];
-  napi_deferred deferred;
-  napi_async_work work;
-} call_ctx_t;
+// ---- pending table (JS thread only) ----
 
-static void call_execute(napi_env env, void *data) {
-  (void)env;
-  call_ctx_t *c = data;
-  c->result = NULL;
-  pthread_mutex_lock(&g_io_mu);
-  if (g_fd < 0) {
-    snprintf(c->errbuf, sizeof(c->errbuf), "not connected");
-    pthread_mutex_unlock(&g_io_mu);
-    return;
+static napi_deferred pending_take(int id) {
+  for (size_t i = 0; i < g_pending_n; i++) {
+    if (g_pending[i].id == id) {
+      napi_deferred d = g_pending[i].deferred;
+      g_pending[i] = g_pending[g_pending_n - 1];
+      g_pending_n--;
+      return d;
+    }
   }
-  char *esc = NULL;
-  size_t esc_len = 0;
-  json_escape(c->payload, c->payload_len, &esc, &esc_len);
-  // Manual frame assembly: snprintf("%s") would strlen-scan the payload
-  // again (megabytes) on top of the copies we already do.
-  size_t cap = esc_len + 64;
-  char *frame = malloc(cap);
-  int n = sprintf(frame, "{\"id\":%d,\"payload\":\"", c->id);
-  memcpy(frame + n, esc, esc_len);
-  memcpy(frame + n + esc_len, "\"}\n", 3);
-  n += (int)esc_len + 3;
-  free(esc);
-  TRACE("call id=%d writing %d bytes", c->id, n);
-  if (write_all(g_fd, frame, (size_t)n) != 0) {
-    snprintf(c->errbuf, sizeof(c->errbuf), "write: %s", strerror(errno));
-    free(frame);
-    pthread_mutex_unlock(&g_io_mu);
-    return;
-  }
-  free(frame);
+  return NULL;
+}
 
+// ---- reader thread ----
+
+static void *reader_main(void *arg) {
+  (void)arg;
   for (;;) {
     size_t line_len = 0;
     char *line = read_line(g_fd, &line_len);
-    if (!line) {
-      snprintf(c->errbuf, sizeof(c->errbuf), "read: %s",
-               errno == EAGAIN ? "timeout" : strerror(errno));
-      close(g_fd);
-      g_fd = -1;
-      pthread_mutex_unlock(&g_io_mu);
-      return;
-    }
-    TRACE("call id=%d got line len=%zu", c->id, line_len);
-    char *found = strstr(line, "\"payload\":\"");
+    if (!line) break; // EOF, error or 10s quiet timeout
+
+    result_msg_t *m = calloc(1, sizeof(*m));
     char *idpos = strstr(line, "\"id\":");
-    int rid = idpos ? atoi(idpos + 5) : -1;
-    if (found && rid == c->id) {
-      c->result = json_payload_of(line, &c->result_len);
-      free(line);
-      if (!c->result) snprintf(c->errbuf, sizeof(c->errbuf), "bad response frame");
-      pthread_mutex_unlock(&g_io_mu);
-      return;
+    int id = idpos ? atoi(idpos + 5) : -1;
+    size_t plen = 0;
+    char *payload = json_payload_of(line, &plen);
+    free(line);
+    if (!payload || id < 0) {
+      free(payload);
+      m->id = -1;
+      m->err = strdup("malformed frame from host");
+    } else {
+      m->id = id;
+      m->payload = payload;
     }
-    free(line); // not ours (e.g. late ready) — keep scanning
+    if (napi_call_threadsafe_function(g_tsfn, m, napi_tsfn_nonblocking) != napi_ok) {
+      free_msg(m); // environment is shutting down
+      break;
+    }
   }
+  // Connection lost (or timed out): one poison message rejects every
+  // pending call on the JS thread.
+  result_msg_t *m = calloc(1, sizeof(*m));
+  m->id = -1;
+  m->err = strdup(errno == EAGAIN ? "host reply timed out" : "connection to host lost");
+  napi_call_threadsafe_function(g_tsfn, m, napi_tsfn_nonblocking);
+  return NULL;
 }
 
-static void call_complete(napi_env env, napi_status status, void *data) {
-  call_ctx_t *c = data;
-  if (status != napi_ok || c->errbuf[0]) {
+// ---- tsfn callback (runs on the JS thread) ----
+
+// Placeholder JS function backing the threadsafe function (the real work
+// happens in CallJsDispatch; napi_create_function rejects a NULL callback).
+static napi_value DispatchNoop(napi_env env, napi_callback_info info) {
+  (void)env;
+  (void)info;
+  return NULL;
+}
+
+
+static void CallJsDispatch(napi_env env, napi_value js_cb, void *context, void *vdata) {
+  (void)js_cb;
+  (void)context;
+  result_msg_t *m = vdata;
+  if (m->id == -1) {
     napi_value msg;
-    napi_create_string_utf8(env, c->errbuf[0] ? c->errbuf : "async work failed",
+    napi_create_string_utf8(env, m->err ? m->err : "connection lost",
                             NAPI_AUTO_LENGTH, &msg);
-    napi_reject_deferred(env, c->deferred, msg);
-  } else {
-    napi_value res;
-    napi_create_string_utf8(env, c->result, c->result_len, &res);
-    napi_resolve_deferred(env, c->deferred, res);
+    for (size_t i = 0; i < g_pending_n; i++) {
+      napi_reject_deferred(env, g_pending[i].deferred, msg);
+    }
+    g_pending_n = 0;
+    g_connected = 0;
+    free_msg(m);
+    return;
   }
-  free(c->result);
-  free(c->payload);
-  napi_delete_async_work(env, c->work);
-  free(c);
+  napi_value value;
+  napi_deferred d = pending_take(m->id);
+  if (!d) {
+    free_msg(m); // stale id (cancelled by reuse) — drop the reply
+    return;
+  }
+  if (m->payload) {
+    napi_create_string_utf8(env, m->payload, strlen(m->payload), &value);
+    napi_resolve_deferred(env, d, value);
+  } else {
+    napi_reject_deferred(env, d, value);
+  }
+  free_msg(m);
+}
+
+static void teardown_connection(void) {
+  if (g_fd >= 0) {
+    shutdown(g_fd, SHUT_RDWR); // wakes the reader thread
+  }
+  pthread_join(g_reader, NULL);
+  if (g_fd >= 0) {
+    close(g_fd);
+    g_fd = -1;
+  }
+  napi_release_threadsafe_function(g_tsfn, napi_tsfn_release);
+  g_connected = 0;
 }
 
 static napi_value Call(napi_env env, napi_callback_info info) {
@@ -311,21 +358,99 @@ static napi_value Call(napi_env env, napi_callback_info info) {
     napi_throw_error(env, NULL, "call(id, payload) requires 2 args");
     return NULL;
   }
+  if (!g_connected) {
+    napi_throw_error(env, NULL, "not connected");
+    return NULL;
+  }
   int32_t id = 0;
   napi_get_value_int32(env, argv[0], &id);
   size_t plen = 0;
   napi_get_value_string_utf8(env, argv[1], NULL, 0, &plen);
-  call_ctx_t *c = calloc(1, sizeof(call_ctx_t));
-  c->payload = malloc(plen + 1);
-  c->id = id;
-  napi_get_value_string_utf8(env, argv[1], c->payload, plen + 1, &c->payload_len);
+  char *payload = malloc(plen + 1);
+  napi_get_value_string_utf8(env, argv[1], payload, plen + 1, &plen);
 
   napi_value promise, name;
-  napi_create_promise(env, &c->deferred, &promise);
-  napi_create_string_utf8(env, "bridge-call", NAPI_AUTO_LENGTH, &name);
-  napi_create_async_work(env, NULL, name, call_execute, call_complete, c,
-                         &c->work);
-  napi_queue_async_work(env, c->work);
+  napi_deferred deferred;
+  napi_create_promise(env, &deferred, &promise);
+  (void)name;
+
+  // A reused id cancels the older call instead of leaking its deferred.
+  napi_deferred stale = pending_take(id);
+  if (stale) {
+    napi_value msg;
+    napi_create_string_utf8(env, "cancelled: id reused", NAPI_AUTO_LENGTH, &msg);
+    napi_reject_deferred(env, stale, msg);
+  }
+  if (g_pending_n == PENDING_MAX) {
+    free(payload);
+    napi_value msg;
+    napi_create_string_utf8(env, "too many pending calls", NAPI_AUTO_LENGTH, &msg);
+    napi_reject_deferred(env, deferred, msg);
+    return promise;
+  }
+  g_pending[g_pending_n].id = id;
+  g_pending[g_pending_n].deferred = deferred;
+  g_pending_n++;
+
+  // Serialize on the JS thread (Electron does the same). Escaped
+  // payloads get copied into one frame; clean payloads go out through
+  // writev untouched — a megabyte frame skips a full memcpy.
+  char *esc = NULL;
+  size_t esc_len = 0;
+  json_escape(payload, plen, &esc, &esc_len);
+  char header[48];
+  int hlen = sprintf(header, "{\"id\":%d,\"payload\":\"", id);
+  const char tail[3] = {'"', '}', '\n'};
+  int werr = 0;
+  if (esc == NULL) {
+    struct iovec iov[3] = {
+        {header, (size_t)hlen}, {payload, plen}, {(void *)tail, 3}};
+    size_t off = 0, total = (size_t)hlen + plen + 3;
+    // writev can short-write on big frames; finish the remainder.
+    while (total > off) {
+      ssize_t n = writev(g_fd, iov, 3);
+      if (n < 0) {
+        if (errno == EINTR) continue;
+        werr = errno;
+        break;
+      }
+      off += (size_t)n;
+      if (off == total) break;
+      size_t rem = off;
+      for (int i = 0; i < 3; i++) {
+        if (rem >= iov[i].iov_len) {
+          rem -= iov[i].iov_len;
+          iov[i].iov_len = 0;
+        } else {
+          iov[i].iov_base = (char *)iov[i].iov_base + rem;
+          iov[i].iov_len -= rem;
+          rem = 0;
+        }
+      }
+    }
+  } else {
+    size_t cap = (size_t)hlen + esc_len + 3;
+    char *frame = malloc(cap);
+    memcpy(frame, header, (size_t)hlen);
+    memcpy(frame + hlen, esc, esc_len);
+    memcpy(frame + hlen + esc_len, tail, 3);
+    free(esc);
+    werr = write_all(g_fd, frame, cap) == 0 ? 0 : errno;
+    free(frame);
+  }
+  free(payload);
+  if (werr != 0) {
+    TRACE("call id=%d write failed: %s", id, strerror(werr));
+    napi_deferred d = pending_take(id);
+    if (d) {
+      napi_value msg;
+      char buf[128];
+      snprintf(buf, sizeof(buf), "write failed: %s", strerror(werr));
+      napi_create_string_utf8(env, buf, NAPI_AUTO_LENGTH, &msg);
+      napi_reject_deferred(env, d, msg);
+    }
+    g_connected = 0;
+  }
   return promise;
 }
 
@@ -342,15 +467,12 @@ static napi_value Connect(napi_env env, napi_callback_info info) {
   napi_get_value_string_utf8(env, argv[0], endpoint, sizeof(endpoint) - 1, &n);
   napi_get_value_string_utf8(env, argv[1], token, sizeof(token) - 1, &n);
 
-  pthread_mutex_lock(&g_io_mu);
-  if (g_fd >= 0) {
-    close(g_fd);
-    g_fd = -1;
+  if (g_connected) {
+    teardown_connection();
   }
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);
   if (fd < 0) {
     trace_err("socket");
-    pthread_mutex_unlock(&g_io_mu);
     napi_throw_error(env, NULL, "socket failed");
     return NULL;
   }
@@ -361,7 +483,6 @@ static napi_value Connect(napi_env env, napi_callback_info info) {
   if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
     trace_err("connect");
     close(fd);
-    pthread_mutex_unlock(&g_io_mu);
     napi_throw_error(env, NULL, "connect failed");
     return NULL;
   }
@@ -369,37 +490,59 @@ static napi_value Connect(napi_env env, napi_callback_info info) {
   int hn = snprintf(hello, sizeof(hello), "{\"hello\":1,\"token\":\"%s\"}\n", token);
   if (write_all(fd, hello, (size_t)hn) != 0) {
     close(fd);
-    pthread_mutex_unlock(&g_io_mu);
     napi_throw_error(env, NULL, "hello write failed");
     return NULL;
   }
   struct timeval tv = {BRIDGE_TIMEOUT_SEC, 0};
   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  // Headroom for megabyte frames: default UDS buffers (~200KB) would
+  // split them into many flow-control round trips.
+  int bufsz = 4 * 1024 * 1024;
+  setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof(bufsz));
+  setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof(bufsz));
   size_t line_len = 0;
   char *line = read_line(fd, &line_len);
   if (!line || !strstr(line, "\"ready\":true")) {
     fprintf(stderr, "[go-bridge] ERROR handshake got: %s\n", line ? line : "(eof)");
     free(line);
     close(fd);
-    pthread_mutex_unlock(&g_io_mu);
     napi_throw_error(env, NULL, "handshake failed");
     return NULL;
   }
   free(line);
+
+  napi_value placeholder, resource_name;
+  napi_create_function(env, "dispatch", NAPI_AUTO_LENGTH, DispatchNoop, NULL, &placeholder);
+  napi_create_string_utf8(env, "go-bridge", NAPI_AUTO_LENGTH, &resource_name);
+  napi_status tsfn_st = napi_create_threadsafe_function(
+      env, placeholder, NULL, resource_name, 0, 1, NULL, NULL, NULL,
+      CallJsDispatch, &g_tsfn);
+  if (tsfn_st != napi_ok) {
+    fprintf(stderr, "[go-bridge] ERROR tsfn create status=%d\n", (int)tsfn_st);
+    close(fd);
+    napi_throw_error(env, NULL, "failed to create dispatch queue");
+    return NULL;
+  }
   g_fd = fd;
-  pthread_mutex_unlock(&g_io_mu);
+  g_connected = 1;
+  if (pthread_create(&g_reader, NULL, reader_main, NULL) != 0) {
+    napi_release_threadsafe_function(g_tsfn, napi_tsfn_release);
+    close(fd);
+    g_fd = -1;
+    g_connected = 0;
+    napi_throw_error(env, NULL, "failed to start reader thread");
+    return NULL;
+  }
   TRACE("connected endpoint=%s", endpoint);
   return NULL;
 }
 
 static napi_value Close(napi_env env, napi_callback_info info) {
+  (void)env;
   (void)info;
-  pthread_mutex_lock(&g_io_mu);
-  if (g_fd >= 0) {
-    close(g_fd);
-    g_fd = -1;
+  if (g_connected) {
+    teardown_connection();
   }
-  pthread_mutex_unlock(&g_io_mu);
   return NULL;
 }
 

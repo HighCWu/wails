@@ -8,7 +8,7 @@ name: Clickthrough Test
 
 on:
   push:
-    branches: [electron-backend]
+    branches: [master]
   workflow_dispatch:
 
 jobs:
