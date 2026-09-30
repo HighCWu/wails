@@ -5,16 +5,15 @@ package application
 import (
 	"bytes"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -109,7 +108,7 @@ func serveNativeBridgeConn(conn net.Conn, expectedToken string, serveHTTP func(m
 		}
 		// the http marker travels inside the JSON-escaped payload string
 		if bytes.Contains(line, []byte("\\\"type\\\":\\\"http\\\"")) {
-			serveHTTPFrame(conn, line, serveHTTP)
+			serveHTTPFrame(conn, line, &buf, serveHTTP)
 			continue
 		}
 		if err := writeFrame(conn, line); err != nil {
@@ -121,87 +120,70 @@ func serveNativeBridgeConn(conn net.Conn, expectedToken string, serveHTTP func(m
 // serveHTTPFrame handles one {"id":N,"type":"http",...} frame: run the
 // request through the asset server and answer with
 // {"id":N,"status":..,"contentType":..,"payload":"<base64>"}.
-func serveHTTPFrame(conn net.Conn, line []byte, serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, string, error)) {
-	// Two-level parse: the frame wraps the request in its payload string
-	// (the addon's wire format carries one payload field per frame).
-	var outer struct {
-		ID      int    `json:"id"`
-		Payload string `json:"payload"`
+func serveHTTPFrame(conn net.Conn, line []byte, buf *[]byte, serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, string, error)) {
+	var req struct {
+		ID      int               `json:"id"`
+		Method  string            `json:"method"`
+		URL     string            `json:"url"`
+		BodyLen int               `json:"bodyLen"`
+		Headers map[string]string `json:"headers"`
 	}
-	if err := json.Unmarshal(line, &outer); err != nil {
+	if err := json.Unmarshal(line, &req); err != nil {
 		fmt.Println("[httpframe] unmarshal err:", err)
 		return
 	}
-	var req struct {
-		Method  string            `json:"method"`
-		URL     string            `json:"url"`
-		Body    string            `json:"body"`
-		BodyEnc string            `json:"bodyEnc"`
-		Headers map[string]string `json:"headers"`
-	}
-	if err := json.Unmarshal([]byte(outer.Payload), &req); err != nil {
-		fmt.Println("[httpframe] payload unmarshal err:", err)
+	body, err := readExactBody(conn, buf, req.BodyLen)
+	if err != nil {
+		fmt.Println("[httpframe] body read err:", err)
 		return
-	}
-	if req.BodyEnc == "base64" {
-		decoded, derr := base64.StdEncoding.DecodeString(req.Body)
-		if derr != nil {
-			fmt.Println("[httpframe] body base64 decode err:", derr)
-			return
-		}
-		req.Body = string(decoded)
 	}
 	hdr := http.Header{}
 	for k, v := range req.Headers {
 		hdr.Set(k, v)
 	}
-	fmt.Println("[httpframe] recv id=", outer.ID, "method=", req.Method, "url=", req.URL, "bodylen=", len(req.Body))
-	if len(req.Body) >= 65536 {
-		sum := uint32(0)
-		for i := 0; i < len(req.Body); i++ {
-			sum += uint32(req.Body[i]) * uint32(i%7+1)
-		}
-		fmt.Println("[httpframe] RX body len=", len(req.Body), "head=", strconv.Quote(req.Body[:24]), "tail=", strconv.Quote(req.Body[len(req.Body)-24:]), "sum=", sum)
-	}
 	if req.Method == "" {
 		req.Method = http.MethodGet
 	}
-	inner := map[string]any{}
-	status, contentType, bodyB64, err := serveHTTP(req.Method, req.URL, req.Body, hdr)
+	status, contentType, bodyB64, err := serveHTTP(req.Method, req.URL, string(body), hdr)
+	respBody := []byte(bodyB64)
 	if err != nil {
-		inner["err"] = err.Error()
-	} else {
-		inner["status"] = status
-		inner["contentType"] = contentType
-		inner["payload"] = bodyB64
+		respBody = []byte(err.Error())
+		status = 500
+		contentType = "text/plain"
 	}
-	// The addon resolves the frame's payload string verbatim, so the
-	// structured response travels as an inner JSON document.
-	innerJSON, _ := json.Marshal(inner)
-	out, _ := json.Marshal(map[string]any{"id": outer.ID, "payload": string(innerJSON)})
-	werr := writeFrame(conn, out)
-	fmt.Println("[httpframe] done id=", outer.ID, "status=", status, "err=", err, "bodylen=", len(bodyB64), "writeerr=", werr)
+	respHdr, _ := json.Marshal(map[string]any{
+		"id":          req.ID,
+		"status":      status,
+		"contentType": contentType,
+		"bodyLen":     len(respBody),
+	})
+	if err := writeFrame(conn, respHdr); err != nil {
+		return
+	}
+	if _, err := conn.Write(respBody); err != nil {
+		fmt.Println("[httpframe] body write err:", err)
+	}
 }
 
 // readFrame reads one '\n'-terminated frame into *buf (grown as needed,
 // reused across frames; nil allocates locally). The strict
 // request/response link expects one frame at a time — residual bytes
 // after a frame are a protocol violation.
+// readFrame reads one '\n'-terminated header line into *buf (reused
+// across calls). Bytes after the newline are the frame's raw body
+// (protocol v2) — they stay at the front of *buf for readExactBody to
+// consume; callers of plain echo frames see an empty residue as before.
 func readFrame(conn net.Conn, buf *[]byte) ([]byte, error) {
-	var local []byte
-	if buf == nil {
-		buf = &local
-	}
-	*buf = (*buf)[:0]
 	start := 0
 	for {
 		if i := bytes.IndexByte((*buf)[start:], '\n'); i >= 0 {
 			line := (*buf)[start : start+i]
 			rest := start + i + 1
-			if rest != len(*buf) {
-				return nil, fmt.Errorf("bridge frame residue: %d bytes", len(*buf)-rest)
-			}
-			*buf = (*buf)[:0]
+			consumed := rest
+			// move the residue (start of the body) to the front
+			copy(*buf, (*buf)[rest:])
+			*buf = (*buf)[:len(*buf)-rest]
+			_ = consumed
 			return line, nil
 		}
 		if len(*buf) == cap(*buf) {
@@ -213,6 +195,29 @@ func readFrame(conn net.Conn, buf *[]byte) ([]byte, error) {
 			return nil, err
 		}
 	}
+}
+
+// readExactBody consumes n bytes: whatever the reader already pulled
+// into buf (the body's first bytes may precede the header's newline),
+// then straight from the connection for the remainder. Returns a copy.
+func readExactBody(conn net.Conn, buf *[]byte, n int) ([]byte, error) {
+	out := make([]byte, n)
+	taken := copy(out, (*buf)[:min(len(*buf), n)])
+	copy(*buf, (*buf)[taken:])
+	*buf = (*buf)[:len(*buf)-taken]
+	for taken < n {
+		m, err := conn.Read(out[taken:n])
+		if m > 0 {
+			taken += m
+		}
+		if err != nil {
+			return nil, err
+		}
+		if m == 0 {
+			return nil, io.EOF
+		}
+	}
+	return out, nil
 }
 
 // writeFrame emits the frame plus newline as one aggregated writev.
