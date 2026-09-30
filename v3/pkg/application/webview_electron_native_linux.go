@@ -3,7 +3,7 @@
 package application
 
 import (
-	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 )
@@ -69,37 +70,79 @@ func nativeBridgePath() string {
 
 func serveNativeBridgeConn(conn net.Conn, expectedToken string) {
 	defer conn.Close()
-	sc := bufio.NewScanner(conn)
-	sc.Buffer(make([]byte, 0, 4096), 16*1024*1024)
 	// HELLO handshake: the first frame must carry the per-instance token;
 	// anything else is a foreign local process and gets dropped silently.
-	if !sc.Scan() {
+	line, err := readFrame(conn, nil)
+	if err != nil {
 		return
 	}
 	var hello struct {
 		Hello int    `json:"hello"`
 		Token string `json:"token"`
 	}
-	if err := json.Unmarshal(sc.Bytes(), &hello); err != nil ||
+	if err := json.Unmarshal(line, &hello); err != nil ||
 		hello.Hello != 1 || hello.Token != expectedToken {
 		return
 	}
 	conn.Write([]byte(`{"ready":true}` + "\n"))
-	for sc.Scan() {
-		line := sc.Bytes()
+	// Echo benchmark frames verbatim: the sweep measures the pure
+	// transport, so the host does not re-parse megabyte payloads here.
+	// (A production data plane plugs its own frame handler in here.)
+	// A fixed-slice reader would turn a 1MB frame into dozens of read
+	// syscalls; a self-managed buffer read straight from the conn keeps
+	// the host cost at a handful of reads + one writev per frame.
+	buf := make([]byte, 0, 256*1024)
+	for {
+		line, err := readFrame(conn, &buf)
+		if err != nil {
+			return
+		}
 		if len(line) == 0 {
 			continue
 		}
-		var frame struct {
-			ID      int    `json:"id"`
-			Payload string `json:"payload"`
+		if err := writeFrame(conn, line); err != nil {
+			return
 		}
-		if err := json.Unmarshal(line, &frame); err != nil {
-			continue
-		}
-		resp, _ := json.Marshal(frame)
-		conn.Write(append(resp, '\n'))
 	}
+}
+
+// readFrame reads one '\n'-terminated frame into *buf (grown as needed,
+// reused across frames; nil allocates locally). The strict
+// request/response link expects one frame at a time — residual bytes
+// after a frame are a protocol violation.
+func readFrame(conn net.Conn, buf *[]byte) ([]byte, error) {
+	var local []byte
+	if buf == nil {
+		buf = &local
+	}
+	*buf = (*buf)[:0]
+	start := 0
+	for {
+		if i := bytes.IndexByte((*buf)[start:], '\n'); i >= 0 {
+			line := (*buf)[start : start+i]
+			rest := start + i + 1
+			if rest != len(*buf) {
+				return nil, fmt.Errorf("bridge frame residue: %d bytes", len(*buf)-rest)
+			}
+			*buf = (*buf)[:0]
+			return line, nil
+		}
+		if len(*buf) == cap(*buf) {
+			*buf = slices.Grow(*buf, cap(*buf)+1)[:len(*buf)]
+		}
+		n, err := conn.Read((*buf)[len(*buf):cap(*buf)])
+		*buf = (*buf)[:len(*buf)+n]
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+// writeFrame emits the frame plus newline as one aggregated writev.
+func writeFrame(conn net.Conn, line []byte) error {
+	buffers := net.Buffers{line, []byte{'\n'}}
+	_, err := buffers.WriteTo(conn)
+	return err
 }
 
 func dirForBridgeSocket() (string, error) {

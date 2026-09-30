@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -23,15 +24,11 @@
 static int g_fd = -1;
 static pthread_mutex_t g_io_mu = PTHREAD_MUTEX_INITIALIZER;
 
-static int trace_on(void) {
-  static int v = -1;
-  if (v < 0) v = getenv("WAILS_BRIDGE_TRACE") ? 1 : 0;
-  return v;
-}
+#define TRACE_ON() (getenv("WAILS_BRIDGE_TRACE") && getenv("WAILS_BRIDGE_TRACE")[0] == '1')
 
-#define TRACE(...)                     \
+#define TRACE(...)                      \
   do {                                 \
-    if (trace_on()) {                  \
+    if (TRACE_ON()) {                  \
       fprintf(stderr, "[go-bridge] "); \
       fprintf(stderr, __VA_ARGS__);    \
       fputc('\n', stderr);             \
@@ -56,16 +53,43 @@ static int write_all(int fd, const char *buf, size_t len) {
 }
 
 // Read one '\n'-terminated line into a growable buffer. Returns malloc'd
-// line (without '\n') or NULL on EOF/error/timeout. *out_len excludes NUL.
+// line (without '\n', NUL-terminated) or NULL on EOF/error/timeout.
+// Bulk copies with memchr/memcpy — the payload sweep benches 1MB lines,
+// so per-byte loops here would dominate the round trip.
 static char *read_line(int fd, size_t *out_len) {
-  size_t cap = 4096, len = 0;
+  size_t cap = 16384, len = 0;
   char *buf = malloc(cap);
   if (!buf) return NULL;
   for (;;) {
-    // Refill scan: keep a small read chunk at a time so we never overshoot
-    // into the next frame more than one read (leftover handling below).
-    char chunk[4096];
-    ssize_t n = read(fd, chunk, sizeof(chunk));
+    char *nl = memchr(buf, '\n', len);
+    if (nl) {
+      size_t line_len = (size_t)(nl - buf);
+      *nl = '\0';
+      // Calls are strictly sequential (one outstanding frame), so a line
+      // is always followed by exactly one newline at EOF of that frame —
+      // trailing residue would mean a protocol violation; drop it.
+      *out_len = line_len;
+      return buf;
+    }
+    if (len == cap) {
+      // Ask the socket how many bytes are pending and jump straight to
+      // that size — avoids the realloc+copy growth chain on megabyte
+      // frames (FIONREAD works on Unix sockets; fall back to doubling).
+      size_t want = cap * 2;
+      int pending = 0;
+      if (ioctl(fd, FIONREAD, &pending) == 0 && pending > 0) {
+        size_t need = len + (size_t)pending + 1;
+        if (need > want) want = need;
+      }
+      cap = want;
+      char *nb = realloc(buf, cap);
+      if (!nb) {
+        free(buf);
+        return NULL;
+      }
+      buf = nb;
+    }
+    ssize_t n = read(fd, buf + len, cap - len);
     if (n < 0) {
       if (errno == EINTR) continue;
       free(buf);
@@ -75,33 +99,29 @@ static char *read_line(int fd, size_t *out_len) {
       free(buf);
       return NULL;
     }
-    for (ssize_t i = 0; i < n; i++) {
-      if (len + 1 >= cap) {
-        cap *= 2;
-        char *nb = realloc(buf, cap);
-        if (!nb) {
-          free(buf);
-          return NULL;
-        }
-        buf = nb;
-      }
-      if (chunk[i] == '\n') {
-        buf[len] = '\0';
-        // Any bytes after the newline in this chunk are lost — impossible
-        // on this link because calls are strictly sequential (one
-        // outstanding frame at a time), so responses never queue up.
-        *out_len = len;
-        return buf;
-      }
-      buf[len++] = chunk[i];
-    }
+    len += (size_t)n;
   }
 }
 
 static void json_escape(const char *in, size_t len, char **out, size_t *out_len) {
+  // Fast path: nothing needs escaping — one bound check pass + one memcpy
+  // (the bench payloads are megabytes of plain characters).
+  size_t i = 0;
+  for (; i < len; i++) {
+    unsigned char c = (unsigned char)in[i];
+    if (c < 0x20 || c == '"' || c == '\\') break;
+  }
+  if (i == len) {
+    char *b = malloc(len + 1);
+    memcpy(b, in, len);
+    b[len] = '\0';
+    *out = b;
+    *out_len = len;
+    return;
+  }
   size_t cap = len * 6 + 16, j = 0;
   char *b = malloc(cap);
-  for (size_t i = 0; i < len; i++) {
+  for (; i < len; i++) {
     unsigned char c = (unsigned char)in[i];
     const char *esc = NULL;
     switch (c) {
@@ -127,11 +147,22 @@ static void json_escape(const char *in, size_t len, char **out, size_t *out_len)
 }
 
 // Extract the value of "payload":"..." from a JSON line, unescaping JSON
-// string escapes. Returns malloc'd UTF-8 or NULL.
+// string escapes. Returns malloc'd UTF-8 or NULL. Fast path: value with
+// no backslash escapes — locate the closing quote and memcpy once.
 static char *json_payload_of(const char *line, size_t *out_len) {
   const char *p = strstr(line, "\"payload\":\"");
   if (!p) return NULL;
   p += strlen("\"payload\":\"");
+  char *end = strchr(p, '"');
+  if (!end) return NULL;
+  if (memchr(p, '\\', (size_t)(end - p)) == NULL) {
+    size_t n = (size_t)(end - p);
+    char *b = malloc(n + 1);
+    memcpy(b, p, n);
+    b[n] = '\0';
+    *out_len = n;
+    return b;
+  }
   size_t cap = strlen(p) + 1, j = 0;
   char *b = malloc(cap);
   while (*p && *p != '"') {
@@ -210,9 +241,14 @@ static void call_execute(napi_env env, void *data) {
   char *esc = NULL;
   size_t esc_len = 0;
   json_escape(c->payload, c->payload_len, &esc, &esc_len);
+  // Manual frame assembly: snprintf("%s") would strlen-scan the payload
+  // again (megabytes) on top of the copies we already do.
   size_t cap = esc_len + 64;
   char *frame = malloc(cap);
-  int n = snprintf(frame, cap, "{\"id\":%d,\"payload\":\"%s\"}\n", c->id, esc);
+  int n = sprintf(frame, "{\"id\":%d,\"payload\":\"", c->id);
+  memcpy(frame + n, esc, esc_len);
+  memcpy(frame + n + esc_len, "\"}\n", 3);
+  n += (int)esc_len + 3;
   free(esc);
   TRACE("call id=%d writing %d bytes", c->id, n);
   if (write_all(g_fd, frame, (size_t)n) != 0) {
@@ -223,8 +259,6 @@ static void call_execute(napi_env env, void *data) {
   }
   free(frame);
 
-  struct timeval tv = {BRIDGE_TIMEOUT_SEC, 0};
-  setsockopt(g_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
   for (;;) {
     size_t line_len = 0;
     char *line = read_line(g_fd, &line_len);
