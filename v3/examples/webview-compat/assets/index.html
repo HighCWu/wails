@@ -52,8 +52,11 @@
     if (window.__compatInvoke) paths.push(["invoke", (p) => window.__compatInvoke(p)]);
     // Call.ByName rides whichever transport the preload installed for
     // /wails/runtime: the UDS data plane (native-http) or fetch-ipc.
-    paths.push([window.__nativeHttpActive ? "native-uds-http" : "fetch-ipc",
-      (p) => wails.Call.ByName(METHOD, p)]);
+    // The flag flips during preload (before page fetches), so resolve
+    // the label lazily when the row is emitted.
+    const httpName = () => window.__nativeHttpActive ? "native-uds-http" : "fetch-ipc";
+    paths.push(["__http__", (p) => wails.Call.ByName(METHOD, p)]);
+    const nameOf = (name) => name === "__http__" ? httpName() : name;
     // native transport arrives via late injection after page load — wait for it
     const nativeDeadline = Date.now() + 10000;
     while (!window.__nativeCall && Date.now() - nativeDeadline < 10000) {
@@ -63,16 +66,16 @@
 
     for (const [name, fn] of paths) {
       for (const size of PAYLOAD_SIZES) {
-        if (name === "fetch-ipc" && size >= 1048576) {
+        if (size >= 1048576 && nameOf(name) === "fetch-ipc") {
           // Known transport limit: the electron control protocol splits the
           // oversized request body and the runtime JSON parser rejects the
-          // halves. fetch-ipc is the transitional experiment; invoke and
-          // native-uds cover the full sweep.
+          // halves. The UDS data plane carries megabyte frames and covers
+          // the full sweep when active.
           continue;
         }
         const n = size >= 1048576 ? 20 : size >= 65536 ? 50 : 100;
         try {
-          const row = await benchPath(name, fn, size, n);
+          const row = await benchPath(nameOf(name), fn, size, n);
           wails.Events.Emit("compat:bench", row);
         } catch (e) {
           wails.Events.Emit("compat:bench-error", name + " " + size + ": " + (e && e.message || e));

@@ -167,6 +167,10 @@ static void json_escape(const char *in, size_t len, char **out, size_t *out_len)
   }
   size_t cap = len * 6 + 16, j = 0;
   char *b = malloc(cap);
+  // copy the safe prefix [0, i) first — the scan above found the first
+  // escapable byte, and everything before it must survive verbatim
+  memcpy(b, in, i);
+  j = i;
   for (; i < len; i++) {
     unsigned char c = (unsigned char)in[i];
     const char *esc = NULL;

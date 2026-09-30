@@ -120,15 +120,26 @@ func serveNativeBridgeConn(conn net.Conn, expectedToken string, serveHTTP func(m
 // request through the asset server and answer with
 // {"id":N,"status":..,"contentType":..,"payload":"<base64>"}.
 func serveHTTPFrame(conn net.Conn, line []byte, serveHTTP func(method, rawURL, body string) (int, string, string, error)) {
+	// Two-level parse: the frame wraps the request in its payload string
+	// (the addon's wire format carries one payload field per frame).
+	var outer struct {
+		ID      int    `json:"id"`
+		Payload string `json:"payload"`
+	}
+	if err := json.Unmarshal(line, &outer); err != nil {
+		fmt.Println("[httpframe] unmarshal err:", err)
+		return
+	}
 	var req struct {
-		ID     int    `json:"id"`
 		Method string `json:"method"`
 		URL    string `json:"url"`
 		Body   string `json:"body"`
 	}
-	if err := json.Unmarshal(line, &req); err != nil {
+	if err := json.Unmarshal([]byte(outer.Payload), &req); err != nil {
+		fmt.Println("[httpframe] payload unmarshal err:", err)
 		return
 	}
+	fmt.Println("[httpframe] recv id=", outer.ID, "method=", req.Method, "url=", req.URL, "bodylen=", len(req.Body))
 	if req.Method == "" {
 		req.Method = http.MethodGet
 	}
@@ -144,8 +155,9 @@ func serveHTTPFrame(conn net.Conn, line []byte, serveHTTP func(method, rawURL, b
 	// The addon resolves the frame's payload string verbatim, so the
 	// structured response travels as an inner JSON document.
 	innerJSON, _ := json.Marshal(inner)
-	out, _ := json.Marshal(map[string]any{"id": req.ID, "payload": string(innerJSON)})
-	_ = writeFrame(conn, out)
+	out, _ := json.Marshal(map[string]any{"id": outer.ID, "payload": string(innerJSON)})
+	werr := writeFrame(conn, out)
+	fmt.Println("[httpframe] done id=", outer.ID, "status=", status, "err=", err, "bodylen=", len(bodyB64), "writeerr=", werr)
 }
 
 // readFrame reads one '\n'-terminated frame into *buf (grown as needed,

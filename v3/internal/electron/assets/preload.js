@@ -58,9 +58,8 @@ function installNativeHttpFetch() {
     return origFetch(input, init);
   };
   window.__nativeHttpActive = true;
-  console.log('[wails-electron preload] native-uds fetch override installed');
+  console.log('[wails-electron preload] native-uds fetch override installed (D full UDS)');
 }
-
 if (expModes.includes('fetch-ipc')) {
   const origFetch = window.fetch.bind(window);
   window.fetch = async (input, init) => {
