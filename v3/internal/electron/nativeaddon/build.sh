@@ -6,10 +6,14 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 OUT="${1:-go-bridge.node}"
-# Newest node-gyp header set available locally; N-API is version-stable.
-HDR="$(ls -d "$HOME"/.cache/node-gyp/*/include/node 2>/dev/null | sort -V | tail -1)"
+# Header dir override for CI; N-API is ABI/version-stable so any recent
+# node headers work, including inside Electron.
+HDR="${NODE_HEADERS:-}"
 if [ -z "$HDR" ]; then
-  echo "error: no node-gyp headers under ~/.cache/node-gyp (run 'node-gyp' once or install node headers)" >&2
+  HDR="$(ls -d "$HOME"/.cache/node-gyp/*/include/node 2>/dev/null | sort -V | tail -1)"
+fi
+if [ -z "$HDR" ]; then
+  echo "error: no node headers (set NODE_HEADERS or populate ~/.cache/node-gyp)" >&2
   exit 1
 fi
 
