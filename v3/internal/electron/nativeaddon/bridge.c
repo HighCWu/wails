@@ -92,6 +92,7 @@ static char *read_line_ctx(read_ctx_t *ctx, int fd, size_t *out_len) {
       if (rest > 0) memmove(ctx->buf, nl + 1, rest);
       ctx->len = rest;
       *out_len = line_len;
+      fprintf(stderr, "[bt] line(%zu)=%.40s\n", line_len, ctx->buf);
       return ctx->buf; // valid until the next read on this ctx
     }
     if (ctx->len == ctx->cap) {
