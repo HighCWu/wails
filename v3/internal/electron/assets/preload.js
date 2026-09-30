@@ -36,31 +36,41 @@ function installNativeHttpFetch() {
     let url = typeof input === 'string' ? input : (input && input.url) || String(input);
     if (url.indexOf('/wails/runtime') !== -1 && window.__nativeCallBin) {
       url = new URL(url, location.href).toString();
-      // Frame v2: the body travels as raw bytes after the header line —
-      // string bodies as UTF-8, Uint8Array chunks (the runtime's >512KB
-      // call path) verbatim. No escaping, no base64, no re-parse.
+      // Aligned with Electron's Invoke: the serialized payload carries
+      // ONLY the call arguments ([body] — a single-element array, same
+      // shape as the args list ipcRenderer passes to SerializeV8Value).
+      // Transport metadata (id/channel/method/url/headers) lives in the
+      // frame header, the equivalent of Electron's Mojo parameters.
       const rawBody = init && init.body != null ? init.body : '';
-      const bodyBuf = Buffer.from(rawBody);
+      const bodyBuf = typeof rawBody === 'string' ? Buffer.from(rawBody) : Buffer.from(rawBody);
       // headers must ride along: the runtime's chunked upload protocol
       // (x-wails-chunk-*) and call association (x-wails-call-id) live there
       const hdrObj = {};
       if (init && init.headers) {
         for (const [k, v] of new Headers(init.headers).entries()) hdrObj[k] = v;
       }
+      const payload = require('v8').serialize([bodyBuf]);
       const hdr = JSON.stringify({
         id: __nativeSeq++,
         type: 'http',
         method: (init && init.method) || 'GET',
         url: url,
-        bodyLen: bodyBuf.length,
         headers: hdrObj,
+        payloadLen: payload.length,
       });
-      const resp = await window.__nativeCallBin(__nativeSeq - 1, hdr, bodyBuf);
-      if (resp.err) throw new Error(resp.err);
+      // frame = header line + raw payload bytes (one Invoke on the wire)
+      const frame = Buffer.concat([Buffer.from(hdr + '\n'), Buffer.from(payload)]);
+      const respFrame = await window.__nativeCallBin(__nativeSeq - 1, frame, Buffer.alloc(0));
+      // response frame: header line + raw payload bytes
+      const nl = respFrame.indexOf(0x0A);
+      const respHdr = JSON.parse(respFrame.slice(0, nl).toString());
+      const respPayload = respFrame.slice(nl + 1);
+      const decoded = require('v8').deserialize(respPayload);
+      const respBody = decoded[0];
       const headers = new Headers();
-      if (resp.contentType) headers.set('Content-Type', resp.contentType);
-      return new Response(resp.body.length ? new Uint8Array(resp.body) : null, {
-        status: resp.status,
+      if (respHdr.contentType) headers.set('Content-Type', respHdr.contentType);
+      return new Response(respBody.length ? new Uint8Array(respBody) : null, {
+        status: respHdr.status,
         headers: headers,
       });
     }
