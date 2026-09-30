@@ -9,8 +9,16 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 
 const cfg = JSON.parse(process.env.WAILS_ELECTRON_CONFIG || '{}');
+app.on('preload-error', (_event, preloadPath, error) => {
+  process.stderr.write('[wails-electron] preload-error ' + preloadPath + ': ' + (error && error.message || error) + '\n');
+});
+if (cfg.bridgePath) process.env.WAILS_ELECTRON_BRIDGE_PATH = cfg.bridgePath;
+if (cfg.nativeAddon) process.env.WAILS_ELECTRON_NATIVE_ADDON = cfg.nativeAddon;
 const windows = new Map(); // windowID -> BrowserWindow
 const byWebContents = new Map(); // webContents -> windowID
+
+// Benchmark baseline: pure renderer<->main Electron IPC round trip, no Go.
+ipcMain.handle('compat:ping', (_event, payload) => payload);
 
 function send(obj) {
   try { process.stdout.write(JSON.stringify(obj) + '\n'); } catch (e) { /* host gone */ }
@@ -81,6 +89,31 @@ function createWindow(p) {
   windows.set(p.id, win);
   byWebContents.set(win.webContents, p.id);
   const id = p.id;
+  // Renderer console → host stderr (the only observability channel for
+  // preload/page JS errors on this backend).
+  win.webContents.on('console-message', (_e, _level, message, _line, _source) => {
+    try { process.stderr.write('[renderer] ' + message + '\n'); } catch (e) {}
+  });
+  // One-time bootstrap for the native transport addon: paths travel as
+  // strings; after connect() the data plane is renderer addon <-> Go.
+  win.webContents.on('did-finish-load', () => {
+    win.webContents.executeJavaScript(
+      `JSON.stringify({ init: typeof __wailsNativeInit, shim: typeof window.chrome?.webview?.postMessage, native: typeof window.__nativeCall })`
+    ).then((r) => {
+      try { process.stderr.write('[wails-electron] renderer probe: ' + r + '\n'); } catch (e) {}
+      if (cfg.nativeAddon && cfg.bridgePath) {
+        return win.webContents.executeJavaScript(
+          `typeof __wailsNativeInit === 'function' && __wailsNativeInit(${JSON.stringify({ addon: cfg.nativeAddon, endpoint: cfg.bridgePath, token: cfg.bridgeToken })})`
+        ).then(() => {
+          try { process.stderr.write('[wails-electron] native init injected ok\n'); } catch (e) {}
+        }, (e) => {
+          try { process.stderr.write('[wails-electron] native init inject failed: ' + e + '\n'); } catch (_) {}
+        });
+      }
+    }, (e) => {
+      try { process.stderr.write('[wails-electron] probe executeJavaScript failed: ' + e + '\n'); } catch (_) {}
+    });
+  });
   win.on('close', () => winEvent(id, 'close'));
   win.on('closed', () => { winEvent(id, 'closed'); windows.delete(id); byWebContents.delete(win.webContents); });
   win.on('focus', () => winEvent(id, 'focus'));
@@ -207,6 +240,12 @@ setInterval(() => {
 
 ipcMain.on('wails:message', (event, msg) => {
   const id = byWebContents.get(event.sender) || 0;
+  try {
+    const probe = JSON.parse(msg);
+    if (probe && typeof probe.name === 'string' && probe.name.indexOf('compat:') === 0) {
+      process.stderr.write('[wails-electron] ' + probe.name + ' ' + String(probe.data) + '\n');
+    }
+  } catch (e) { /* not a compat diagnostic */ }
   send({ t: 'ev', e: 'message', p: { id: id, payload: msg } });
 });
 

@@ -54,16 +54,21 @@ if [ "$BACKEND_REPORTED" != "$BACKEND" ]; then
 fi
 echo "PASS: backend is $BACKEND_REPORTED"
 
+# the frontend transport matrix benchmark must complete after the suite;
+# every row of the latency table and every error is asserted from the log
 wait_log "compat: SUITE" 120
-# give the frontend benchmark a moment to report its latency table
-wait_log "compat: RPC" 20 || echo "NOTE: RPC table not reported (bench error or slow start)"
+wait_log "compat: BENCH-FINISHED" 180
+BENCH_ERRORS=$(grep -c "compat: BENCH-ERROR" "$LOG" || true)
+if [ "$BENCH_ERRORS" -ne 0 ]; then
+  grep "compat: BENCH-ERROR" "$LOG"
+  die "$BENCH_ERRORS bench error(s)"
+fi
 FAILS=$(grep -c "compat:.*FAIL" "$LOG" || true)
 if [ "$FAILS" -ne 0 ]; then
   grep "compat:" "$LOG"
   die "$FAILS compat check(s) failed"
 fi
-grep "compat: " "$LOG"
-echo "RPC latency table:"
-grep "compat: RPC" "$LOG" || echo "(no rpc table)"
+echo "RPC/transport latency table:"
+grep "compat: BENCH " "$LOG"
 echo "ALL PASS ($BACKEND)"
 exit 0

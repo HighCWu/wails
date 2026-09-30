@@ -15,7 +15,10 @@
 <script type="module">
   import * as wails from "/wails/runtime.js";
 
-  const PAYLOAD = "0123456789abcdef".repeat(4); // 64 bytes
+  // Payload-size sweep + transport matrix. Available transports depend on
+  // the experiment mode (see preload): __compatInvoke = pure Electron IPC,
+  // Call.ByName = fetch-ipc (Wails runtime), __nativeCall = N-API -> UDS -> Go.
+  const PAYLOAD_SIZES = [1, 64, 1024, 65536, 1048576];
   const METHOD = "main.CompatService.Ping";
 
   function pct(sorted, p) {
@@ -23,31 +26,52 @@
     return sorted[Math.max(0, i)];
   }
 
-  async function bench() {
-    try {
-      // service availability warm-up (first call may include lazy setup)
-      for (let i = 0; i < 20; i++) await wails.Call.ByName(METHOD, PAYLOAD);
-      const samples = [];
-      for (let i = 0; i < 200; i++) {
-        const t0 = performance.now();
-        const r = await wails.Call.ByName(METHOD, PAYLOAD);
-        const t1 = performance.now();
-        if (r !== PAYLOAD) { document.getElementById("rpc").textContent = "echo mismatch!"; return; }
-        samples.push(t1 - t0);
-      }
-      samples.sort((a, b) => a - b);
-      const p50 = pct(samples, 50).toFixed(3);
-      const p95 = pct(samples, 95).toFixed(3);
-      const avg = (samples.reduce((a, b) => a + b, 0) / samples.length).toFixed(3);
-      document.getElementById("rpc").textContent =
-        `rpc round trip n=${samples.length}  avg=${avg}ms  p50=${p50}ms  p95=${p95}ms`;
-      wails.Events.Emit("compat:rpc", {
-        n: samples.length, avg: Number(avg), p50: Number(p50), p95: Number(p95),
-      });
-    } catch (e) {
-      document.getElementById("rpc").textContent = "bench error: " + e;
-      wails.Events.Emit("compat:rpc-error", String(e && e.message || e));
+  async function benchPath(name, fn, size, n) {
+    const payload = "x".repeat(size);
+    for (let i = 0; i < 10; i++) await fn(payload); // warmup
+    const samples = [];
+    for (let i = 0; i < n; i++) {
+      const t0 = performance.now();
+      const r = await fn(payload);
+      const t1 = performance.now();
+      if (r !== payload) throw new Error(name + " echo mismatch");
+      samples.push(t1 - t0);
     }
+    samples.sort((a, b) => a - b);
+    return {
+      path: name, size: size, n: samples.length,
+      avg: Number((samples.reduce((a, b) => a + b, 0) / samples.length).toFixed(3)),
+      p50: Number(pct(samples, 50).toFixed(3)),
+      p95: Number(pct(samples, 95).toFixed(3)),
+      p99: Number(pct(samples, 99).toFixed(3)),
+    };
+  }
+
+  async function bench() {
+    const paths = [];
+    if (window.__compatInvoke) paths.push(["invoke", (p) => window.__compatInvoke(p)]);
+    paths.push(["fetch-ipc", (p) => wails.Call.ByName(METHOD, p)]);
+    // native transport arrives via late injection after page load — wait for it
+    const nativeDeadline = Date.now() + 10000;
+    while (!window.__nativeCall && Date.now() - nativeDeadline < 10000) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (window.__nativeCall) paths.push(["native-uds", (p) => window.__nativeCall(1, p)]);
+
+    for (const [name, fn] of paths) {
+      for (const size of PAYLOAD_SIZES) {
+        const n = size >= 1048576 ? 20 : size >= 65536 ? 50 : 100;
+        try {
+          const row = await benchPath(name, fn, size, n);
+          wails.Events.Emit("compat:bench", row);
+        } catch (e) {
+          wails.Events.Emit("compat:bench-error", name + " " + size + ": " + (e && e.message || e));
+        }
+      }
+      wails.Events.Emit("compat:bench-done", name);
+    }
+    wails.Events.Emit("compat:bench-finished", true);
+    document.getElementById("rpc").textContent = "bench complete";
   }
 
   bench();

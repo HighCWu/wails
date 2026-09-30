@@ -25,6 +25,11 @@ import (
 // window resolves its start URL.
 var platformSetAssetBaseURL func(scheme, host string)
 
+// platformStartNativeBridge is installed by the platform glue to host the
+// per-instance local IPC endpoint (Unix socket on Linux) that the
+// renderer's native transport addon dials.
+var platformStartNativeBridge func() (string, string, error)
+
 type electronBackendState struct {
 	mu        sync.Mutex
 	proc      *electron.Process
@@ -116,8 +121,21 @@ func startPlatformElectron(app *App) error {
 		// CI containers; opt out explicitly rather than fail to launch.
 		switches = append(switches, "--no-sandbox")
 	}
+	bridgePath, bridgeToken := "", ""
+	nativeAddon := os.Getenv("WAILS_ELECTRON_NATIVE_ADDON")
+	if os.Getenv("WAILS_ELECTRON_EXPERIMENT") == "native-ipc" && platformStartNativeBridge != nil {
+		path, token, err := platformStartNativeBridge()
+		if err != nil {
+			return err
+		}
+		bridgePath, bridgeToken = path, token
+	}
+
 	proc, err := electron.Start(exe, bootstrap, preload, switches, map[string]any{
-		"assetsURL": electronBackend.assetsURL,
+		"assetsURL":   electronBackend.assetsURL,
+		"bridgePath":  bridgePath,
+		"bridgeToken": bridgeToken,
+		"nativeAddon": nativeAddon,
 	})
 	if err != nil {
 		return err

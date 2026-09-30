@@ -62,6 +62,26 @@ func main() {
 			app.Logger.Error("compat: rpc-error " + msg)
 		}
 	})
+	app.Event.On("compat:bench", func(e *application.CustomEvent) {
+		if data, ok := e.Data.(map[string]any); ok {
+			app.Logger.Info(fmt.Sprintf(
+				"compat: BENCH path=%v size=%v n=%v avg=%vms p50=%vms p95=%vms p99=%vms",
+				data["path"], data["size"], data["n"], data["avg"], data["p50"], data["p95"], data["p99"]))
+		}
+	})
+	app.Event.On("compat:bench-error", func(e *application.CustomEvent) {
+		if msg, ok := e.Data.(string); ok {
+			app.Logger.Error("compat: BENCH-ERROR " + msg)
+		}
+	})
+	app.Event.On("compat:bench-done", func(e *application.CustomEvent) {
+		if name, ok := e.Data.(string); ok {
+			app.Logger.Info(fmt.Sprintf("compat: BENCH-DONE path=%s", name))
+		}
+	})
+	app.Event.On("compat:bench-finished", func(e *application.CustomEvent) {
+		app.Logger.Info("compat: BENCH-FINISHED")
+	})
 
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		go func() {
