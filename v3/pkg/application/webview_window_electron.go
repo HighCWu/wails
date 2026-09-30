@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 	"unsafe"
@@ -36,6 +37,10 @@ type electronWindow struct {
 	// so a page that crashes on every load cannot turn into a reload loop
 	lastCrashReload time.Time
 }
+
+// set from WAILS_ELECTRON_DEBUG=1 at backend start; window state events
+// are the only observability into what the Electron process did.
+var debugElectronWindowEvents = os.Getenv("WAILS_ELECTRON_DEBUG") == "1"
 
 func newElectronWindow(parent *WebviewWindow) *electronWindow {
 	return &electronWindow{parent: parent, zoomLevel: 1.0, visible: true}
@@ -143,6 +148,10 @@ func (w *electronWindow) handleEvent(ev electron.Event) {
 	_ = json.Unmarshal(ev.Params, &b)
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if debugElectronWindowEvents {
+		globalApplication.Logger.Debug("electron window event",
+			"window", w.parent.ID(), "event", ev.Name)
+	}
 	switch ev.Name {
 	case "resize", "move":
 		if b.Width > 0 && b.Height > 0 {

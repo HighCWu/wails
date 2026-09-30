@@ -50,7 +50,10 @@
   async function bench() {
     const paths = [];
     if (window.__compatInvoke) paths.push(["invoke", (p) => window.__compatInvoke(p)]);
-    paths.push(["fetch-ipc", (p) => wails.Call.ByName(METHOD, p)]);
+    // Call.ByName rides whichever transport the preload installed for
+    // /wails/runtime: the UDS data plane (native-http) or fetch-ipc.
+    paths.push([window.__nativeHttpActive ? "native-uds-http" : "fetch-ipc",
+      (p) => wails.Call.ByName(METHOD, p)]);
     // native transport arrives via late injection after page load — wait for it
     const nativeDeadline = Date.now() + 10000;
     while (!window.__nativeCall && Date.now() - nativeDeadline < 10000) {

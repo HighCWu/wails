@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,11 +17,14 @@ import (
 	"time"
 )
 
-// nativeBridgeListener hosts the per-instance Unix socket endpoint that the
-// renderer's native transport addon dials (fetch-ipc experiment sibling:
-// WAILS_ELECTRON_EXPERIMENT=native-ipc). Frames are JSONL
-// {"id":N,"payload":"..."} and are echoed back — this measures the pure
-// renderer→Go transport (see examples/webview-compat).
+// nativeBridgeListener hosts the per-instance Unix socket endpoint that
+// the renderer's native transport addon dials. Frames are JSONL:
+//
+//	{"id":N,"payload":"..."}                                 -> echo (benchmark)
+//	{"id":N,"type":"http","method":..,"url":..,"body":"..."}  -> /wails/runtime
+//
+// The http form is the promoted bindings data plane: renderer fetch ->
+// UDS -> asset server in-process — no network stack, no Electron IPC.
 var nativeBridge struct {
 	mu    sync.Mutex
 	path  string
@@ -28,7 +32,7 @@ var nativeBridge struct {
 	ln    net.Listener
 }
 
-func startNativeBridgeListener() (string, string, error) {
+func startNativeBridgeListener(serveHTTP func(method, rawURL, body string) (int, string, string, error)) (string, string, error) {
 	dir, err := dirForBridgeSocket()
 	if err != nil {
 		return "", "", err
@@ -56,7 +60,7 @@ func startNativeBridgeListener() (string, string, error) {
 			if err != nil {
 				return
 			}
-			go serveNativeBridgeConn(conn, tokenHex)
+			go serveNativeBridgeConn(conn, tokenHex, serveHTTP)
 		}
 	}()
 	return path, tokenHex, nil
@@ -68,7 +72,7 @@ func nativeBridgePath() string {
 	return nativeBridge.path
 }
 
-func serveNativeBridgeConn(conn net.Conn, expectedToken string) {
+func serveNativeBridgeConn(conn net.Conn, expectedToken string, serveHTTP func(method, rawURL, body string) (int, string, string, error)) {
 	defer conn.Close()
 	// HELLO handshake: the first frame must carry the per-instance token;
 	// anything else is a foreign local process and gets dropped silently.
@@ -87,7 +91,8 @@ func serveNativeBridgeConn(conn net.Conn, expectedToken string) {
 	conn.Write([]byte(`{"ready":true}` + "\n"))
 	// Echo benchmark frames verbatim: the sweep measures the pure
 	// transport, so the host does not re-parse megabyte payloads here.
-	// (A production data plane plugs its own frame handler in here.)
+	// http frames are the promoted bindings data plane — they carry the
+	// /wails/runtime request and get a structured response frame.
 	// A fixed-slice reader would turn a 1MB frame into dozens of read
 	// syscalls; a self-managed buffer read straight from the conn keeps
 	// the host cost at a handful of reads + one writev per frame.
@@ -100,10 +105,47 @@ func serveNativeBridgeConn(conn net.Conn, expectedToken string) {
 		if len(line) == 0 {
 			continue
 		}
+		// the http marker travels inside the JSON-escaped payload string
+		if bytes.Contains(line, []byte("\\\"type\\\":\\\"http\\\"")) {
+			serveHTTPFrame(conn, line, serveHTTP)
+			continue
+		}
 		if err := writeFrame(conn, line); err != nil {
 			return
 		}
 	}
+}
+
+// serveHTTPFrame handles one {"id":N,"type":"http",...} frame: run the
+// request through the asset server and answer with
+// {"id":N,"status":..,"contentType":..,"payload":"<base64>"}.
+func serveHTTPFrame(conn net.Conn, line []byte, serveHTTP func(method, rawURL, body string) (int, string, string, error)) {
+	var req struct {
+		ID     int    `json:"id"`
+		Method string `json:"method"`
+		URL    string `json:"url"`
+		Body   string `json:"body"`
+	}
+	if err := json.Unmarshal(line, &req); err != nil {
+		return
+	}
+	if req.Method == "" {
+		req.Method = http.MethodGet
+	}
+	inner := map[string]any{}
+	status, contentType, bodyB64, err := serveHTTP(req.Method, req.URL, req.Body)
+	if err != nil {
+		inner["err"] = err.Error()
+	} else {
+		inner["status"] = status
+		inner["contentType"] = contentType
+		inner["payload"] = bodyB64
+	}
+	// The addon resolves the frame's payload string verbatim, so the
+	// structured response travels as an inner JSON document.
+	innerJSON, _ := json.Marshal(inner)
+	out, _ := json.Marshal(map[string]any{"id": req.ID, "payload": string(innerJSON)})
+	_ = writeFrame(conn, out)
 }
 
 // readFrame reads one '\n'-terminated frame into *buf (grown as needed,

@@ -31,7 +31,7 @@
 
 static int g_fd = -1;
 static int g_connected = 0;
-static pthread_t g_reader;
+static uint64_t g_gen = 0;
 static napi_threadsafe_function g_tsfn;
 
 // Pending calls live only on the JS thread (inserted by call(), consumed
@@ -89,20 +89,35 @@ static int write_all(int fd, const char *buf, size_t len) {
 // Bulk copies with memchr; the buffer is sized from the socket's pending
 // byte count (FIONREAD) so megabyte frames allocate once instead of
 // walking a realloc+copy chain.
-static char *read_line(int fd, size_t *out_len) {
-  size_t cap = 16384, len = 0;
-  char *buf = malloc(cap);
-  if (!buf) return NULL;
+// Per-connection read context: bytes after a newline (frames can arrive
+// back-to-back once the bindings data plane runs concurrent requests)
+// are kept for the next read instead of dropped. Each connection's
+// reader owns its context — never shared between threads.
+typedef struct {
+  char *buf;
+  size_t cap, len;
+} read_ctx_t;
+
+static char *read_line_ctx(read_ctx_t *ctx, int fd, size_t *out_len) {
+  size_t cap = ctx->cap ? ctx->cap : 16384, len = ctx->len;
+  char *buf = ctx->buf;
+  if (!buf) {
+    buf = malloc(cap);
+    if (!buf) return NULL;
+  }
   for (;;) {
     char *nl = memchr(buf, '\n', len);
     if (nl) {
       size_t line_len = (size_t)(nl - buf);
       *nl = '\0';
-      // Calls are dispatched by id, so responses cannot interleave
-      // inside one frame; residue after a line means a protocol
-      // violation and is dropped.
+      size_t rest = len - (line_len + 1);
+      if (rest > 0) memmove(buf, nl + 1, rest);
+      len = rest;
+      ctx->buf = buf;
+      ctx->cap = cap;
+      ctx->len = len;
       *out_len = line_len;
-      return buf;
+      return buf; // valid until the next read_line_ctx on this ctx
     }
     if (len == cap) {
       size_t want = cap * 2;
@@ -115,6 +130,7 @@ static char *read_line(int fd, size_t *out_len) {
       char *nb = realloc(buf, cap);
       if (!nb) {
         free(buf);
+        ctx->buf = NULL;
         return NULL;
       }
       buf = nb;
@@ -123,10 +139,12 @@ static char *read_line(int fd, size_t *out_len) {
     if (n < 0) {
       if (errno == EINTR) continue;
       free(buf);
+      ctx->buf = NULL;
       return NULL;
     }
     if (n == 0) { // EOF
       free(buf);
+      ctx->buf = NULL;
       return NULL;
     }
     len += (size_t)n;
@@ -260,11 +278,26 @@ static napi_deferred pending_take(int id) {
 
 // ---- reader thread ----
 
+// Reader threads are detached and tagged with a generation. A new
+// connect() bumps the generation and shuts the old fd down; the old
+// reader then exits on its own thread and closes its fd. We never
+// pthread_join from the JS thread: a stalled reader's tsfn dispatch
+// needs the main thread, so joining from connect() deadlocks.
+typedef struct {
+  int fd;
+  uint64_t gen;
+  read_ctx_t rctx;
+} reader_arg_t;
+
 static void *reader_main(void *arg) {
-  (void)arg;
+  reader_arg_t *ra = arg;
+  const int fd = ra->fd;
+  const uint64_t my_gen = ra->gen;
+  read_ctx_t *rctx = &ra->rctx;
   for (;;) {
+    if (my_gen != g_gen) break; // superseded by a newer connect()
     size_t line_len = 0;
-    char *line = read_line(g_fd, &line_len);
+    char *line = read_line_ctx(rctx, fd, &line_len);
     if (!line) break; // EOF, error or 10s quiet timeout
 
     result_msg_t *m = calloc(1, sizeof(*m));
@@ -272,7 +305,6 @@ static void *reader_main(void *arg) {
     int id = idpos ? atoi(idpos + 5) : -1;
     size_t plen = 0;
     char *payload = json_payload_of(line, &plen);
-    free(line);
     if (!payload || id < 0) {
       free(payload);
       m->id = -1;
@@ -281,17 +313,25 @@ static void *reader_main(void *arg) {
       m->id = id;
       m->payload = payload;
     }
-    if (napi_call_threadsafe_function(g_tsfn, m, napi_tsfn_nonblocking) != napi_ok) {
-      free_msg(m); // environment is shutting down
+    if (my_gen != g_gen ||
+        napi_call_threadsafe_function(g_tsfn, m, napi_tsfn_nonblocking) != napi_ok) {
+      free_msg(m); // superseded or environment shutting down
       break;
     }
   }
   // Connection lost (or timed out): one poison message rejects every
-  // pending call on the JS thread.
-  result_msg_t *m = calloc(1, sizeof(*m));
-  m->id = -1;
-  m->err = strdup(errno == EAGAIN ? "host reply timed out" : "connection to host lost");
-  napi_call_threadsafe_function(g_tsfn, m, napi_tsfn_nonblocking);
+  // pending call on the JS thread. Stale-generation exits skip the
+  // poison — the winning connection owns the pending table now.
+  if (my_gen == g_gen) {
+    result_msg_t *m = calloc(1, sizeof(*m));
+    m->id = -1;
+    m->err = strdup(errno == EAGAIN ? "host reply timed out" : "connection to host lost");
+    napi_call_threadsafe_function(g_tsfn, m, napi_tsfn_nonblocking);
+    g_connected = 0;
+  }
+  close(fd); // this reader owned its fd copy
+  free(rctx->buf);
+  free(ra);
   return NULL;
 }
 
@@ -337,16 +377,16 @@ static void CallJsDispatch(napi_env env, napi_value js_cb, void *context, void *
   free_msg(m);
 }
 
-static void teardown_connection(void) {
+// Retire the previous connection without joining: shutdown wakes the
+// detached reader, the generation bump makes it exit quietly, and it
+// closes its own fd copy on the way out. Joining from the JS thread
+// would deadlock — a stalled reader's tsfn dispatch needs this thread.
+static void retire_old_connection(void) {
   if (g_fd >= 0) {
-    shutdown(g_fd, SHUT_RDWR); // wakes the reader thread
-  }
-  pthread_join(g_reader, NULL);
-  if (g_fd >= 0) {
-    close(g_fd);
+    shutdown(g_fd, SHUT_RDWR);
     g_fd = -1;
   }
-  napi_release_threadsafe_function(g_tsfn, napi_tsfn_release);
+  g_gen++;
   g_connected = 0;
 }
 
@@ -467,9 +507,7 @@ static napi_value Connect(napi_env env, napi_callback_info info) {
   napi_get_value_string_utf8(env, argv[0], endpoint, sizeof(endpoint) - 1, &n);
   napi_get_value_string_utf8(env, argv[1], token, sizeof(token) - 1, &n);
 
-  if (g_connected) {
-    teardown_connection();
-  }
+  retire_old_connection();
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);
   if (fd < 0) {
     trace_err("socket");
@@ -500,49 +538,63 @@ static napi_value Connect(napi_env env, napi_callback_info info) {
   int bufsz = 4 * 1024 * 1024;
   setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof(bufsz));
   setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof(bufsz));
+  read_ctx_t hctx = {0};
   size_t line_len = 0;
-  char *line = read_line(fd, &line_len);
+  char *line = read_line_ctx(&hctx, fd, &line_len);
   if (!line || !strstr(line, "\"ready\":true")) {
     fprintf(stderr, "[go-bridge] ERROR handshake got: %s\n", line ? line : "(eof)");
-    free(line);
     close(fd);
     napi_throw_error(env, NULL, "handshake failed");
     return NULL;
   }
-  free(line);
 
-  napi_value placeholder, resource_name;
-  napi_create_function(env, "dispatch", NAPI_AUTO_LENGTH, DispatchNoop, NULL, &placeholder);
-  napi_create_string_utf8(env, "go-bridge", NAPI_AUTO_LENGTH, &resource_name);
-  napi_status tsfn_st = napi_create_threadsafe_function(
-      env, placeholder, NULL, resource_name, 0, 1, NULL, NULL, NULL,
-      CallJsDispatch, &g_tsfn);
-  if (tsfn_st != napi_ok) {
-    fprintf(stderr, "[go-bridge] ERROR tsfn create status=%d\n", (int)tsfn_st);
-    close(fd);
-    napi_throw_error(env, NULL, "failed to create dispatch queue");
-    return NULL;
+  if (!g_tsfn) {
+    // created once for the process; stale-generation readers reuse it
+    // safely (their results are dropped by the pending table)
+    napi_value placeholder, resource_name;
+    napi_create_function(env, "dispatch", NAPI_AUTO_LENGTH, DispatchNoop, NULL, &placeholder);
+    napi_create_string_utf8(env, "go-bridge", NAPI_AUTO_LENGTH, &resource_name);
+    napi_status tsfn_st = napi_create_threadsafe_function(
+        env, placeholder, NULL, resource_name, 0, 1, NULL, NULL, NULL,
+        CallJsDispatch, &g_tsfn);
+    if (tsfn_st != napi_ok) {
+      fprintf(stderr, "[go-bridge] ERROR tsfn create status=%d\n", (int)tsfn_st);
+      close(fd);
+      napi_throw_error(env, NULL, "failed to create dispatch queue");
+      return NULL;
+    }
   }
   g_fd = fd;
   g_connected = 1;
-  if (pthread_create(&g_reader, NULL, reader_main, NULL) != 0) {
-    napi_release_threadsafe_function(g_tsfn, napi_tsfn_release);
+  reader_arg_t *ra = malloc(sizeof(*ra));
+  if (!ra) {
+    close(fd);
+    g_fd = -1;
+    g_connected = 0;
+    napi_throw_error(env, NULL, "out of memory");
+    return NULL;
+  }
+  ra->fd = fd;
+  ra->gen = g_gen;
+  memset(&ra->rctx, 0, sizeof(ra->rctx));
+  pthread_t reader;
+  if (pthread_create(&reader, NULL, reader_main, ra) != 0) {
+    free(ra);
     close(fd);
     g_fd = -1;
     g_connected = 0;
     napi_throw_error(env, NULL, "failed to start reader thread");
     return NULL;
   }
-  TRACE("connected endpoint=%s", endpoint);
+  pthread_detach(reader);
+  TRACE("connected endpoint=%s gen=%llu", endpoint, (unsigned long long)g_gen);
   return NULL;
 }
 
 static napi_value Close(napi_env env, napi_callback_info info) {
   (void)env;
   (void)info;
-  if (g_connected) {
-    teardown_connection();
-  }
+  retire_old_connection();
   return NULL;
 }
 

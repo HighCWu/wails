@@ -28,7 +28,9 @@ var platformSetAssetBaseURL func(scheme, host string)
 // platformStartNativeBridge is installed by the platform glue to host the
 // per-instance local IPC endpoint (Unix socket on Linux) that the
 // renderer's native transport addon dials.
-var platformStartNativeBridge func() (string, string, error)
+// serveHTTP runs a /wails/runtime request through the asset server and
+// returns status, content type and base64 body for the native transport.
+var platformStartNativeBridge func(serveHTTP func(method, rawURL, body string) (int, string, string, error)) (string, string, error)
 
 type electronBackendState struct {
 	mu        sync.Mutex
@@ -135,7 +137,9 @@ func startPlatformElectron(app *App) error {
 		}
 	}
 	if hasNative && nativeAddon != "" && platformStartNativeBridge != nil {
-		path, token, err := platformStartNativeBridge()
+		path, token, err := platformStartNativeBridge(func(method, rawURL, body string) (int, string, string, error) {
+			return serveWebviewRequestDirect(app, method, rawURL, body)
+		})
 		if err != nil {
 			return err
 		}
@@ -184,21 +188,36 @@ func handleWebviewRequest(app *App, params json.RawMessage) (any, error) {
 	if p.Method == "" {
 		p.Method = http.MethodGet
 	}
+	status, contentType, bodyB64, err := serveWebviewRequestDirect(app, p.Method, p.URL, p.Body)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"status":      status,
+		"body":        bodyB64,
+		"contentType": contentType,
+	}, nil
+}
+
+// serveWebviewRequestDirect runs a /wails/runtime request through the
+// asset server in-process. Shared by the control protocol (fetch-ipc)
+// and the native UDS transport (native-uds promotion).
+func serveWebviewRequestDirect(app *App, method, rawURL, body string) (status int, contentType string, bodyB64 string, err error) {
 	header := http.Header{}
-	if u, err := url.Parse(p.URL); err == nil && u.Host != "" {
+	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
 		header.Set("Host", u.Host)
 	}
-	var body io.ReadCloser
-	if p.Body != "" {
-		body = io.NopCloser(strings.NewReader(p.Body))
+	var bodyRC io.ReadCloser
+	if body != "" {
+		bodyRC = io.NopCloser(strings.NewReader(body))
 	}
 
 	rw := newStdioResponseWriter()
 	req := &stdioWebViewRequest{
-		method: p.Method,
-		url:    p.URL,
+		method: method,
+		url:    rawURL,
 		header: header,
-		body:   body,
+		body:   bodyRC,
 		rw:     rw,
 	}
 	app.assets.ServeWebViewRequest(req)
@@ -206,13 +225,9 @@ func handleWebviewRequest(app *App, params json.RawMessage) (any, error) {
 	select {
 	case <-rw.done:
 	case <-time.After(15 * time.Second):
-		return nil, errors.New("webviewRequest timeout")
+		return 0, "", "", errors.New("webviewRequest timeout")
 	}
-	return map[string]any{
-		"status":      rw.code,
-		"body":        base64.StdEncoding.EncodeToString(rw.buf.Bytes()),
-		"contentType": rw.header.Get("Content-Type"),
-	}, nil
+	return rw.code, rw.header.Get("Content-Type"), base64.StdEncoding.EncodeToString(rw.buf.Bytes()), nil
 }
 
 // stdioWebViewRequest adapts a control-protocol request to the

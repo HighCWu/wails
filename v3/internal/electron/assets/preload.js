@@ -19,6 +19,44 @@ window.chrome.webview = {
   postMessage: (msg) => { ipcRenderer.send('wails:message', msg); },
 };
 
+// Native UDS bindings data plane (native-ipc mode): /wails/runtime
+// fetches go over the addon's direct socket to the asset server —
+// no network stack, no Electron IPC. Takes precedence over fetch-ipc.
+let __nativeHttpInstalled = false;
+let __nativeSeq = 1;
+function installNativeHttpFetch() {
+  if (__nativeHttpInstalled) return;
+  __nativeHttpInstalled = true;
+  const origFetch = window.fetch.bind(window);
+  window.fetch = async (input, init) => {
+    let url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (url.indexOf('/wails/runtime') !== -1 && window.__nativeCall) {
+      url = new URL(url, location.href).toString();
+      const body = init && init.body != null ? String(init.body) : '';
+      const resp = await window.__nativeCall(__nativeSeq++, JSON.stringify({
+        type: 'http',
+        method: (init && init.method) || 'GET',
+        url: url,
+        body: body,
+      }));
+      const parsed = JSON.parse(resp);
+      if (parsed.err) throw new Error(parsed.err);
+      const headers = new Headers();
+      if (parsed.contentType) headers.set('Content-Type', parsed.contentType);
+      const bin = atob(parsed.payload || '');
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new Response(bytes.length ? bytes : null, {
+        status: parsed.status,
+        headers: headers,
+      });
+    }
+    return origFetch(input, init);
+  };
+  window.__nativeHttpActive = true;
+  console.log('[wails-electron preload] native-uds fetch override installed');
+}
+
 if (expModes.includes('fetch-ipc')) {
   const origFetch = window.fetch.bind(window);
   window.fetch = async (input, init) => {
@@ -65,4 +103,7 @@ window.__wailsNativeInit = (initConfig) => {
   bridge.connect(initConfig.endpoint, initConfig.token);
   window.__nativeCall = (id, payload) => bridge.call(id, payload);
   console.log('[wails-electron preload] native-uds transport ready');
+  // gated: the ipcRenderer onMessage path SIGABRTs under this mode
+  // (see promoted5/6 logs) — enable with native-http to keep debugging
+  if (expModes.includes('native-http')) installNativeHttpFetch();
 };
