@@ -95,6 +95,15 @@ func main() {
 		go func() {
 			app.Logger.Info(fmt.Sprintf("compat: backend=%s", app.WebviewBackend()))
 			time.Sleep(1 * time.Second) // let the page finish loading
+			if os.Getenv("WAILS_COMPAT_DEVTOOLS") == "1" {
+				// open DevTools (detach mode) before the suite, verify the
+				// main window still works with it open, and let the app
+				// exit with DevTools up — the shutdown path must account
+				// for the DevTools webContents
+				win.OpenDevTools()
+				time.Sleep(2 * time.Second)
+				app.Logger.Info("compat: DEVTOOLS opened")
+			}
 			if os.Getenv("WAILS_COMPAT_CHURN") == "1" {
 				// independent windows; runs regardless of the suite
 				// verdict so known suite gaps can't gate lifecycle work
