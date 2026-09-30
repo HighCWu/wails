@@ -266,6 +266,20 @@ func serveInvokeMessage(conn net.Conn, obj map[string]any, serveHTTP func(method
 	if method == "" {
 		method = http.MethodGet
 	}
+	// The runtime (with __wailsV8Body gating) sends the call object
+	// v8-serialized: decode it back to the JSON shape the bindings
+	// pipeline consumes. Plain JSON bodies pass through untouched.
+	if bytes.HasPrefix([]byte(body), []byte{0xFF, 0x0F}) {
+		if decoded, derr := v8serde.Deserialize([]byte(body)); derr == nil {
+			if b, merr := json.Marshal(decoded); merr == nil {
+				body = string(b)
+			} else {
+				return fmt.Errorf("v8 body re-marshal: %w", merr)
+			}
+		} else {
+			return fmt.Errorf("v8 body decode: %w", derr)
+		}
+	}
 	status, contentType, respBody, err := serveHTTP(method, rawURL, body, hdr)
 	if err != nil {
 		respBody = []byte(err.Error())

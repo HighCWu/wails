@@ -105,6 +105,10 @@ window.__wailsNativeInit = (initConfig) => {
   if (window.__nativeCall) return; // idempotent across navigations
   const bridge = require(initConfig.addon);
   bridge.connect(initConfig.endpoint, initConfig.token);
+  // runtime.js gates its call-body encoding on this: when present, the
+  // call object is v8-serialized (binary, args object direct) instead
+  // of JSON.stringify'd — eliminating the text-encode hop on the wire
+  window.__wailsV8Serialize = (obj) => require('v8').serialize(obj);
   // echo diagnostics ride the v3 invoke frame (channel: "echo") —
   // the message is v8-serialized like every other frame on the wire
   window.__nativeEcho = (payload) => {
