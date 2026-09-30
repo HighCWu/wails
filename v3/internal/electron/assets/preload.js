@@ -123,16 +123,22 @@ window.__wailsNativeInit = (initConfig) => {
   if (window.__nativeCall) return; // idempotent across navigations
   const bridge = require(initConfig.addon);
   bridge.connect(initConfig.endpoint, initConfig.token);
-  // echo diagnostics ride the v3 invoke frame (channel: "echo")
+  // echo diagnostics ride the v3 invoke frame (channel: "echo") —
+  // the message is v8-serialized like every other frame on the wire
   window.__nativeEcho = (payload) => {
-    const msg = new TextEncoder().encode(JSON.stringify({
+    const msg = require('v8').serialize({
       id: 0, channel: 'echo', payload: payload,
-    }));
-    return bridge.invoke(msg).then((r) => JSON.parse(new TextDecoder().decode(r)).payload);
+    });
+    return bridge.invoke(msg).then((r) => {
+      const decoded = require('v8').deserialize(r);
+      return decoded.payload;
+    });
   };
   window.__nativeCall = (id, payload) => bridge.call(id, payload);
   console.log('[wails-electron preload] native-uds transport ready');
-  // gated: the ipcRenderer onMessage path SIGABRTs under this mode
-  // (see promoted5/6 logs) — enable with native-http to keep debugging
-  if (expModes.includes('native-http')) installNativeHttpFetch();
+  // native-http is the DEFAULT data plane for the native-ipc mode
+  // (frame v3, bindings over UDS). Opt out with 'no-native-http'.
+  const wantNativeHttp = expModes.includes('native-http') ||
+    (expModes.includes('native-ipc') && !expModes.includes('no-native-http'));
+  if (wantNativeHttp) installNativeHttpFetch();
 };
