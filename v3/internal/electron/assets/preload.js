@@ -40,7 +40,7 @@ if (expModes.includes('fetch-ipc')) {
     }
     return origFetch(input, init);
   };
-  try { process.stderr.write('[wails-electron preload] fetch-ipc override installed\n'); } catch (e) {}
+  console.log('[wails-electron preload] fetch-ipc override installed');
 }
 
 function reportPreloadError(msg) {
@@ -53,18 +53,16 @@ if (expModes.includes('invoke-baseline')) {
   window.__compatInvoke = (payload) => ipcRenderer.invoke('compat:ping', payload);
 }
 
-if (expModes.includes('native-ipc')) {
-  // Native transport (WAILS_ELECTRON_EXPERIMENT includes native-ipc): the
-  // bootstrap is a one-time string injection from the main process
-  // (executeJavaScript after did-finish-load) — the data plane after
-  // connect() is the addon's own socket; main is not involved. The page
-  // waits briefly for __nativeCall before benching the native row.
-  window.__wailsNativeInit = (initConfig) => {
-  try { process.stderr.write('[wails-electron preload] __wailsNativeInit called addon=' + initConfig.addon + ' endpoint=' + initConfig.endpoint + '\n'); } catch (e) {}
-    if (window.__nativeCall) return; // idempotent across navigations
-    const bridge = require(initConfig.addon);
-    bridge.connect(initConfig.endpoint, initConfig.token);
-    window.__nativeCall = (id, payload) => bridge.call(id, payload);
-    try { process.stderr.write('[wails-electron preload] native-uds transport ready\n'); } catch (e) {}
-  };
-}
+// Native transport (WAILS_ELECTRON_EXPERIMENT includes native-ipc): the
+// bootstrap is a one-time string injection from the main process
+// (executeJavaScript after did-finish-load) — the data plane after
+// connect() is the addon's own socket; main is not involved. The page
+// waits briefly for __nativeCall before benching the native row.
+window.__wailsNativeInit = (initConfig) => {
+  console.log('[wails-electron preload] __wailsNativeInit called addon=' + initConfig.addon + ' endpoint=' + initConfig.endpoint);
+  if (window.__nativeCall) return; // idempotent across navigations
+  const bridge = require(initConfig.addon);
+  bridge.connect(initConfig.endpoint, initConfig.token);
+  window.__nativeCall = (id, payload) => bridge.call(id, payload);
+  console.log('[wails-electron preload] native-uds transport ready');
+};

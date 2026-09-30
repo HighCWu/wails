@@ -45,6 +45,8 @@ sleep 1
 env WAILS_WEBVIEW_BACKEND="$BACKEND" \
     ${WAILS_ELECTRON_DIR:+WAILS_ELECTRON_DIR=$WAILS_ELECTRON_DIR} \
     ${WAILS_ELECTRON_DISABLE_SANDBOX:+WAILS_ELECTRON_DISABLE_SANDBOX=$WAILS_ELECTRON_DISABLE_SANDBOX} \
+    ${WAILS_ELECTRON_EXPERIMENT:+WAILS_ELECTRON_EXPERIMENT=$WAILS_ELECTRON_EXPERIMENT} \
+    ${WAILS_ELECTRON_NATIVE_ADDON:+WAILS_ELECTRON_NATIVE_ADDON=$WAILS_ELECTRON_NATIVE_ADDON} \
     DISPLAY="$DISP" "$APP" >"$LOG" 2>&1 & APP_PID=$!
 
 wait_log "compat: backend=" 120
@@ -63,6 +65,18 @@ if [ "$BENCH_ERRORS" -ne 0 ]; then
   grep "compat: BENCH-ERROR" "$LOG"
   die "$BENCH_ERRORS bench error(s)"
 fi
+# native-ipc mode: the renderer addon must have benched every payload size
+# over the UDS transport (5 sizes), proving connect + handshake + echo.
+case ",${WAILS_ELECTRON_EXPERIMENT:-}," in
+  *,native-ipc,*)
+    NATIVE_ROWS=$(grep -c "compat: BENCH path=native-uds" "$LOG" || true)
+    if [ "$NATIVE_ROWS" -ne 5 ]; then
+      grep "native" "$LOG" | head -20
+      die "expected 5 native-uds bench rows, got $NATIVE_ROWS"
+    fi
+    echo "PASS: native-uds bench rows complete (5/5)"
+    ;;
+esac
 FAILS=$(grep -c "compat:.*FAIL" "$LOG" || true)
 if [ "$FAILS" -ne 0 ]; then
   grep "compat:" "$LOG"

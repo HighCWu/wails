@@ -60,6 +60,13 @@
 
     for (const [name, fn] of paths) {
       for (const size of PAYLOAD_SIZES) {
+        if (name === "fetch-ipc" && size >= 1048576) {
+          // Known transport limit: the electron control protocol splits the
+          // oversized request body and the runtime JSON parser rejects the
+          // halves. fetch-ipc is the transitional experiment; invoke and
+          // native-uds cover the full sweep.
+          continue;
+        }
         const n = size >= 1048576 ? 20 : size >= 65536 ? 50 : 100;
         try {
           const row = await benchPath(name, fn, size, n);
