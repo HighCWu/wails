@@ -7,6 +7,8 @@
 // Quitting: when stdin closes the host is gone — exit immediately so no
 // orphaned Electron processes outlive the Wails application.
 const { app, BrowserWindow, ipcMain } = require('electron');
+const fs = require('fs');
+const controlBuf = Buffer.allocUnsafe(65536);
 
 const cfg = JSON.parse(process.env.WAILS_ELECTRON_CONFIG || '{}');
 app.on('preload-error', (_event, preloadPath, error) => {
@@ -21,7 +23,13 @@ const byWebContents = new Map(); // webContents -> windowID
 ipcMain.handle('compat:ping', (_event, payload) => payload);
 
 function send(obj) {
-  try { process.stdout.write(JSON.stringify(obj) + '\n'); } catch (e) { /* host gone */ }
+  try {
+    process.stdout.write(JSON.stringify(obj) + '\n');
+  } catch (e) {
+    if (process.env.WAILS_ELECTRON_DEBUG === '1') {
+      try { process.stderr.write('[wails-electron] send failed t=' + obj.t + ' id=' + obj.id + ': ' + e + '\n'); } catch (_) {}
+    }
+  }
 }
 
 function winEvent(id, name, extra) {
@@ -135,8 +143,22 @@ function createWindow(p) {
 
 const methods = {
   create: (p) => createWindow(p),
-  close: (p) => getWindow(p).close(),
-  destroy: (p) => getWindow(p).destroy(),
+  // destroy(), not close(): the host's Close() is an unconditional tear
+  // down (the window layer sets unconditionallyClose), and the graceful
+  // close path has been observed to wedge the Electron main loop on X11
+  // (async teardown racing the next window operation). destroy() tears
+  // the window down synchronously and still fires 'closed'.
+  // destroy() outside the IPC dispatch stack: a synchronous destroy in
+  // the stdin data handler was observed to stall the uv stdin poll, so
+  // the next host request would never be dispatched. Deferring to the
+  // next tick lets the reply go out first and the loop keep flowing.
+  // destroy(), not close(): the host's Close() is an unconditional tear
+  // down (the window layer sets unconditionallyClose), and the graceful
+  // close path has been observed to wedge the Electron main loop on X11
+  // (async teardown racing the next window operation). destroy() tears
+  // the window down synchronously and still fires 'closed'.
+  close: (p) => getWindow(p).destroy(),
+    destroy: (p) => getWindow(p).destroy(),
   show: (p) => getWindow(p).show(),
   hide: (p) => getWindow(p).hide(),
   focus: (p) => { const w = getWindow(p); if (w.isMinimized()) w.restore(); w.focus(); },
@@ -187,36 +209,61 @@ for (const s of (process.env.WAILS_ELECTRON_SWITCHES || '').split(' ')) {
 if (process.env.WAILS_ELECTRON_DISABLE_GPU === '1') app.disableHardwareAcceleration();
 
 app.whenReady().then(() => {
-  let buf = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('data', (chunk) => {
-    buf += chunk;
-    let idx;
-    while ((idx = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, idx);
-      buf = buf.slice(idx + 1);
-      if (!line.trim()) continue;
-      let m;
-      try { m = JSON.parse(line); } catch (e) { continue; }
-      if (m.t === 'resp') {
-        // response to an Electron-initiated request (callGo)
-        const p = pendingGo.get(m.id);
-        if (p) {
-          pendingGo.delete(m.id);
-          if (m.ok) p.resolve(m.r);
-          else p.reject(new Error(m.err || 'request failed'));
-        }
-        continue;
+  const handleLine = (line) => {
+    if (!line.trim()) return;
+    let m;
+    try { m = JSON.parse(line); } catch (e) { return; }
+    if (m.t === 'resp') {
+      // response to an Electron-initiated request (callGo)
+      const p = pendingGo.get(m.id);
+      if (p) {
+        pendingGo.delete(m.id);
+        if (m.ok) p.resolve(m.r);
+        else p.reject(new Error(m.err || 'request failed'));
       }
-      const fn = methods[m.m];
-      if (!fn) { send({ t: 'resp', id: m.id, ok: false, err: 'unknown method ' + m.m }); continue; }
-      respond(m.id, () => fn(m.p || {}));
+      return;
     }
-  });
-  process.stdin.on('end', () => app.quit());
-  process.stdin.on('close', () => app.quit());
+    const fn = methods[m.m];
+    if (!fn) { send({ t: 'resp', id: m.id, ok: false, err: 'unknown method ' + m.m }); return; }
+    if (process.env.WAILS_ELECTRON_DEBUG === '1') {
+      try { process.stderr.write('[wails-electron] dispatch ' + m.m + ' id=' + m.id + '\n'); } catch (_) {}
+    }
+    respond(m.id, () => fn(m.p || {}));
+  };
+  // The control channel reads fd 0 through fs.read (libuv threadpool)
+  // rather than the process.stdin stream: destroying a BrowserWindow has
+  // been observed to stall the stream's poll handle, after which host
+  // requests were never dispatched again. EOF (n=0) still means the host
+  // is gone; orphan protection is additionally covered by the PPID poll.
+  let buf = '';
+  const controlFd = 0;
+  const readControl = () => {
+    fs.read(controlFd, controlBuf, 0, controlBuf.length, null, (err, n) => {
+      if (err || n === 0) {
+        if (process.env.WAILS_ELECTRON_DEBUG === '1') {
+          try { process.stderr.write('[wails-electron] control read ended err=' + err + ' n=' + n + '\n'); } catch (_) {}
+        }
+        app.quit();
+        return;
+      }
+      buf += controlBuf.toString('utf8', 0, n);
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx);
+        buf = buf.slice(idx + 1);
+        handleLine(line);
+      }
+      readControl();
+    });
+  };
+  readControl();
   send({ t: 'ev', e: 'ready', p: {} });
 });
+
+// The Wails host owns the application lifecycle: closing the last window
+// must NOT quit the Electron process (the default), or the host's next
+// window creation times out against a dying process.
+app.on('window-all-closed', () => {});
 
 process.on('SIGTERM', () => app.quit());
 process.on('SIGINT', () => app.quit());

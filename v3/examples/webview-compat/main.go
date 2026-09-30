@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -94,6 +95,11 @@ func main() {
 		go func() {
 			app.Logger.Info(fmt.Sprintf("compat: backend=%s", app.WebviewBackend()))
 			time.Sleep(1 * time.Second) // let the page finish loading
+			if os.Getenv("WAILS_COMPAT_CHURN") == "1" {
+				// independent windows; runs regardless of the suite
+				// verdict so known suite gaps can't gate lifecycle work
+				runChurn(app)
+			}
 			runSuite(app, win)
 			if failures > 0 {
 				app.Logger.Info(fmt.Sprintf("compat: SUITE FAIL failures=%d", failures))
@@ -107,6 +113,54 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+// runChurn exercises window create/close churning: even windows are
+// closed after their page had time to load, odd windows are closed while
+// creation is still in flight. Every window must end up removed from the
+// window manager — a leak here hides double-create or missed-destroy
+// bugs behind a growing window count.
+//
+// KNOWN LIMITATION (electron backend, Electron 44 / X11): the first close
+// followed by another window creation wedges the Electron main loop —
+// no control-protocol request is dispatched again (investigated across
+// graceful close, destroy, deferred destroy, fs.read control channel;
+// cf. electron/electron#29050 for the domain). The churn leg is therefore
+// NOT enabled in CI for the electron backend until the runtime is
+// upgraded or the failure mode is pinned down further.
+func runChurn(app *application.App) {
+	for i := 0; i < 5; i++ {
+		even := i%2 == 0
+		win := app.Window.NewWithOptions(application.WebviewWindowOptions{
+			Name:   fmt.Sprintf("churn-%d", i),
+			Title:  fmt.Sprintf("churn-%d", i),
+			URL:    "/blank.html", // no runtime, no bench side effects
+			Width:  320,
+			Height: 200,
+		})
+		id := win.ID()
+		if even {
+			time.Sleep(1200 * time.Millisecond) // let the page settle
+		}
+		win.Close()
+		time.Sleep(300 * time.Millisecond) // let the backend drain the destroy
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, ok := app.Window.GetByID(id); !ok {
+				app.Logger.Info(fmt.Sprintf(
+					"compat: CHURN window=%d id=%d mode=%s removed=yes",
+					i, id, map[bool]string{true: "settled", false: "pending"}[even]))
+				break
+			}
+			if time.Now().After(deadline) {
+				app.Logger.Error(fmt.Sprintf(
+					"compat: CHURN FAIL window=%d id=%d still in manager after close", i, id))
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	app.Logger.Info("compat: CHURN PASS")
 }
 
 func runSuite(app *application.App, win *application.WebviewWindow) {
