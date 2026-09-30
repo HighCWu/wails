@@ -139,8 +139,17 @@ static char *read_exact_ctx(read_ctx_t *ctx, int fd, size_t n) {
   if (!out) return NULL;
   size_t have = ctx->len < n ? ctx->len : n;
   if (n >= 65536) {
-    fprintf(stderr, "[bt] exact n=%zu residue=%zu residue_head=%.200s\n",
-            n, ctx->len, ctx->buf ? ctx->buf : "(null)");
+    fprintf(stderr, "[bt] exact n=%zu residue=%zu\n", n, ctx->len);
+    if (ctx->len > 0) {
+      fprintf(stderr, "[bt] residue HEAD %.300s\n", ctx->buf);
+      size_t tail_start = ctx->len > 200 ? ctx->len - 200 : 0;
+      fprintf(stderr, "[bt] residue TAIL %.200s\n", ctx->buf + tail_start);
+      // byte-level diff anchors: find where the current response header
+      // would start ("{"bodyLen"") if present in the residue
+      char *bp = strstr(ctx->buf, "\"bodyLen\":");
+      fprintf(stderr, "[bt] residue contains bodyLen-hdr at offset: %td\n",
+              bp ? (ptrdiff_t)(bp - ctx->buf) : -1);
+    }
   }
   fprintf(stderr, "[bt] exact n=%zu residue=%zu\n", n, ctx->len);
   memcpy(out, ctx->buf, have);
