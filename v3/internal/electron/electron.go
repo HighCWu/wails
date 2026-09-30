@@ -103,10 +103,14 @@ type jsonEncoder interface {
 // wires up the control protocol. cfg is delivered to the bootstrap via the
 // WAILS_ELECTRON_CONFIG environment variable.
 func Start(exe, bootstrap, preload string, extraSwitches []string, cfg map[string]any) (*Process, error) {
-	configJSON, err := json.Marshal(map[string]any{
-		"assetsURL": cfg["assetsURL"],
-		"preload":   preload,
-	})
+	// Forward the caller's config verbatim (assetsURL, bridgePath, ...);
+	// only the preload path is Start's own concern.
+	full := make(map[string]any, len(cfg)+1)
+	for k, v := range cfg {
+		full[k] = v
+	}
+	full["preload"] = preload
+	configJSON, err := json.Marshal(full)
 	if err != nil {
 		return nil, err
 	}

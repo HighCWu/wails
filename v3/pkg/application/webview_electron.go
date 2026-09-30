@@ -123,12 +123,27 @@ func startPlatformElectron(app *App) error {
 	}
 	bridgePath, bridgeToken := "", ""
 	nativeAddon := os.Getenv("WAILS_ELECTRON_NATIVE_ADDON")
-	if os.Getenv("WAILS_ELECTRON_EXPERIMENT") == "native-ipc" && platformStartNativeBridge != nil {
+	// WAILS_ELECTRON_EXPERIMENT is a comma-separated mode list (the preload
+	// splits on ','), not a single value.
+	experiment := os.Getenv("WAILS_ELECTRON_EXPERIMENT")
+	expModes := strings.Split(experiment, ",")
+	hasNative := false
+	for _, m := range expModes {
+		if strings.TrimSpace(m) == "native-ipc" {
+			hasNative = true
+			break
+		}
+	}
+	if hasNative && nativeAddon != "" && platformStartNativeBridge != nil {
 		path, token, err := platformStartNativeBridge()
 		if err != nil {
 			return err
 		}
 		bridgePath, bridgeToken = path, token
+		app.Logger.Info("electron: native bridge listening", "path", bridgePath)
+	} else {
+		app.Logger.Info("electron: native bridge skipped", "experiment", experiment,
+			"hookInstalled", platformStartNativeBridge != nil)
 	}
 
 	proc, err := electron.Start(exe, bootstrap, preload, switches, map[string]any{
