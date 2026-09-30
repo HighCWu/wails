@@ -139,19 +139,13 @@ static char *read_exact_ctx(read_ctx_t *ctx, int fd, size_t n) {
   if (!out) return NULL;
   size_t have = ctx->len < n ? ctx->len : n;
   if (n >= 65536) {
-    fprintf(stderr, "[bt] exact n=%zu residue=%zu\n", n, ctx->len);
     if (ctx->len > 0) {
-      fprintf(stderr, "[bt] residue HEAD %.300s\n", ctx->buf);
       size_t tail_start = ctx->len > 200 ? ctx->len - 200 : 0;
-      fprintf(stderr, "[bt] residue TAIL %.200s\n", ctx->buf + tail_start);
       // byte-level diff anchors: find where the current response header
       // would start ("{"bodyLen"") if present in the residue
       char *bp = strstr(ctx->buf, "\"bodyLen\":");
-      fprintf(stderr, "[bt] residue contains bodyLen-hdr at offset: %td\n",
-              bp ? (ptrdiff_t)(bp - ctx->buf) : -1);
     }
   }
-  fprintf(stderr, "[bt] exact n=%zu residue=%zu\n", n, ctx->len);
   memcpy(out, ctx->buf, have);
   memmove(ctx->buf, ctx->buf + have, ctx->len - have);
   ctx->len -= have;
@@ -341,7 +335,6 @@ static char *read_echo_response(read_ctx_t *ctx, int fd, int want_id, size_t *ou
     char *idpos = strstr(line, "\"id\":");
     int id = idpos ? atoi(idpos + 5) : -1;
     if (id != want_id) {
-      fprintf(stderr, "[bt] echo-skip id=%d line=%.40s residue=%zu\n", id, line, ctx->len);
       continue; // not ours (stale/foreign frame)
     }
     size_t plen = 0;
