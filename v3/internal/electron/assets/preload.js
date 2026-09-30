@@ -34,9 +34,6 @@ function installNativeHttpFetch() {
   const origFetch = window.fetch.bind(window);
   window.fetch = async (input, init) => {
     let url = typeof input === 'string' ? input : (input && input.url) || String(input);
-    if (url.indexOf('/wails/runtime') === -1 || !window.__nativeCall) {
-      console.log('[nh] passthrough nativeCall=' + typeof window.__nativeCall + ' url=' + url.slice(0, 60));
-    }
     if (url.indexOf('/wails/runtime') !== -1 && window.__nativeCall) {
       url = new URL(url, location.href).toString();
       const body = init && init.body != null ? String(init.body) : '';
