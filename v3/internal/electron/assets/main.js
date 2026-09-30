@@ -17,7 +17,13 @@ app.on('preload-error', (_event, preloadPath, error) => {
 if (cfg.bridgePath) process.env.WAILS_ELECTRON_BRIDGE_PATH = cfg.bridgePath;
 if (cfg.nativeAddon) process.env.WAILS_ELECTRON_NATIVE_ADDON = cfg.nativeAddon;
 const windows = new Map(); // windowID -> BrowserWindow
-const byWebContents = new Map(); // webContents -> windowID
+// webContents.id -> windowID. Keyed by the numeric id, never by the
+// webContents object: the 'closed' event fires after the window is
+// destroyed, and touching win.webContents there throws "Object has been
+// destroyed" — an uncaught throw inside the native destroy flow wedges
+// the main process's Node integration for good (async/timer/threadpool
+// callbacks stop dispatching; see history/electron-churning-repro/).
+const byWebContents = new Map(); // webContents.id -> windowID
 
 // Benchmark baseline: pure renderer<->main Electron IPC round trip, no Go.
 ipcMain.handle('compat:ping', (_event, payload) => payload);
@@ -95,7 +101,7 @@ function createWindow(p) {
     },
   });
   windows.set(p.id, win);
-  byWebContents.set(win.webContents, p.id);
+  byWebContents.set(win.webContents.id, p.id);
   const id = p.id;
   // Renderer console → host stderr (the only observability channel for
   // preload/page JS errors on this backend).
@@ -123,7 +129,8 @@ function createWindow(p) {
     });
   });
   win.on('close', () => winEvent(id, 'close'));
-  win.on('closed', () => { winEvent(id, 'closed'); windows.delete(id); byWebContents.delete(win.webContents); });
+  const wcId = win.webContents.id;
+  win.on('closed', () => { winEvent(id, 'closed'); windows.delete(id); byWebContents.delete(wcId); });
   win.on('focus', () => winEvent(id, 'focus'));
   win.on('blur', () => winEvent(id, 'blur'));
   win.on('show', () => winEvent(id, 'show'));
@@ -286,7 +293,7 @@ setInterval(() => {
 }, 2000);
 
 ipcMain.on('wails:message', (event, msg) => {
-  const id = byWebContents.get(event.sender) || 0;
+  const id = byWebContents.get(event.sender.id) || 0;
   try {
     const probe = JSON.parse(msg);
     if (probe && typeof probe.name === 'string' && probe.name.indexOf('compat:') === 0) {

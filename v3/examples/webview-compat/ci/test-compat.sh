@@ -78,6 +78,13 @@ case ",${WAILS_ELECTRON_EXPERIMENT:-}," in
     echo "PASS: native-uds bench rows complete ($NATIVE_ROWS/5)"
     ;;
 esac
+# churn leg (WAILS_COMPAT_CHURN=1): five create/close cycles (even
+# windows closed settled, odd ones closed pending-creation) must all end
+# up removed from the window manager.
+if [ "${WAILS_COMPAT_CHURN:-}" = "1" ]; then
+  wait_log "compat: CHURN PASS" 60
+  echo "PASS: window churn cycles complete"
+fi
 # crash-recovery leg (WAILS_COMPAT_CRASH=1, electron backend): once the
 # bench is done, SIGKILL the renderer and require the recovery event.
 # The backend must report electron:rendererCrashed and reload once.
