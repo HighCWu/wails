@@ -34,43 +34,33 @@ function installNativeHttpFetch() {
   const origFetch = window.fetch.bind(window);
   window.fetch = async (input, init) => {
     let url = typeof input === 'string' ? input : (input && input.url) || String(input);
-    if (url.indexOf('/wails/runtime') !== -1 && window.__nativeCall) {
+    if (url.indexOf('/wails/runtime') !== -1 && window.__nativeCallBin) {
       url = new URL(url, location.href).toString();
-      // The runtime uploads large call bodies as Uint8Array chunks
-      // (>512KB goes through its chunked path) — String() on one of
-      // those yields a decimal byte listing, so binary bodies travel
-      // base64-encoded with an explicit marker.
+      // Frame v2: the body travels as raw bytes after the header line —
+      // string bodies as UTF-8, Uint8Array chunks (the runtime's >512KB
+      // call path) verbatim. No escaping, no base64, no re-parse.
       const rawBody = init && init.body != null ? init.body : '';
-      let body, bodyEnc;
-      if (typeof rawBody === 'string') {
-        body = rawBody;
-      } else {
-        body = Buffer.from(rawBody).toString('base64');
-        bodyEnc = 'base64';
-      }
+      const bodyBuf = Buffer.from(rawBody);
       // headers must ride along: the runtime's chunked upload protocol
       // (x-wails-chunk-*) and call association (x-wails-call-id) live there
       const hdrObj = {};
       if (init && init.headers) {
         for (const [k, v] of new Headers(init.headers).entries()) hdrObj[k] = v;
       }
-      const resp = await window.__nativeCall(__nativeSeq++, JSON.stringify({
+      const hdr = JSON.stringify({
+        id: __nativeSeq++,
         type: 'http',
         method: (init && init.method) || 'GET',
         url: url,
-        body: body,
-        ...(bodyEnc ? { bodyEnc } : {}),
+        bodyLen: bodyBuf.length,
         headers: hdrObj,
-      }));
-      const parsed = JSON.parse(resp);
-      if (parsed.err) throw new Error(parsed.err);
+      });
+      const resp = await window.__nativeCallBin(__nativeSeq - 1, hdr, bodyBuf);
+      if (resp.err) throw new Error(resp.err);
       const headers = new Headers();
-      if (parsed.contentType) headers.set('Content-Type', parsed.contentType);
-      const bin = atob(parsed.payload || '');
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      return new Response(bytes.length ? bytes : null, {
-        status: parsed.status,
+      if (resp.contentType) headers.set('Content-Type', resp.contentType);
+      return new Response(resp.body.length ? new Uint8Array(resp.body) : null, {
+        status: resp.status,
         headers: headers,
       });
     }

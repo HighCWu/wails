@@ -132,6 +132,7 @@ func serveHTTPFrame(conn net.Conn, line []byte, buf *[]byte, serveHTTP func(meth
 		fmt.Println("[httpframe] unmarshal err:", err)
 		return
 	}
+	fmt.Println("[httpframe] recv id=", req.ID, "url=", req.URL, "bodyLen=", req.BodyLen)
 	body, err := readExactBody(conn, buf, req.BodyLen)
 	if err != nil {
 		fmt.Println("[httpframe] body read err:", err)
@@ -174,6 +175,10 @@ func serveHTTPFrame(conn net.Conn, line []byte, buf *[]byte, serveHTTP func(meth
 // (protocol v2) — they stay at the front of *buf for readExactBody to
 // consume; callers of plain echo frames see an empty residue as before.
 func readFrame(conn net.Conn, buf *[]byte) ([]byte, error) {
+	var local []byte
+	if buf == nil {
+		buf = &local // HELLO handshake path passes nil
+	}
 	start := 0
 	for {
 		if i := bytes.IndexByte((*buf)[start:], '\n'); i >= 0 {
