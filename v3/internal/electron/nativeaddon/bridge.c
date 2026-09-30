@@ -138,6 +138,10 @@ static char *read_exact_ctx(read_ctx_t *ctx, int fd, size_t n) {
   char *out = malloc(n + 1);
   if (!out) return NULL;
   size_t have = ctx->len < n ? ctx->len : n;
+  if (n >= 65536) {
+    fprintf(stderr, "[bt] exact n=%zu residue=%zu residue_head=%.200s\n",
+            n, ctx->len, ctx->buf ? ctx->buf : "(null)");
+  }
   fprintf(stderr, "[bt] exact n=%zu residue=%zu\n", n, ctx->len);
   memcpy(out, ctx->buf, have);
   memmove(ctx->buf, ctx->buf + have, ctx->len - have);
