@@ -50,14 +50,6 @@ jobs:
           WAILS_ELECTRON_DIR: /opt/electron
           WAILS_ELECTRON_DISABLE_SANDBOX: "1"
         run: v3/examples/webview-compat/ci/test-compat.sh /tmp/webview-compat electron
-      - name: Run API compat scenario (electron backend, fetch-ipc)
-        env:
-          WAILS_WEBVIEW_BACKEND: electron
-          WAILS_ELECTRON_DIR: /opt/electron
-          WAILS_ELECTRON_DISABLE_SANDBOX: "1"
-          WAILS_ELECTRON_DEBUG: "1"
-          WAILS_ELECTRON_EXPERIMENT: fetch-ipc
-        run: v3/examples/webview-compat/ci/test-compat.sh /tmp/webview-compat electron
       - name: Build native bridge addon (N-API headers)
         run: |
           mkdir -p /tmp/napi-headers

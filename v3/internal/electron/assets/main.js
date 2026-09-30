@@ -206,7 +206,6 @@ const methods = {
   quit: () => app.quit(),
   // Forwards a frontend /wails/runtime HTTP call into the Go host over the
   // control protocol (preload fetch-ipc experiment), returning the response.
-  webviewRequest: (p) => callGo('webviewRequest', p),
 };
 
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
@@ -305,4 +304,3 @@ ipcMain.on('wails:message', (event, msg) => {
 
 // Preload fetch-ipc experiment: a /wails/runtime call forwarded from the
 // renderer is routed over the control protocol to the Go host.
-ipcMain.handle('wails:runtime', (_event, payload) => callGo('webviewRequest', payload || {}));

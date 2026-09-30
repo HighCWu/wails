@@ -2,7 +2,6 @@ package application
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -159,44 +158,11 @@ func startPlatformElectron(app *App) error {
 	if err != nil {
 		return err
 	}
-	proc.SetRequestHandler(func(method string, params json.RawMessage) (any, error) {
-		switch method {
-		case "webviewRequest":
-			return handleWebviewRequest(app, params)
-		}
-		return nil, fmt.Errorf("unknown electron request %q", method)
-	})
 	electronBackend.proc = proc
 	electronBackend.windows = make(map[uint]*electronWindow)
 
 	go pumpElectronEvents(proc)
 	return nil
-}
-
-// handleWebviewRequest serves a frontend /wails/runtime HTTP call that the
-// preload shim forwarded over the control protocol, bypassing the network
-// service and the loopback TCP hop (fetch-ipc experiment).
-func handleWebviewRequest(app *App, params json.RawMessage) (any, error) {
-	var p struct {
-		Method string `json:"method"`
-		URL    string `json:"url"`
-		Body   string `json:"body"`
-	}
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, err
-	}
-	if p.Method == "" {
-		p.Method = http.MethodGet
-	}
-	status, contentType, bodyRaw, err := serveWebviewRequestDirect(app, p.Method, p.URL, p.Body, nil)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{
-		"status":      status,
-		"body":        base64.StdEncoding.EncodeToString(bodyRaw),
-		"contentType": contentType,
-	}, nil
 }
 
 // serveWebviewRequestDirect runs a /wails/runtime request through the
