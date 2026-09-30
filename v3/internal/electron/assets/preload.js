@@ -8,6 +8,10 @@
 // backend); the preload is authored by us and the renderer still gets no
 // Node integration.
 const { ipcRenderer } = require('electron');
+// [debug] surface unhandled rejections with stacks (native-http investigation)
+process.on('unhandledRejection', (r) => {
+  try { process.stderr.write('[ur] ' + (r && r.stack || r) + '\n'); } catch (e) {}
+});
 
 const expModes = (process.env.WAILS_ELECTRON_EXPERIMENT || '').split(',');
 try {
@@ -30,6 +34,9 @@ function installNativeHttpFetch() {
   const origFetch = window.fetch.bind(window);
   window.fetch = async (input, init) => {
     let url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (url.indexOf('/wails/runtime') === -1 || !window.__nativeCall) {
+      console.log('[nh] passthrough nativeCall=' + typeof window.__nativeCall + ' url=' + url.slice(0, 60));
+    }
     if (url.indexOf('/wails/runtime') !== -1 && window.__nativeCall) {
       url = new URL(url, location.href).toString();
       const body = init && init.body != null ? String(init.body) : '';

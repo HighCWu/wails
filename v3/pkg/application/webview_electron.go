@@ -203,6 +203,11 @@ func handleWebviewRequest(app *App, params json.RawMessage) (any, error) {
 // asset server in-process. Shared by the control protocol (fetch-ipc)
 // and the native UDS transport (native-uds promotion).
 func serveWebviewRequestDirect(app *App, method, rawURL, body string) (status int, contentType string, bodyB64 string, err error) {
+	// KNOWN ISSUE (native-http sub-mode): empty-URL http frames arrive on
+	// this endpoint while that mode is enabled — 48 occurrences in one
+	// run, independent of renderer crashes, with the override's own
+	// passthrough logging silent. Source not yet identified; the mode
+	// stays gated (see preload native-http).
 	header := http.Header{}
 	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
 		header.Set("Host", u.Host)
