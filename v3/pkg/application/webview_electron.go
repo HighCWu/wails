@@ -308,8 +308,11 @@ func pumpElectronEvents(proc *electron.Process) {
 			}
 		case "render-gone":
 			if w := electronBackend.window(ev.WindowID); w != nil {
-				globalApplication.Logger.Warn("electron renderer gone",
-					"window", ev.WindowID, "params", string(ev.Params))
+				var p struct {
+					Reason string `json:"reason"`
+				}
+				_ = json.Unmarshal(ev.Params, &p)
+				w.handleRendererGone(p.Reason)
 			}
 		default:
 			if w := electronBackend.window(ev.WindowID); w != nil {

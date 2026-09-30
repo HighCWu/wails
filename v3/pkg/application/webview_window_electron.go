@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/wailsapp/wails/v3/internal/assetserver"
@@ -30,10 +31,40 @@ type electronWindow struct {
 	inFullscreen bool
 	ignoring     bool
 	zoomLevel    float64
+
+	// crash recovery: one auto-reload per renderer death, with a cooldown
+	// so a page that crashes on every load cannot turn into a reload loop
+	lastCrashReload time.Time
 }
 
 func newElectronWindow(parent *WebviewWindow) *electronWindow {
 	return &electronWindow{parent: parent, zoomLevel: 1.0, visible: true}
+}
+
+// handleRendererGone recovers the page after an abnormal renderer death:
+// report via a plain custom event (the upstream event registry has no
+// typed renderer-crash event, and the events package stays byte-identical
+// to upstream to keep merges conflict-free), then schedule exactly one
+// auto-reload — a 10s cooldown guards reload loops. clean-exit is a
+// normal shutdown, not a crash.
+func (w *electronWindow) handleRendererGone(reason string) {
+	if reason == "" || reason == "clean-exit" {
+		return
+	}
+	w.mu.Lock()
+	cooling := time.Since(w.lastCrashReload) < 10*time.Second
+	w.lastCrashReload = time.Now()
+	w.mu.Unlock()
+	globalApplication.Logger.Warn("electron renderer crashed",
+		"window", w.parent.ID(), "reason", reason, "cooldown", cooling)
+	globalApplication.Event.Emit("electron:rendererCrashed", map[string]any{
+		"id": w.parent.ID(), "reason": reason,
+	})
+	if !cooling {
+		// let the Electron main process finish tearing the dead
+		// webContents down before the reload lands
+		time.AfterFunc(200*time.Millisecond, func() { w.parent.Reload() })
+	}
 }
 
 func (w *electronWindow) proc() (*electron.Process, error) {

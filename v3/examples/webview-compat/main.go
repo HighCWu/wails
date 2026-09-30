@@ -48,6 +48,13 @@ func main() {
 		Height: 600,
 	})
 
+	// Crash recovery: the backend recovers the page with one auto-reload
+	// and reports through the custom event (no typed upstream event
+	// exists for renderer crashes).
+	app.Event.On("electron:rendererCrashed", func(e *application.CustomEvent) {
+		app.Logger.Info("compat: CRASH-EVENT", "data", e.Data)
+	})
+
 	// The frontend measures the frontend->Go call path (bindings) and
 	// reports a latency table; CI compares it across backends.
 	app.Event.On("compat:rpc", func(e *application.CustomEvent) {

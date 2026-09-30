@@ -73,6 +73,7 @@ jobs:
           WAILS_ELECTRON_DISABLE_SANDBOX: "1"
           WAILS_ELECTRON_EXPERIMENT: invoke-baseline,fetch-ipc,native-ipc
           WAILS_ELECTRON_NATIVE_ADDON: /tmp/go-bridge.node
+          WAILS_COMPAT_CRASH: "1"
         run: v3/examples/webview-compat/ci/test-compat.sh /tmp/webview-compat electron
       - name: Upload artifacts
         if: always()

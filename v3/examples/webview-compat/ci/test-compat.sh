@@ -67,16 +67,38 @@ if [ "$BENCH_ERRORS" -ne 0 ]; then
 fi
 # native-ipc mode: the renderer addon must have benched every payload size
 # over the UDS transport (5 sizes), proving connect + handshake + echo.
+# A reload (e.g. the crash-recovery leg) reruns the bench, so >= 5.
 case ",${WAILS_ELECTRON_EXPERIMENT:-}," in
   *,native-ipc,*)
     NATIVE_ROWS=$(grep -c "compat: BENCH path=native-uds" "$LOG" || true)
-    if [ "$NATIVE_ROWS" -ne 5 ]; then
+    if [ "$NATIVE_ROWS" -lt 5 ]; then
       grep "native" "$LOG" | head -20
-      die "expected 5 native-uds bench rows, got $NATIVE_ROWS"
+      die "expected >= 5 native-uds bench rows, got $NATIVE_ROWS"
     fi
-    echo "PASS: native-uds bench rows complete (5/5)"
+    echo "PASS: native-uds bench rows complete ($NATIVE_ROWS/5)"
     ;;
 esac
+# crash-recovery leg (WAILS_COMPAT_CRASH=1, electron backend): once the
+# bench is done, SIGKILL the renderer and require the recovery event.
+# The backend must report electron:rendererCrashed and reload once.
+if [ "${WAILS_COMPAT_CRASH:-}" = "1" ]; then
+  if [ "$BACKEND" != "electron" ]; then
+    die "WAILS_COMPAT_CRASH is electron-only"
+  fi
+  killed_any=""
+  for attempt in 1 2 3 4 5; do
+    for pid in $(pgrep -x electron); do
+      if grep -qa "type=renderer" "/proc/$pid/cmdline" 2>/dev/null; then
+        kill -9 "$pid" && killed_any=1
+      fi
+    done
+    [ -n "$killed_any" ] && break
+    sleep 1
+  done
+  [ -n "$killed_any" ] || die "no electron renderer process found to kill"
+  wait_log "compat: CRASH-EVENT" 20
+  echo "PASS: crash recovery event fired"
+fi
 FAILS=$(grep -c "compat:.*FAIL" "$LOG" || true)
 if [ "$FAILS" -ne 0 ]; then
   grep "compat:" "$LOG"
