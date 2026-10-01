@@ -12,7 +12,7 @@ LOG="$(mktemp)"
 APP_PID=""
 cleanup() { [[ -n "$APP_PID" ]] && kill "$APP_PID" 2>/dev/null; }
 trap cleanup EXIT
-die() { echo "FAIL: $*"; tail -40 "$LOG"; exit 1; }
+die() { echo "FAIL: $*"; echo "--- app log ($LOG):"; cat "$LOG"; exit 1; }
 
 "$APP" >"$LOG" 2>&1 & APP_PID=$!
 
