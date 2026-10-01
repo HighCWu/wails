@@ -154,9 +154,13 @@ async function runtimeCallWithID(objectID, method, windowName, args) {
   if (windowName) {
     headers["x-wails-window-name"] = windowName;
   }
-  const bodyStr = JSON.stringify(body);
+  // Frame v3 native plane: when the electron preload has the bridge up,
+  // the call body travels v8-serialized (the same bytes Electron's
+  // renderer hands its main process), and the UDS plane has no chunk
+  // threshold — send it as one POST.
+  const bodyStr = window.__wailsV8Body && window.__wailsV8Serialize ? window.__wailsV8Serialize(body) : JSON.stringify(body);
   let response;
-  if (bodyStr.length > CHUNK_THRESHOLD) {
+  if (bodyStr.length > CHUNK_THRESHOLD && !(window.__wailsV8Body && window.__nativeInvoke)) {
     response = await sendChunked(url, headers, bodyStr);
   } else {
     response = await fetch(url, { method: "POST", headers, body: bodyStr });
