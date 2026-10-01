@@ -72,7 +72,10 @@ MINGW*|MSYS*|CYGWIN*)
     exit 1
   fi
   { echo "LIBRARY electron.exe"; echo "EXPORTS"; cat "$TMPD/names.txt"; } > "$TMPD/electron.def"
-  dlltool -d "$TMPD/electron.def" -l "$TMPD/electron.lib" -m i386:x86-64
+  # -m takes dlltool's machine NAME (x86_64), not the BFD arch string —
+  # an unknown value silently falls back to 32-bit imports that ld skips,
+  # leaving every import undefined at link time.
+  dlltool -d "$TMPD/electron.def" -l "$TMPD/electron.lib" -m x86_64
   LINK_EXTRA="$TMPD/electron.lib"
   STATIC_LIBS="-static-libgcc -static-libstdc++"
   echo "import library built: $COUNT exports from $EXE"
