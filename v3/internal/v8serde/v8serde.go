@@ -338,19 +338,26 @@ func (s *serializer) value(v any, depth int) error {
 			}
 		}
 		s.byte(tagEndDenseArr)
-		s.varint(0) // level
-		s.varint(s.nextID())
-		s.idCount++
+		s.varint(0) // trailing 0 mirrors node's encoding
+		// the final varint is the ELEMENT COUNT (validated by V8's
+		// deserializer), not an object id — proven by [1,2,3] -> 24 00 03
+		s.varint(uint64(len(x)))
 	case map[string]any:
 		s.byte(tagBeginObject)
+		n := 0
 		for k, e := range x {
-			s.value(k, depth+1)
+			if err := s.value(k, depth+1); err != nil {
+				return err
+			}
 			if err := s.value(e, depth+1); err != nil {
 				return err
 			}
+			n++
 		}
 		s.byte(tagEndObject)
-		s.varint(s.nextID())
+		// Node's kEndJSObject is followed by the PROPERTY COUNT (the
+		// deserializer validates it), not an object id.
+		s.varint(uint64(n))
 	default:
 		return fmt.Errorf("v8serde: unsupported Go type %T", v)
 	}

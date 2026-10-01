@@ -1,7 +1,7 @@
 package v8serde
 
 import (
-	"bytes"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -88,14 +88,28 @@ func TestRoundTrip(t *testing.T) {
 }
 
 func TestCrossCheckWithNode(t *testing.T) {
-	// Go-serialized values must be parseable by Node's v8.deserialize:
-	// verified externally in the v2-bisect tooling; here we at least
-	// check our own bytes start with the version header.
-	data, err := Serialize(map[string]any{"a": float64(1)})
-	if err != nil {
-		t.Fatal(err)
+	// Byte-exact pins against Node's v8.serialize output (Node 25 golden
+	// bytes). These caught two real bugs: kEndJSObject's trailing varint
+	// is the PROPERTY COUNT (we wrote an object id) and kEndDenseJSArray's
+	// trailing varint is the ELEMENT COUNT. Node's deserializer validates
+	// both and rejected our objects wholesale ("invalid or unsupported
+	// version" / "Unable to deserialize cloned data").
+	cases := []struct {
+		name string
+		val  any
+		want string
+	}{
+		{"one-prop map", map[string]any{"a": float64(1)}, "ff0f6f22016149027b01"},
+		{"dense array", []any{float64(1), float64(2), float64(3)}, "ff0f4103490249044906240003"},
+		{"uint8 array", map[string]any{"d": []byte{1, 2, 3}}, "ff0f6f2201645c01030102037b01"},
 	}
-	if !bytes.HasPrefix(data, []byte{0xFF, 0x0F}) {
-		t.Fatalf("missing version header: %x", data)
+	for _, tc := range cases {
+		data, err := Serialize(tc.val)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := hex.EncodeToString(data); got != tc.want {
+			t.Errorf("%s:\n got %s\nwant %s", tc.name, got, tc.want)
+		}
 	}
 }
