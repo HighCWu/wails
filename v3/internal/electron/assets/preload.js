@@ -14,6 +14,22 @@ process.on('unhandledRejection', (r) => {
   try { process.stderr.write('[ur] ' + (r && r.stack || r) + '\n'); } catch (e) {}
 });
 
+// C++/V8 addon path (bridge.cc): the whole renderer interaction surface —
+// postMessage shim, __wailsNativeInit, fetch override, serialization —
+// lives in the native module; this file stays a loader.
+const cppAddon = process.env.WAILS_ELECTRON_NATIVE_ADDON;
+if (cppAddon) {
+  try {
+    const b = require(cppAddon);
+    if (typeof b.preloadInit === 'function') {
+      window.__wailsCppAddon = true; // legacy JS path stands down
+      b.preloadInit(require('electron'));
+    }
+  } catch (e) {
+    try { process.stderr.write('[wails-electron preload] cpp addon load failed: ' + e.message + '\n'); } catch (e2) {}
+  }
+}
+
 const expModes = (process.env.WAILS_ELECTRON_EXPERIMENT || '').split(',');
 try {
   process.stderr.write(`[wails-electron preload] exp="${expModes.join(',')}" ppid=${process.ppid}\n`);
@@ -89,6 +105,10 @@ if (expModes.includes('invoke-baseline')) {
 // (executeJavaScript after did-finish-load) — the data plane after
 // connect() is the addon's own socket; main is not involved. The page
 // waits briefly for __nativeCall before benching the native row.
+// The C++/V8 addon (bridge.cc) installs its own __wailsNativeInit and
+// owns the whole surface; this JS path is the legacy fallback and must
+// not overwrite the native function object when that addon is loaded.
+if (!window.__wailsCppAddon) {
 window.__wailsNativeInit = (initConfig) => {
   console.log('[wails-electron preload] __wailsNativeInit called addon=' + initConfig.addon + ' endpoint=' + initConfig.endpoint);
   if (window.__nativeCall) return; // idempotent across navigations
@@ -123,3 +143,4 @@ window.__wailsNativeInit = (initConfig) => {
     (expModes.includes('native-ipc') && !expModes.includes('no-native-http'));
   if (wantNativeHttp) installNativeHttpFetch();
 };
+} // end legacy fallback guard
