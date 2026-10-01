@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -50,11 +51,45 @@ func main() {
 	})
 
 	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:   "main",
-		Title:  "webview-compat",
-		Width:  800,
-		Height: 600,
+		Name:      "main",
+		Title:     "webview-compat",
+		Width:     800,
+		Height:    600,
+		Frameless: os.Getenv("WAILS_COMPAT_FRAMELESS") == "1",
 	})
+
+	// Window-event parity: the impl must raise the Common events (state
+	// transitions and debounced resize/move) — asserted at suite end.
+	var evFocus, evResize, evMaximise, evShow int32
+	win.OnWindowEvent(events.Common.WindowFocus, func(*application.WindowEvent) {
+		atomic.AddInt32(&evFocus, 1)
+	})
+	win.OnWindowEvent(events.Common.WindowDidResize, func(*application.WindowEvent) {
+		atomic.AddInt32(&evResize, 1)
+	})
+	win.OnWindowEvent(events.Common.WindowMaximise, func(*application.WindowEvent) {
+		atomic.AddInt32(&evMaximise, 1)
+	})
+	win.OnWindowEvent(events.Common.WindowShow, func(*application.WindowEvent) {
+		atomic.AddInt32(&evShow, 1)
+	})
+
+	// InvokeSync liveness probe on the electron backend (audit follow-up)
+	go func() {
+		time.Sleep(5 * time.Second)
+		done := make(chan struct{})
+		go func() {
+			application.InvokeSync(func() {
+				app.Logger.Info("compat: INVOKE-SYNC WORKS")
+				close(done)
+			})
+		}()
+		select {
+		case <-done:
+		case <-time.After(8 * time.Second):
+			app.Logger.Info("compat: INVOKE-SYNC HUNG")
+		}
+	}()
 
 	// Crash recovery: the backend recovers the page with one auto-reload
 	// and reports through the custom event (no typed upstream event
@@ -117,6 +152,12 @@ func main() {
 				runChurn(app)
 			}
 			runSuite(app, win)
+			check(win, app, "events",
+				atomic.LoadInt32(&evFocus) > 0 && atomic.LoadInt32(&evResize) > 0 &&
+					atomic.LoadInt32(&evMaximise) > 0 && atomic.LoadInt32(&evShow) > 0,
+				fmt.Sprintf("focus=%d resize=%d maximise=%d show=%d",
+					atomic.LoadInt32(&evFocus), atomic.LoadInt32(&evResize),
+					atomic.LoadInt32(&evMaximise), atomic.LoadInt32(&evShow)))
 			if failures > 0 {
 				app.Logger.Info(fmt.Sprintf("compat: SUITE FAIL failures=%d", failures))
 				return

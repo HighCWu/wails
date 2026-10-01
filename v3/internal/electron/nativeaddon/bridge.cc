@@ -36,6 +36,8 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <dlfcn.h>
+
 #include <cerrno>
 #include <cstdarg>
 #include <ctime>
@@ -56,6 +58,7 @@ static pthread_mutex_t g_io_mu = PTHREAD_MUTEX_INITIALIZER;
 
 // persistent JS references (single renderer isolate)
 static Global<Object> g_ipc_renderer;
+static Global<Object> g_webutils;
 static Global<Function> g_orig_fetch;
 static Global<Function> g_response_ctor;
 
@@ -294,6 +297,8 @@ static int frame_roundtrip(const uint8_t* req, size_t req_len,
 // exports
 
 static void NativeInitThunk(const FunctionCallbackInfo<Value>& args);
+static void PostMessageAdditionalCb(const FunctionCallbackInfo<Value>& args);
+static Local<Value> JsonStringify(Isolate* isolate, Local<Context> ctx, Local<Value> v);
 
 // preloadInit(electron): the entire preload surface that does not need the
 // connection yet — the postMessage shim and the late-init hook.
@@ -346,6 +351,15 @@ static void PreloadInit(const FunctionCallbackInfo<Value>& args) {
       });
   Local<Function> shim = shim_tpl->GetFunction(ctx).ToLocalChecked();
   webview->Set(ctx, S(isolate, "postMessage"), shim).Check();
+  // WebView2 file-drop contract (see PostMessageAdditionalCb) + webUtils
+  Local<Value> wu;
+  if (electron->Get(ctx, S(isolate, "webUtils")).ToLocal(&wu) && wu->IsObject()) {
+    g_webutils.Reset(isolate, wu.As<Object>());
+  }
+  Local<FunctionTemplate> pma_tpl = FunctionTemplate::New(isolate, PostMessageAdditionalCb);
+  webview->Set(ctx, S(isolate, "postMessageWithAdditionalObjects"),
+               pma_tpl->GetFunction(ctx).ToLocalChecked())
+      .Check();
 
   // the late-init hook main.js injects a call to (same signature as the
   // JS preload's): __wailsNativeInit({addon, endpoint, token})
@@ -358,6 +372,8 @@ static void PreloadInit(const FunctionCallbackInfo<Value>& args) {
 
 // NativeInitThunk needs forward access; declare + define after FetchOverride.
 static void NativeInitThunk(const FunctionCallbackInfo<Value>& args);
+static void PostMessageAdditionalCb(const FunctionCallbackInfo<Value>& args);
+static Local<Value> JsonStringify(Isolate* isolate, Local<Context> ctx, Local<Value> v);
 
 // FetchOverride(input, init): replaces window.fetch. Routes
 // /wails/runtime requests over the UDS data plane; everything else goes to
@@ -630,6 +646,63 @@ static void Close(const FunctionCallbackInfo<Value>& args) {
   pthread_mutex_unlock(&g_io_mu);
 }
 
+// postMessageWithAdditionalObjects("file:drop:<x>:<y>", files): the
+// WebView2 file-drop contract the Wails runtime probes for. On Electron we
+// resolve real paths with webUtils.getPathForFile and forward them as a
+// wails:file-drop message; the host maps the sender to the window and
+// feeds the same dragAndDrop pipeline (Window.OnFileDrop works unchanged).
+static void PostMessageAdditionalCb(const FunctionCallbackInfo<Value>& args) {
+  Isolate* isolate = I(args);
+  HandleScope hs(isolate);
+  Local<Context> ctx = isolate->GetCurrentContext();
+  if (args.Length() < 2 || !args[0]->IsString() || !args[1]->IsArray()) return;
+  String::Utf8Value msg(isolate, args[0]);
+  if (*msg == nullptr || strncmp(*msg, "file:drop:", 10) != 0) return;
+  int x = 0, y = 0;
+  sscanf(*msg + 10, "%d:%d", &x, &y);
+  Local<Object> webutils = g_webutils.Get(isolate);
+  Local<Function> getpath;
+  if (!webutils.IsEmpty()) {
+    Local<Value> v;
+    if (webutils->Get(ctx, S(isolate, "getPathForFile")).ToLocal(&v) &&
+        v->IsFunction()) {
+      getpath = v.As<Function>();
+    }
+  }
+  Local<Array> files = args[1].As<Array>();
+  uint32_t n = files->Length();
+  Local<Array> names = Array::New(isolate, n);
+  uint32_t out = 0;
+  for (uint32_t i = 0; i < n; i++) {
+    Local<Value> f;
+    if (!files->Get(ctx, Integer::NewFromUnsigned(isolate, i)).ToLocal(&f) ||
+        !f->IsObject() || getpath.IsEmpty()) {
+      continue;
+    }
+    Local<Value> argv[1] = {f};
+    Local<Value> path = getpath->Call(ctx, webutils, 1, argv).FromMaybe(Local<Value>());
+    if (!path.IsEmpty() && path->IsString() && path.As<String>()->Length() > 0) {
+      names->Set(ctx, Integer::NewFromUnsigned(isolate, out++), path).Check();
+    }
+  }
+  Local<Object> payload = Object::New(isolate);
+  payload->Set(ctx, S(isolate, "x"), Integer::New(isolate, x)).Check();
+  payload->Set(ctx, S(isolate, "y"), Integer::New(isolate, y)).Check();
+  payload->Set(ctx, S(isolate, "filenames"), names).Check();
+  Local<Value> json = JsonStringify(isolate, ctx, payload);
+  if (json.IsEmpty() || !json->IsString()) return;
+  Local<Object> ipc = g_ipc_renderer.Get(isolate);
+  if (ipc.IsEmpty()) return;
+  Local<Value> sargv[2] = {
+      S(isolate, "wails:message"),
+      String::Concat(isolate, S(isolate, "wails:file-drop:"), json.As<String>())};
+  Local<Value> ignored;
+  Local<Value> send;
+  if (ipc->Get(ctx, S(isolate, "send")).ToLocal(&send) && send->IsFunction()) {
+    send.As<Function>()->Call(ctx, ipc, 2, sargv).ToLocal(&ignored);
+  }
+}
+
 // __wailsNativeInit({endpoint, token, addon}) — connect + flags + fetch
 // override. Same entry main.js's executeJavaScript injection calls.
 static void NativeInitThunk(const FunctionCallbackInfo<Value>& args) {
@@ -694,6 +767,206 @@ static void NativeInitThunk(const FunctionCallbackInfo<Value>& args) {
   fprintf(stderr, "[go-bridge] native-uds transport ready\n");
 }
 
+
+
+// ---- X11 frameless drag/resize via _NET_WM_MOVERESIZE -----------------
+// Electron exposes no manual-move API; the window manager conducts the
+// interactive move/resize when the app sends this client message (same
+// mechanism GTK's begin_move_drag uses). libX11 is dlopen'd so the build
+// needs no X11 dev headers; Electron always runs with a DISPLAY on X11.
+struct XClientMsgEvent {
+  int type;
+  unsigned long serial;
+  int send_event;
+  void* display;
+  unsigned long window;
+  unsigned long message_type;
+  int format;
+  unsigned long data[5];
+};
+
+static void* g_x11_so = nullptr;
+static void* g_xdisp = nullptr;
+static unsigned long g_wmmove_atom = 0;
+static pthread_mutex_t g_x_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static bool x11_ready() {
+  pthread_mutex_lock(&g_x_mu);
+  if (g_x11_so == nullptr) {
+    g_x11_so = dlopen("libX11.so.6", RTLD_LAZY);
+    if (g_x11_so != nullptr) {
+      auto init_threads = reinterpret_cast<int (*)(void)>(dlsym(g_x11_so, "XInitThreads"));
+      if (init_threads != nullptr) init_threads();
+      auto open_disp = reinterpret_cast<void* (*)(const char*)>(dlsym(g_x11_so, "XOpenDisplay"));
+      auto intern_atom = reinterpret_cast<unsigned long (*)(void*, const char*, int)>(dlsym(g_x11_so, "XInternAtom"));
+      if (open_disp != nullptr && intern_atom != nullptr) {
+        g_xdisp = open_disp(nullptr);
+        if (g_xdisp != nullptr) {
+          g_wmmove_atom = intern_atom(g_xdisp, "_NET_WM_MOVERESIZE", 0);
+        }
+      }
+    }
+  }
+  bool ok = g_xdisp != nullptr && g_wmmove_atom != 0;
+  pthread_mutex_unlock(&g_x_mu);
+  return ok;
+}
+
+// _NET_WM_MOVERESIZE directions (freedesktop.org wm-spec)
+static int x11_direction(const char* edge) {
+  if (strcmp(edge, "nw-resize") == 0) return 0;
+  if (strcmp(edge, "n-resize") == 0) return 1;
+  if (strcmp(edge, "ne-resize") == 0) return 2;
+  if (strcmp(edge, "e-resize") == 0) return 3;
+  if (strcmp(edge, "se-resize") == 0) return 4;
+  if (strcmp(edge, "s-resize") == 0) return 5;
+  if (strcmp(edge, "sw-resize") == 0) return 6;
+  if (strcmp(edge, "w-resize") == 0) return 7;
+  return 8;  // move
+}
+
+// The WM-conducted _NET_WM_MOVERESIZE protocol cannot be used while the
+// pointer is grabbed by the renderer (Chromium holds an implicit button
+// grab for the whole press, and a cross-process XUngrabPointer is not
+// possible) — the WM's grab silently fails. Instead we track the pointer
+// ourselves and move/resize the window directly, exactly like the CEF
+// backend's glue did. Runs synchronously until button release, matching
+// native BeginMove semantics.
+static void x11_move_resize(unsigned long xid, int direction) {
+  if (!x11_ready()) {
+    fprintf(stderr, "[go-bridge] x11_move_resize: X11 init failed\n");
+    return;
+  }
+  pthread_mutex_lock(&g_x_mu);
+  auto get_geometry = reinterpret_cast<int (*)(void*, unsigned long, unsigned long*, int*, int*, unsigned*, unsigned*, unsigned*, unsigned*)>(dlsym(g_x11_so, "XGetGeometry"));
+  auto translate = reinterpret_cast<int (*)(void*, unsigned long, unsigned long, int*, int*)>(dlsym(g_x11_so, "XTranslateCoordinates"));
+  auto move_window = reinterpret_cast<int (*)(void*, unsigned long, int, int)>(dlsym(g_x11_so, "XMoveWindow"));
+  auto move_resize_window = reinterpret_cast<int (*)(void*, unsigned long, int, int, unsigned, unsigned)>(dlsym(g_x11_so, "XMoveResizeWindow"));
+  auto query_pointer = reinterpret_cast<int (*)(void*, unsigned long, unsigned long*, unsigned long*, int*, int*, int*, int*, unsigned*)>(dlsym(g_x11_so, "XQueryPointer"));
+  auto flush = reinterpret_cast<int (*)(void*)>(dlsym(g_x11_so, "XFlush"));
+  if (get_geometry == nullptr || translate == nullptr || move_window == nullptr ||
+      move_resize_window == nullptr || query_pointer == nullptr || flush == nullptr) {
+    fprintf(stderr, "[go-bridge] x11_move_resize: missing X11 symbols\n");
+    pthread_mutex_unlock(&g_x_mu);
+    return;
+  }
+  unsigned long root_ret = 0;
+  int wx = 0, wy = 0;
+  unsigned w = 0, h = 0, bw = 0, depth = 0;
+  if (get_geometry(g_xdisp, xid, &root_ret, &wx, &wy, &w, &h, &bw, &depth) == 0) {
+    fprintf(stderr, "[go-bridge] x11_move_resize: XGetGeometry failed\n");
+    pthread_mutex_unlock(&g_x_mu);
+    return;
+  }
+  // window origin -> root coordinates (frameless windows are usually
+  // parented to root, but translate anyway for WM-framed cases)
+  int rx = wx, ry = wy;
+  translate(g_xdisp, xid, root_ret, &rx, &ry);
+  unsigned long qroot = 0, qchild = 0;
+  int px = 0, py = 0, qwx = 0, qwy = 0;
+  unsigned qmask = 0;
+  if (!query_pointer(g_xdisp, root_ret, &qroot, &qchild, &px, &py, &qwx, &qwy, &qmask)) {
+    pthread_mutex_unlock(&g_x_mu);
+    return;
+  }
+  const int start_px = px, start_py = py;
+  const int start_wx = rx, start_wy = ry;
+  const unsigned start_w = w, start_h = h;
+  const bool resize = direction != 8;
+  // direction bits for the arithmetic below
+  const bool west = direction == 0 || direction == 6 || direction == 7;   // nw sw w
+  const bool north = direction == 0 || direction == 1 || direction == 2;  // nw n ne
+  const bool east = direction == 2 || direction == 3 || direction == 4;   // ne e se
+  const bool south = direction == 4 || direction == 5 || direction == 6;  // se s sw
+  flush(g_xdisp);
+  pthread_mutex_unlock(&g_x_mu);
+
+  // track the pointer until the button is released (grab or not,
+  // XQueryPointer always reports true root coordinates)
+  for (;;) {
+    struct timespec ts = {0, 16 * 1000 * 1000};
+    nanosleep(&ts, nullptr);
+    pthread_mutex_lock(&g_x_mu);
+    int nrx = 0, nry = 0;
+    unsigned long nr = 0, nc = 0;
+    unsigned nmask = 0;
+    int nx = 0, ny = 0;
+    if (!query_pointer(g_xdisp, root_ret, &nr, &nc, &nrx, &nry, &nx, &ny, &nmask)) {
+      pthread_mutex_unlock(&g_x_mu);
+      return;
+    }
+    if ((nmask & (1 << 8)) == 0) {  // Button1 released -> done
+      flush(g_xdisp);
+      pthread_mutex_unlock(&g_x_mu);
+      return;
+    }
+    if (resize) {
+      int nx0 = start_wx, ny0 = start_wy;
+      unsigned nw = start_w, nh = start_h;
+      if (east) nw = start_w + (nrx - start_px);
+      if (south) nh = start_h + (nry - start_py);
+      if (west) {
+        nx0 = start_wx + (nrx - start_px);
+        nw = start_w - (nrx - start_px);
+      }
+      if (north) {
+        ny0 = start_wy + (nry - start_py);
+        nh = start_h - (nry - start_py);
+      }
+      if (nw < 100) { if (west) nx0 = start_wx + (int)start_w - 100; nw = 100; }
+      if (nh < 60) { if (north) ny0 = start_wy + (int)start_h - 60; nh = 60; }
+      move_resize_window(g_xdisp, xid, nx0, ny0, nw, nh);
+    } else {
+      move_window(g_xdisp, xid, start_wx + (nrx - start_px), start_wy + (nry - start_py));
+    }
+    flush(g_xdisp);
+    pthread_mutex_unlock(&g_x_mu);
+  }
+}
+
+static void x11_move_resize_legacy(unsigned long xid, int direction) {
+  if (!x11_ready()) {
+    fprintf(stderr, "[go-bridge] x11_move_resize: X11 init failed\n");
+    return;
+  }
+  fprintf(stderr, "[go-bridge] x11_move_resize xid=%lu dir=%d\n", xid, direction);
+  pthread_mutex_lock(&g_x_mu);
+  auto root_of = reinterpret_cast<unsigned long (*)(void*)>(dlsym(g_x11_so, "XDefaultRootWindow"));
+  auto intern_atom = reinterpret_cast<unsigned long (*)(void*, const char*, int)>(dlsym(g_x11_so, "XInternAtom"));
+  auto send_event = reinterpret_cast<int (*)(void*, unsigned long, int, long, void*)>(dlsym(g_x11_so, "XSendEvent"));
+  auto flush = reinterpret_cast<int (*)(void*)>(dlsym(g_x11_so, "XFlush"));
+  auto query_pointer = reinterpret_cast<int (*)(void*, unsigned long, unsigned long*, unsigned long*, int*, int*, int*, int*, unsigned*)>(dlsym(g_x11_so, "XQueryPointer"));
+  if (root_of == nullptr || intern_atom == nullptr || send_event == nullptr || flush == nullptr ||
+      query_pointer == nullptr) {
+    pthread_mutex_unlock(&g_x_mu);
+    return;
+  }
+  unsigned long root = root_of(g_xdisp);
+  unsigned long child = 0;
+  int rx = 0, ry = 0, wx = 0, wy = 0;
+  unsigned mask = 0;
+  query_pointer(g_xdisp, root, &root, &child, &rx, &ry, &wx, &wy, &mask);
+  XClientMsgEvent ev;
+  memset(&ev, 0, sizeof(ev));
+  ev.type = 33;  // ClientMessage
+  ev.window = xid;
+  ev.message_type = g_wmmove_atom;
+  ev.format = 32;
+  ev.data[0] = xid;
+  ev.data[1] = g_wmmove_atom;
+  ev.data[2] = static_cast<unsigned long>(direction);
+  ev.data[3] = static_cast<unsigned long>(rx);
+  ev.data[4] = static_cast<unsigned long>(ry);
+  ev.data[5] = 1;  // source indication: application
+  unsigned long buf[24];  // XEvent-sized scratch; XSendEvent reads by type
+  memset(buf, 0, sizeof(buf));
+  memcpy(buf, &ev, sizeof(ev));
+  int sent = send_event(g_xdisp, root, 0, (1L << 20) | (1L << 19), buf);  // SubstructureRedirect|Notify
+  flush(g_xdisp);
+  fprintf(stderr, "[go-bridge] x11 send: atom=%lu root=%lu rx=%d ry=%d sent=%d\n",
+          g_wmmove_atom, root, rx, ry, sent);
+  pthread_mutex_unlock(&g_x_mu);
+}
 
 // ======================================================================
 // main-process surface (stage 3): window management, the stdio control
@@ -967,6 +1240,8 @@ struct EvCtx {
   int32_t wc;
   const char* ev;      // event name reported to Go
   bool extra_bounds;   // attach win.getBounds() to the payload
+  bool file_drop;      // runtime flags injected on did-finish-load
+  bool frameless;
 };
 
 static void WindowEventCb(const FunctionCallbackInfo<Value>& args) {
@@ -1027,7 +1302,16 @@ static void RenderGoneCb(const FunctionCallbackInfo<Value>& args) {
 
 // did-finish-load: the renderer probe + native-transport injection.
 static void InjectDoneOkCb(const FunctionCallbackInfo<Value>& args) {
-  ELog("native init injected ok");
+  Isolate* isolate = I(args);
+  HandleScope hs(isolate);
+  Local<Context> ctx = isolate->GetCurrentContext();
+  std::string extra;
+  Local<String> ps;
+  if (args.Length() >= 1 && args[0]->ToString(ctx).ToLocal(&ps)) {
+    String::Utf8Value u(isolate, ps);
+    extra.assign(*u, u.length());
+  }
+  ELog("native init injected ok %s", extra.c_str());  // reports the dnd shim state
 }
 static void InjectDoneErrCb(const FunctionCallbackInfo<Value>& args) {
   Isolate* isolate = I(args);
@@ -1045,9 +1329,14 @@ static void ProbeOkCb(const FunctionCallbackInfo<Value>& args) {
   Isolate* isolate = I(args);
   HandleScope hs(isolate);
   Local<Context> ctx = isolate->GetCurrentContext();
-  std::string probe = "?";
-  if (args.Length() >= 1 && args[0]->IsString()) {
-    String::Utf8Value u(isolate, args[0]);
+  std::string probe = "<no result>";
+  Local<Value> probe_v = args.Length() >= 1 ? Local<Value>(args[0]) : Local<Value>();
+  if (!probe_v.IsEmpty() && probe_v->IsObject()) {
+    probe_v = JsonStringify(isolate, ctx, probe_v);
+  }
+  Local<String> ps;
+  if (!probe_v.IsEmpty() && probe_v->ToString(ctx).ToLocal(&ps)) {
+    String::Utf8Value u(isolate, ps);
     probe.assign(*u, u.length());
   }
   ELog("renderer probe: %s", probe.c_str());
@@ -1066,9 +1355,15 @@ static void ProbeOkCb(const FunctionCallbackInfo<Value>& args) {
   if (cfg_json.IsEmpty() || !cfg_json->IsString()) return;
   String::Utf8Value cj(isolate, cfg_json);
   std::string script =
-      "typeof __wailsNativeInit === 'function' && __wailsNativeInit(";
+      "window._wails=window._wails||{};window._wails.flags=window._wails.flags||{};";
+  script += "window._wails.flags.enableFileDrop=";
+  script += ec->file_drop ? "true" : "false";
+  script += ";window._wails.flags.frameless=";
+  script += ec->frameless ? "true" : "false";
+  script += ";typeof __wailsNativeInit === 'function' && __wailsNativeInit(";
   script += *cj;
   script += ")";
+  script += ";'dnd=' + typeof window.chrome.webview.postMessageWithAdditionalObjects";
   Local<Value> unused;
   if (!args.This()
                ->Get(ctx, S(isolate, "executeJavaScript"))
@@ -1097,7 +1392,8 @@ static void ProbeErrCb(const FunctionCallbackInfo<Value>& args) {
 
 static void WireWindow(Isolate* isolate, Local<Context> ctx, uint32_t id,
                        int32_t wc, Local<Object> win,
-                       Local<Object> webcontents) {
+                       Local<Object> webcontents, bool file_drop,
+                       bool frameless) {
   static const struct {
     const char* dom;  // Electron event name
     const char* go;   // name reported to Go
@@ -1113,7 +1409,7 @@ static void WireWindow(Isolate* isolate, Local<Context> ctx, uint32_t id,
       {"resize", "resize", true},        {"move", "move", true},
   };
   for (const auto& e : kEvents) {
-    EvCtx* ec = new EvCtx{id, wc, e.go, e.bounds};
+    EvCtx* ec = new EvCtx{id, wc, e.go, e.bounds, false, false};
     Local<Function> fn =
         FunctionTemplate::New(isolate, WindowEventCb, External::New(isolate, ec, kExternalPointerTypeTagDefault))
             ->GetFunction(ctx).ToLocalChecked();
@@ -1139,7 +1435,7 @@ static void WireWindow(Isolate* isolate, Local<Context> ctx, uint32_t id,
         .ToLocal(&ignored);
   }
   {
-    EvCtx* ec = new EvCtx{id, wc, "render-gone", false};
+    EvCtx* ec = new EvCtx{id, wc, "render-gone", false, false, false};
     Local<Function> fn =
         FunctionTemplate::New(isolate, RenderGoneCb,
                               External::New(isolate, ec, kExternalPointerTypeTagDefault))
@@ -1154,7 +1450,7 @@ static void WireWindow(Isolate* isolate, Local<Context> ctx, uint32_t id,
   }
   // did-finish-load: probe + inject
   {
-    EvCtx* ec = new EvCtx{id, wc, "did-finish-load", false};
+    EvCtx* ec = new EvCtx{id, wc, "did-finish-load", false, file_drop, frameless};
     Local<Function> fn =
         FunctionTemplate::New(isolate, ProbeOkCb,
                               External::New(isolate, ec, kExternalPointerTypeTagDefault))
@@ -1238,7 +1534,9 @@ static Local<Value> CreateWindow(Isolate* isolate, Local<Context> ctx,
 
   WireWindow(isolate, ctx, id, wc_id, win,
              win->Get(ctx, S(isolate, "webContents")).ToLocalChecked()
-                 .As<Object>());
+                 .As<Object>(),
+             PBool(isolate, ctx, p, "enableFileDrop"),
+             PBool(isolate, ctx, p, "frameless"));
 
   std::string url = PStr(isolate, ctx, p, "url");
   if (!url.empty()) {
@@ -1368,6 +1666,66 @@ static Local<Value> DispatchMethod(Isolate* isolate, Local<Context> ctx,
   if (m == "redo") return simple("webContents", "redo");
   if (m == "selectAll") return simple("webContents", "selectAll");
   if (m == "delete") return simple("webContents", "delete");
+  if (m == "setMinimumSize" || m == "setMaximumSize") {
+    Local<Object> w = GetWin(isolate, ctx, p);
+    Local<Value> argv[2] = {
+        Number::New(isolate, PNum(isolate, ctx, p, "width", 0)),
+        Number::New(isolate, PNum(isolate, ctx, p, "height", 0))};
+    const char* fn = m == "setMinimumSize" ? "setMinimumSize" : "setMaximumSize";
+    Local<Function> f = w->Get(ctx, S(isolate, fn)).ToLocalChecked().As<Function>();
+    return f->Call(ctx, w, 2, argv).FromMaybe(Local<Value>());
+  }
+  if (m == "setParent") {
+    Local<Object> w = GetWin(isolate, ctx, p);
+    uint32_t parent_id = static_cast<uint32_t>(PNum(isolate, ctx, p, "parent", 0));
+    Local<Object> parent;
+    {
+      auto it = g_windows.find(parent_id);
+      if (it != g_windows.end()) parent = it->second.Get(isolate);
+    }
+    if (parent.IsEmpty()) {
+      isolate->ThrowError("setParent: unknown parent window");
+      return Local<Value>();
+    }
+    Local<Function> f = w->Get(ctx, S(isolate, "setParentWindow")).ToLocalChecked().As<Function>();
+    Local<Value> argv[1] = {parent};
+    return f->Call(ctx, w, 1, argv).FromMaybe(Local<Value>());
+  }
+  if (m == "startDrag" || m == "startResize") {
+    // Experimental (WAILS_COMPAT_X11_DRAG=1): the self-managed pointer
+    // tracking moves the Chromium window from outside its process, which
+    // Chromium sometimes answers by unmapping it — under investigation.
+    // Without the flag the host reports an explicit error instead.
+    static const bool x11_drag = getenv("WAILS_COMPAT_X11_DRAG") != nullptr;
+    if (!x11_drag) {
+      isolate->ThrowError("frameless drag/resize is not available on the electron backend yet");
+      return Local<Value>();
+    }
+    Local<Object> w = GetWin(isolate, ctx, p);
+    // the native XID rides in the first 4 bytes of getNativeWindowHandle()
+    Local<Function> gnh =
+        w->Get(ctx, S(isolate, "getNativeWindowHandle")).ToLocalChecked().As<Function>();
+    Local<Value> handle = gnh->Call(ctx, w, 0, nullptr).FromMaybe(Local<Value>());
+    fprintf(stderr, "[go-bridge] startDrag/Resize dispatch entered\n");
+    if (handle.IsEmpty() || !handle->IsArrayBufferView()) {
+      isolate->ThrowError("startDrag: no native window handle");
+      return Local<Value>();
+    }
+    auto view = handle.As<ArrayBufferView>();
+    std::shared_ptr<BackingStore> bs = view->Buffer()->GetBackingStore();
+    if (view->ByteLength() < 4) {
+      isolate->ThrowError("startDrag: short native handle");
+      return Local<Value>();
+    }
+    unsigned long xid = *reinterpret_cast<const uint32_t*>(
+        static_cast<const char*>(bs->Data()) + view->ByteOffset());
+    int direction = 8;  // move
+    if (m == "startResize") {
+      direction = x11_direction(PStr(isolate, ctx, p, "edge").c_str());
+    }
+    x11_move_resize(xid, direction);
+    return Undefined(isolate);
+  }
   if (m == "quit") {
     Local<Function> fn = g_app.Get(isolate)
                              ->Get(ctx, S(isolate, "quit"))
@@ -1551,6 +1909,10 @@ static void WailsMessageCb(const FunctionCallbackInfo<Value>& args) {
   }
   Local<Value> payload =
       args.Length() >= 2 ? Local<Value>(args[1]) : Undefined(isolate);
+  if (g_m_debug && payload->IsString()) {
+    String::Utf8Value pu(isolate, payload);
+    fprintf(stderr, "[wails-electron] postMessage: %.60s\n", *pu);
+  }
   // compat diagnostics passthrough (same shape as main.js logged)
   if (payload->IsString()) {
     TryCatch tc(isolate);
