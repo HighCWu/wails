@@ -769,6 +769,162 @@ static void NativeInitThunk(const FunctionCallbackInfo<Value>& args) {
 
 
 
+// ---- X11 frameless drag/resize via _NET_WM_MOVERESIZE -----------------
+// Electron exposes no manual-move API; the window manager conducts the
+// interactive move/resize when the app sends this client message (same
+// mechanism GTK's begin_move_drag uses). libX11 is dlopen'd so the build
+// needs no X11 dev headers; Electron always runs with a DISPLAY on X11.
+struct XClientMsgEvent {
+  int type;
+  unsigned long serial;
+  int send_event;
+  void* display;
+  unsigned long window;
+  unsigned long message_type;
+  int format;
+  unsigned long data[5];
+};
+
+static void* g_x11_so = nullptr;
+static void* g_xdisp = nullptr;
+static unsigned long g_wmmove_atom = 0;
+static pthread_mutex_t g_x_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static bool x11_ready() {
+  pthread_mutex_lock(&g_x_mu);
+  if (g_x11_so == nullptr) {
+    g_x11_so = dlopen("libX11.so.6", RTLD_LAZY);
+    if (g_x11_so != nullptr) {
+      auto init_threads = reinterpret_cast<int (*)(void)>(dlsym(g_x11_so, "XInitThreads"));
+      if (init_threads != nullptr) init_threads();
+      auto open_disp = reinterpret_cast<void* (*)(const char*)>(dlsym(g_x11_so, "XOpenDisplay"));
+      auto intern_atom = reinterpret_cast<unsigned long (*)(void*, const char*, int)>(dlsym(g_x11_so, "XInternAtom"));
+      if (open_disp != nullptr && intern_atom != nullptr) {
+        g_xdisp = open_disp(nullptr);
+        if (g_xdisp != nullptr) {
+          g_wmmove_atom = intern_atom(g_xdisp, "_NET_WM_MOVERESIZE", 0);
+        }
+      }
+    }
+  }
+  bool ok = g_xdisp != nullptr && g_wmmove_atom != 0;
+  pthread_mutex_unlock(&g_x_mu);
+  return ok;
+}
+
+// _NET_WM_MOVERESIZE directions (freedesktop.org wm-spec)
+static int x11_direction(const char* edge) {
+  if (strcmp(edge, "nw-resize") == 0) return 0;
+  if (strcmp(edge, "n-resize") == 0) return 1;
+  if (strcmp(edge, "ne-resize") == 0) return 2;
+  if (strcmp(edge, "e-resize") == 0) return 3;
+  if (strcmp(edge, "se-resize") == 0) return 4;
+  if (strcmp(edge, "s-resize") == 0) return 5;
+  if (strcmp(edge, "sw-resize") == 0) return 6;
+  if (strcmp(edge, "w-resize") == 0) return 7;
+  return 8;  // move
+}
+
+// The WM-conducted _NET_WM_MOVERESIZE protocol cannot be used while the
+// pointer is grabbed by the renderer (Chromium holds an implicit button
+// grab for the whole press, and a cross-process XUngrabPointer is not
+// possible) — the WM's grab silently fails. Instead we track the pointer
+// ourselves and move/resize the window directly, exactly like the CEF
+// backend's glue did. Runs synchronously until button release, matching
+// native BeginMove semantics.
+static void x11_move_resize(unsigned long xid, int direction) {
+  if (!x11_ready()) {
+    fprintf(stderr, "[go-bridge] x11_move_resize: X11 init failed\n");
+    return;
+  }
+  pthread_mutex_lock(&g_x_mu);
+  auto get_geometry = reinterpret_cast<int (*)(void*, unsigned long, unsigned long*, int*, int*, unsigned*, unsigned*, unsigned*, unsigned*)>(dlsym(g_x11_so, "XGetGeometry"));
+  auto translate = reinterpret_cast<int (*)(void*, unsigned long, unsigned long, int*, int*)>(dlsym(g_x11_so, "XTranslateCoordinates"));
+  auto move_window = reinterpret_cast<int (*)(void*, unsigned long, int, int)>(dlsym(g_x11_so, "XMoveWindow"));
+  auto move_resize_window = reinterpret_cast<int (*)(void*, unsigned long, int, int, unsigned, unsigned)>(dlsym(g_x11_so, "XMoveResizeWindow"));
+  auto query_pointer = reinterpret_cast<int (*)(void*, unsigned long, unsigned long*, unsigned long*, int*, int*, int*, int*, unsigned*)>(dlsym(g_x11_so, "XQueryPointer"));
+  auto flush = reinterpret_cast<int (*)(void*)>(dlsym(g_x11_so, "XFlush"));
+  if (get_geometry == nullptr || translate == nullptr || move_window == nullptr ||
+      move_resize_window == nullptr || query_pointer == nullptr || flush == nullptr) {
+    fprintf(stderr, "[go-bridge] x11_move_resize: missing X11 symbols\n");
+    pthread_mutex_unlock(&g_x_mu);
+    return;
+  }
+  unsigned long root_ret = 0;
+  int wx = 0, wy = 0;
+  unsigned w = 0, h = 0, bw = 0, depth = 0;
+  if (get_geometry(g_xdisp, xid, &root_ret, &wx, &wy, &w, &h, &bw, &depth) == 0) {
+    fprintf(stderr, "[go-bridge] x11_move_resize: XGetGeometry failed\n");
+    pthread_mutex_unlock(&g_x_mu);
+    return;
+  }
+  // window origin -> root coordinates (frameless windows are usually
+  // parented to root, but translate anyway for WM-framed cases)
+  int rx = wx, ry = wy;
+  translate(g_xdisp, xid, root_ret, &rx, &ry);
+  unsigned long qroot = 0, qchild = 0;
+  int px = 0, py = 0, qwx = 0, qwy = 0;
+  unsigned qmask = 0;
+  if (!query_pointer(g_xdisp, root_ret, &qroot, &qchild, &px, &py, &qwx, &qwy, &qmask)) {
+    pthread_mutex_unlock(&g_x_mu);
+    return;
+  }
+  const int start_px = px, start_py = py;
+  const int start_wx = rx, start_wy = ry;
+  const unsigned start_w = w, start_h = h;
+  const bool resize = direction != 8;
+  // direction bits for the arithmetic below
+  const bool west = direction == 0 || direction == 6 || direction == 7;   // nw sw w
+  const bool north = direction == 0 || direction == 1 || direction == 2;  // nw n ne
+  const bool east = direction == 2 || direction == 3 || direction == 4;   // ne e se
+  const bool south = direction == 4 || direction == 5 || direction == 6;  // se s sw
+  flush(g_xdisp);
+  pthread_mutex_unlock(&g_x_mu);
+
+  // track the pointer until the button is released (grab or not,
+  // XQueryPointer always reports true root coordinates)
+  for (;;) {
+    struct timespec ts = {0, 16 * 1000 * 1000};
+    nanosleep(&ts, nullptr);
+    pthread_mutex_lock(&g_x_mu);
+    int nrx = 0, nry = 0;
+    unsigned long nr = 0, nc = 0;
+    unsigned nmask = 0;
+    int nx = 0, ny = 0;
+    if (!query_pointer(g_xdisp, root_ret, &nr, &nc, &nrx, &nry, &nx, &ny, &nmask)) {
+      pthread_mutex_unlock(&g_x_mu);
+      return;
+    }
+    if ((nmask & (1 << 8)) == 0) {  // Button1 released -> done
+      flush(g_xdisp);
+      pthread_mutex_unlock(&g_x_mu);
+      return;
+    }
+    if (resize) {
+      int nx0 = start_wx, ny0 = start_wy;
+      unsigned nw = start_w, nh = start_h;
+      if (east) nw = start_w + (nrx - start_px);
+      if (south) nh = start_h + (nry - start_py);
+      if (west) {
+        nx0 = start_wx + (nrx - start_px);
+        nw = start_w - (nrx - start_px);
+      }
+      if (north) {
+        ny0 = start_wy + (nry - start_py);
+        nh = start_h - (nry - start_py);
+      }
+      if (nw < 100) { if (west) nx0 = start_wx + (int)start_w - 100; nw = 100; }
+      if (nh < 60) { if (north) ny0 = start_wy + (int)start_h - 60; nh = 60; }
+      move_resize_window(g_xdisp, xid, nx0, ny0, nw, nh);
+    } else {
+      move_window(g_xdisp, xid, start_wx + (nrx - start_px), start_wy + (nry - start_py));
+    }
+    flush(g_xdisp);
+    pthread_mutex_unlock(&g_x_mu);
+  }
+}
+
+
 // ======================================================================
 // main-process surface (stage 3): window management, the stdio control
 // protocol, and event forwarding — the entire former main.js, native.
@@ -1528,13 +1684,38 @@ static Local<Value> DispatchMethod(Isolate* isolate, Local<Context> ctx,
     Local<Value> argv[1] = {parent};
     return f->Call(ctx, w, 1, argv).FromMaybe(Local<Value>());
   }
-  if (m == "startDrag" || m == "startResize") {
-    // Frameless moves AND edge-resizes are conducted natively by Chromium
-    // on the transparent frameless window (the draggable-region mirror
-    // handles moves; ozone runs its own edge-resize loop) — the
-    // control-protocol request is a permanent no-op here. No X11
-    // groundwork is needed: cross-process pointer tracking lost the
-    // WM grab race and made Chromium unmap the window.
+  if (m == "startDrag") {
+    // Frameless MOVES are conducted natively by Chromium (the
+    // draggable-region mirror lets it ungrab in-process) — verified
+    // working on the real desktop; a no-op here.
+    return Undefined(isolate);
+  }
+  if (m == "startResize") {
+    // Frameless RESIZE: Chromium's own edge handling is unreliable across
+    // Linux WMs (asymmetric corners observed on xfwm4: NE/NW resize both
+    // axes, SE/SW only one) and the transparent window's input region
+    // goes stale after its gestures (clicks fall through). The runtime
+    // still sends us wails:resize:<edge>, so conduct the resize here via
+    // the X11 pointer-tracking loop — the same technique the CEF backend
+    // used successfully on the real desktop.
+    Local<Object> w = GetWin(isolate, ctx, p);
+    Local<Function> gnh =
+        w->Get(ctx, S(isolate, "getNativeWindowHandle")).ToLocalChecked().As<Function>();
+    Local<Value> handle = gnh->Call(ctx, w, 0, nullptr).FromMaybe(Local<Value>());
+    if (handle.IsEmpty() || !handle->IsArrayBufferView()) {
+      isolate->ThrowError("startResize: no native window handle");
+      return Local<Value>();
+    }
+    auto view = handle.As<ArrayBufferView>();
+    std::shared_ptr<BackingStore> bs = view->Buffer()->GetBackingStore();
+    if (view->ByteLength() < 4) {
+      isolate->ThrowError("startResize: short native handle");
+      return Local<Value>();
+    }
+    unsigned long xid = *reinterpret_cast<const uint32_t*>(
+        static_cast<const char*>(bs->Data()) + view->ByteOffset());
+    int direction = x11_direction(PStr(isolate, ctx, p, "edge").c_str());
+    x11_move_resize(xid, direction);
     return Undefined(isolate);
   }
   if (m == "quit") {
