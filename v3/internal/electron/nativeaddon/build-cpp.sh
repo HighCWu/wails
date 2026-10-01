@@ -72,10 +72,12 @@ MINGW*|MSYS*|CYGWIN*)
     exit 1
   fi
   { echo "LIBRARY electron.exe"; echo "EXPORTS"; cat "$TMPD/names.txt"; } > "$TMPD/electron.def"
-  # -m takes dlltool's machine NAME (x86_64), not the BFD arch string —
-  # an unknown value silently falls back to 32-bit imports that ld skips,
-  # leaving every import undefined at link time.
-  dlltool -d "$TMPD/electron.def" -l "$TMPD/electron.lib" -m x86_64
+  # No -m: the mingw64 dlltool defaults to its own native machine
+  # (x86_64) — its accepted -m spellings vary by build ('x86_64' was
+  # rejected by binutils 15.2's dlltool), and the native default is
+  # exactly what we want. -m i386:x86-64 (the BFD arch string) silently
+  # produced 32-bit imports that ld skipped.
+  dlltool -d "$TMPD/electron.def" -l "$TMPD/electron.lib"
   LINK_EXTRA="$TMPD/electron.lib"
   STATIC_LIBS="-static-libgcc -static-libstdc++"
   echo "import library built: $COUNT exports from $EXE"
