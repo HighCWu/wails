@@ -80,7 +80,10 @@ MINGW*|MSYS*|CYGWIN*)
   PY=python3
   command -v python3 >/dev/null 2>&1 || PY=python
   "$PY" gen_importlib.py "$TMPD/names.txt" "$TMPD/electron.lib" electron.exe
-  LINK_EXTRA="$TMPD/electron.lib"
+  # dllimport on every napi declaration: the short-import members resolve
+  # the __imp_* IAT symbols reliably; mingw ld does not fabricate the
+  # plain-name jmp thunks from import-library members.
+  WIN_DEFS='-DNAPI_EXTERN=__declspec(dllimport)'
   LINK_EXTRA="$TMPD/electron.lib"
   STATIC_LIBS="-static-libgcc -static-libstdc++"
   echo "import library built: $COUNT exports from $EXE"
@@ -88,5 +91,5 @@ MINGW*|MSYS*|CYGWIN*)
 esac
 
 g++ -std=c++20 -fno-rtti -O2 -fPIC -shared -o "$OUT" "$SRC" \
-  -I"$HDR" $V8_DEFS $LINK_EXTRA -lpthread $STATIC_LIBS
+  -I"$HDR" $V8_DEFS $WIN_DEFS $LINK_EXTRA -lpthread $STATIC_LIBS
 echo "built $OUT from $SRC (headers: $HDR)"
