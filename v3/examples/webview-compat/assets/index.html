@@ -12,7 +12,7 @@
 <h2>webview-compat</h2>
 <div id="rpc">benchmark running…</div>
 <div style="margin-top:12px"><input id="ime" placeholder="IME target" autocomplete="off"/></div>
-<div id="dragstrip"  style="--wails-draggable: drag; position: fixed; top: 0; left: 0; right: 0; height: 24px; background: #2a2f36; color: #8899aa; font-size: 12px; line-height: 24px; text-align: center; z-index: 9;">drag strip (frameless test)</div>
+<div id="dragstrip" onmousedown="console.log('STRIP-MD')" style="--wails-draggable: drag; position: fixed; top: 0; left: 0; right: 0; height: 24px; background: #2a2f36; color: #8899aa; font-size: 12px; line-height: 24px; text-align: center; z-index: 9;">drag strip (frameless test)</div>
 
 <script type="module">
   import * as wails from "/wails/runtime.js";

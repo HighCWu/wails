@@ -37,7 +37,14 @@ for _ in $(seq 1 200); do
   sleep 0.3
 done
 grep -q "compat: backend=electron" "$LOG" || die "backend is not electron"
-sleep 2
+# drag AFTER the concurrent suite settles — its maximise/hide churn would
+# interrupt the native move mid-gesture
+for _ in $(seq 1 300); do
+  grep -q "compat: SUITE" "$LOG" && break
+  kill -0 "$APP_PID" 2>/dev/null || die "app exited during suite"
+  sleep 0.5
+done
+sleep 3
 
 WID=$(xdotool search --onlyvisible --name "^webview-compat$" | head -1)
 [[ -n "$WID" ]] || die "app window not found"
@@ -46,10 +53,10 @@ sleep 1
 
 eval "$(xdotool getwindowgeometry --shell "$WID")"
 X0=$X; Y0=$Y
-# the drag strip sits ~40px from the window's top-left (24px h2 above it)
-xdotool mousemove "$((X0 + 200))" "$((Y0 + 48))" click 1   # warm the runtime
-sleep 0.5
-xdotool mousemove "$((X0 + 200))" "$((Y0 + 48))" mousedown 1
+# the drag strip is fixed at the window's top edge (24px tall).
+# NOTE: no warm click here — a click on the draggable strip leaves the
+# native move in a state that suppresses the next press.
+xdotool mousemove "$((X0 + 200))" "$((Y0 + 12))" sleep 0.3 mousedown 1
 sleep 0.4
 xdotool mousemove_relative -- 130 60
 sleep 0.4

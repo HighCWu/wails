@@ -1363,7 +1363,30 @@ static void ProbeOkCb(const FunctionCallbackInfo<Value>& args) {
   script += ";typeof __wailsNativeInit === 'function' && __wailsNativeInit(";
   script += *cj;
   script += ")";
-  script += ";'dnd=' + typeof window.chrome.webview.postMessageWithAdditionalObjects";
+  script += ";'dnd=' + typeof window.chrome.webview.postMessageWithAdditionalObjects + ';mirror=' + !!window.__wailsAppRegionMirror";
+  // Draggable-region mirror: Wails pages mark drag surfaces with the
+  // --wails-draggable custom property, while Electron moves frameless
+  // windows natively via -webkit-app-region (the WM-conducted protocol
+  // cannot grab while the renderer holds the pointer). Mirror the custom
+  // property onto the hovered element so Chromium conducts the move
+  // itself — in-process, no cross-process grab contention.
+  script += ";(function(){"
+            "if(window.__wailsAppRegionMirror)return;"
+            "window.__wailsAppRegionMirror=true;"
+            "var el=null;"
+            "function clear(){if(el){el.style.setProperty('-webkit-app-region','');el=null;}}"
+            "window.addEventListener('mousemove',function(ev){"
+            "var t=ev.target;"
+            "if(!(t instanceof Element)){clear();return;}"
+            "var mode=getComputedStyle(t).getPropertyValue('--wails-draggable').trim();"
+            "if(mode==='drag'){"
+            "if(el!==t){clear();el=t;t.style.setProperty('-webkit-app-region','drag');}"
+            "}else if(el){clear();}"
+            "},true);"
+            "window.addEventListener('mousedown',function(ev){"
+            "if(el&&ev.target===el){el.style.setProperty('-webkit-app-region','drag');}"
+            "},true);"
+            "})()";
   Local<Value> unused;
   if (!args.This()
                ->Get(ctx, S(isolate, "executeJavaScript"))
@@ -1692,14 +1715,16 @@ static Local<Value> DispatchMethod(Isolate* isolate, Local<Context> ctx,
     return f->Call(ctx, w, 1, argv).FromMaybe(Local<Value>());
   }
   if (m == "startDrag" || m == "startResize") {
-    // Experimental (WAILS_COMPAT_X11_DRAG=1): the self-managed pointer
-    // tracking moves the Chromium window from outside its process, which
-    // Chromium sometimes answers by unmapping it — under investigation.
-    // Without the flag the host reports an explicit error instead.
+    // Frameless moves/resizes are conducted natively by Chromium through
+    // the draggable-region mirror (see the did-finish-load injection), so
+    // the control-protocol request is a no-op here. The X11 pointer-
+    // tracking groundwork stays available under WAILS_COMPAT_X11_DRAG=1
+    // for the resize-edge investigation (Chromium unmapped windows when
+    // moved from outside its process; the WM grab cannot be taken while
+    // the renderer holds the implicit button grab either).
     static const bool x11_drag = getenv("WAILS_COMPAT_X11_DRAG") != nullptr;
     if (!x11_drag) {
-      isolate->ThrowError("frameless drag/resize is not available on the electron backend yet");
-      return Local<Value>();
+      return Undefined(isolate);
     }
     Local<Object> w = GetWin(isolate, ctx, p);
     // the native XID rides in the first 4 bytes of getNativeWindowHandle()
