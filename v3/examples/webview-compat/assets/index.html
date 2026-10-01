@@ -54,7 +54,9 @@
     // /wails/runtime: the UDS data plane (native-http) or fetch-ipc.
     // The flag flips during preload (before page fetches), so resolve
     // the label lazily when the row is emitted.
-    const httpName = () => window.__nativeHttpActive ? "native-uds-http" : "fetch-ipc";
+    // label by transport actually wired: the v3 invoke frame (UDS) or
+    // the retired fetch-ipc name kept only for old log comparison
+    const httpName = () => window.__nativeInvoke ? "native-uds" : "fetch-ipc";
     paths.push(["__http__", (p) => wails.Call.ByName(METHOD, p)]);
     const nameOf = (name) => name === "__http__" ? httpName() : name;
     // native transport arrives via late injection after page load — wait for it
