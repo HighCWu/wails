@@ -97,6 +97,45 @@ jobs:
         shell: pwsh
         run: ./v3/examples/clickthrough/ci/test-windows.ps1 -AppPath clickthrough.exe
 
+  electron-windows:
+    name: Windows Electron
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v3/go.mod
+      - name: Install mingw g++
+        shell: pwsh
+        run: choco install mingw -y --no-progress
+      - name: Download Electron (win32-x64)
+        shell: pwsh
+        run: |
+          curl.exe -sL -o $env:RUNNER_TEMP\electron.zip https://github.com/electron/electron/releases/download/v44.4.5/electron-v44.4.5-win32-x64.zip
+          Expand-Archive -Force $env:RUNNER_TEMP\electron.zip C:\electron
+      - name: Build native addon (mingw g++, Electron V8 headers)
+        shell: cmd
+        run: |
+          set PATH=C:\ProgramData\chocolatey\lib\mingw	ools\install\mingw64in;%PATH%
+          curl.exe -sL -o headers.tar.gz https://www.electronjs.org/headers/v44.4.5/node-v44.4.5-headers.tar.gz
+          mkdir headers && tar -xzf headers.tar.gz -C headers
+          g++ -std=c++20 -fno-rtti -O2 -shared -DNOMINMAX -DWIN32_LEAN_AND_MEAN -D_WIN32_WINNT=0x0A00 -DV8_COMPRESS_POINTERS -DV8_COMPRESS_POINTERS_IN_SHARED_CAGE -DV8_ENABLE_SANDBOX -DV8_31BIT_SMIS_ON_64BIT_ARCH -DV8_EXTERNAL_CODE_SPACE -o go_bridge_cpp.node v3\internal\electron
+ativeaddonridge.cc -Iheaders
+ode_headers\include
+ode -static -static-libgcc -static-libstdc++
+      - name: Build compat app
+        working-directory: v3
+        run: go build -o ..\webview-compat.exe ./examples/webview-compat/
+      - name: Run compat scenario (electron backend, windows)
+        shell: bash
+        env:
+          WAILS_WEBVIEW_BACKEND: electron
+          WAILS_ELECTRON_DIR: C:/electron
+          WAILS_ELECTRON_DISABLE_SANDBOX: "1"
+          WAILS_ELECTRON_EXPERIMENT: native-ipc,native-http
+          WAILS_ELECTRON_NATIVE_ADDON: go_bridge_cpp.node
+        run: bash v3/examples/webview-compat/ci/test-compat-win.sh ./webview-compat.exe
+
   macos:
     name: macOS (flips hard, click best-effort)
     runs-on: macos-latest

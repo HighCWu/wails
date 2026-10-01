@@ -29,14 +29,17 @@
 #include <node_buffer.h>
 #include <v8.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
 #include <fcntl.h>
-#include <netdb.h>
-#include <pthread.h>
+#else
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
-
 #include <dlfcn.h>
+#endif
+#include <pthread.h>
 
 #include <cerrno>
 #include <cstdarg>
@@ -119,8 +122,12 @@ static void teardown_connection() {
   if (g_fd >= 0) {
     fprintf(stderr, "[go-bridge] teardown fd=%d connected=%d\n", g_fd,
             g_connected);
+#ifdef _WIN32
+    _close(g_fd);
+#else
     shutdown(g_fd, SHUT_RDWR);
     close(g_fd);
+#endif
     g_fd = -1;
   }
   g_connected = 0;
@@ -201,15 +208,23 @@ static MaybeLocal<Value> deserialize_value(Isolate* isolate, Local<Context> ctx,
 
 // ----------------------------------------------------------------------
 // connection
-static void Connect(Isolate* isolate, const char* endpoint, const char* token) {
-  pthread_mutex_lock(&g_io_mu);
-  if (g_fd >= 0) teardown_connection();
-  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) {
-    pthread_mutex_unlock(&g_io_mu);
-    isolate->ThrowError("go-bridge: socket failed");
-    return;
-  }
+
+#ifdef _WIN32
+// Named-pipe dial (Windows): CreateFileA on the pipe path, then expose
+// the handle as a CRT fd so every frame helper below stays identical
+// across platforms.
+static int dial_bridge_endpoint(const char* endpoint) {
+  HANDLE h = CreateFileA(endpoint, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (h == INVALID_HANDLE_VALUE) return -1;
+  int fd = _open_osfhandle(reinterpret_cast<intptr_t>(h), _O_RDWR | _O_BINARY);
+  if (fd < 0) CloseHandle(h);
+  return fd;
+}
+#else
+static int dial_bridge_endpoint(const char* endpoint) {
+  int fd = (int)socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return -1;
   struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
@@ -217,6 +232,20 @@ static void Connect(Isolate* isolate, const char* endpoint, const char* token) {
   if (connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) !=
       0) {
     close(fd);
+    return -1;
+  }
+  struct timeval tv = {BRIDGE_TIMEOUT_SEC, 0};
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  int bufsz = 4 * 1024 * 1024;
+  setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof(bufsz));
+  setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof(bufsz));
+  return fd;
+}
+#endif
+
+static void Connect(Isolate* isolate, const char* endpoint, const char* token) {
+  int fd = dial_bridge_endpoint(endpoint);
+  if (fd < 0) {
     pthread_mutex_unlock(&g_io_mu);
     isolate->ThrowError("go-bridge: connect failed");
     return;
@@ -235,11 +264,6 @@ static void Connect(Isolate* isolate, const char* endpoint, const char* token) {
     isolate->ThrowError("go-bridge: hello write failed");
     return;
   }
-  struct timeval tv = {BRIDGE_TIMEOUT_SEC, 0};
-  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  int bufsz = 4 * 1024 * 1024;
-  setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof(bufsz));
-  setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof(bufsz));
   uint32_t rlen = 0;
   int err = read_frame_len(fd, &rlen);
   if (err == 0 && (rlen == 0 || rlen > 1024 * 1024)) err = EPROTO;
@@ -769,6 +793,7 @@ static void NativeInitThunk(const FunctionCallbackInfo<Value>& args) {
 
 
 
+#ifdef __linux__
 // ---- X11 frameless drag/resize via _NET_WM_MOVERESIZE -----------------
 // Electron exposes no manual-move API; the window manager conducts the
 // interactive move/resize when the app sends this client message (same
@@ -923,7 +948,7 @@ static void x11_move_resize(unsigned long xid, int direction) {
     pthread_mutex_unlock(&g_x_mu);
   }
 }
-
+#endif // __linux__
 
 // ======================================================================
 // main-process surface (stage 3): window management, the stdio control
@@ -1691,6 +1716,11 @@ static Local<Value> DispatchMethod(Isolate* isolate, Local<Context> ctx,
     return Undefined(isolate);
   }
   if (m == "startResize") {
+#ifndef __linux__
+    // Windows/macOS: Chromium's native frameless edge resize handles
+    // the gesture (invisible hit borders, no painted frame).
+    return Undefined(isolate);
+#else
     // Frameless RESIZE: Chromium's own edge handling is unreliable across
     // Linux WMs (asymmetric corners observed on xfwm4: NE/NW resize both
     // axes, SE/SW only one) and the transparent window's input region
@@ -1717,6 +1747,7 @@ static Local<Value> DispatchMethod(Isolate* isolate, Local<Context> ctx,
     int direction = x11_direction(PStr(isolate, ctx, p, "edge").c_str());
     x11_move_resize(xid, direction);
     return Undefined(isolate);
+#endif // __linux__
   }
   if (m == "quit") {
     Local<Function> fn = g_app.Get(isolate)
