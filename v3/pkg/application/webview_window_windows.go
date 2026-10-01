@@ -1438,7 +1438,13 @@ func (w *windowsWebviewWindow) setFrameless(b bool) {
 	)
 }
 
-func newWindowImpl(parent *WebviewWindow) *windowsWebviewWindow {
+func newWindowImpl(parent *WebviewWindow) webviewWindowImpl {
+	// The electron backend replaces the whole window (BrowserWindow via
+	// the control protocol) rather than the webview inside a native
+	// window — same dispatch as the linux factory.
+	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return newElectronWindow(parent)
+	}
 	result := &windowsWebviewWindow{
 		parent: parent,
 		// Initialize visibility tracking fields
