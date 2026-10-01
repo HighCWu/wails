@@ -1242,6 +1242,7 @@ struct EvCtx {
   bool extra_bounds;   // attach win.getBounds() to the payload
   bool file_drop;      // runtime flags injected on did-finish-load
   bool frameless;
+  bool resizable;
 };
 
 static void WindowEventCb(const FunctionCallbackInfo<Value>& args) {
@@ -1360,6 +1361,9 @@ static void ProbeOkCb(const FunctionCallbackInfo<Value>& args) {
   script += ec->file_drop ? "true" : "false";
   script += ";window._wails.flags.frameless=";
   script += ec->frameless ? "true" : "false";
+  script += ";if(window._wails.setResizable)window._wails.setResizable(";
+  script += ec->resizable ? "true" : "false";
+  script += ");";
   script += ";typeof __wailsNativeInit === 'function' && __wailsNativeInit(";
   script += *cj;
   script += ")";
@@ -1416,7 +1420,7 @@ static void ProbeErrCb(const FunctionCallbackInfo<Value>& args) {
 static void WireWindow(Isolate* isolate, Local<Context> ctx, uint32_t id,
                        int32_t wc, Local<Object> win,
                        Local<Object> webcontents, bool file_drop,
-                       bool frameless) {
+                       bool frameless, bool resizable) {
   static const struct {
     const char* dom;  // Electron event name
     const char* go;   // name reported to Go
@@ -1432,7 +1436,7 @@ static void WireWindow(Isolate* isolate, Local<Context> ctx, uint32_t id,
       {"resize", "resize", true},        {"move", "move", true},
   };
   for (const auto& e : kEvents) {
-    EvCtx* ec = new EvCtx{id, wc, e.go, e.bounds, false, false};
+    EvCtx* ec = new EvCtx{id, wc, e.go, e.bounds, false, false, false};
     Local<Function> fn =
         FunctionTemplate::New(isolate, WindowEventCb, External::New(isolate, ec, kExternalPointerTypeTagDefault))
             ->GetFunction(ctx).ToLocalChecked();
@@ -1458,7 +1462,7 @@ static void WireWindow(Isolate* isolate, Local<Context> ctx, uint32_t id,
         .ToLocal(&ignored);
   }
   {
-    EvCtx* ec = new EvCtx{id, wc, "render-gone", false, false, false};
+    EvCtx* ec = new EvCtx{id, wc, "render-gone", false, false, false, false};
     Local<Function> fn =
         FunctionTemplate::New(isolate, RenderGoneCb,
                               External::New(isolate, ec, kExternalPointerTypeTagDefault))
@@ -1473,7 +1477,8 @@ static void WireWindow(Isolate* isolate, Local<Context> ctx, uint32_t id,
   }
   // did-finish-load: probe + inject
   {
-    EvCtx* ec = new EvCtx{id, wc, "did-finish-load", false, file_drop, frameless};
+    EvCtx* ec =
+        new EvCtx{id, wc, "did-finish-load", false, file_drop, frameless, resizable};
     Local<Function> fn =
         FunctionTemplate::New(isolate, ProbeOkCb,
                               External::New(isolate, ec, kExternalPointerTypeTagDefault))
@@ -1566,7 +1571,8 @@ static Local<Value> CreateWindow(Isolate* isolate, Local<Context> ctx,
              win->Get(ctx, S(isolate, "webContents")).ToLocalChecked()
                  .As<Object>(),
              PBool(isolate, ctx, p, "enableFileDrop"),
-             PBool(isolate, ctx, p, "frameless"));
+             PBool(isolate, ctx, p, "frameless"),
+             PBool(isolate, ctx, p, "resizable"));
 
   std::string url = PStr(isolate, ctx, p, "url");
   if (!url.empty()) {

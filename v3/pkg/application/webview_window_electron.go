@@ -241,6 +241,9 @@ func (w *electronWindow) setURL(url string) {}
 
 func (w *electronWindow) setResizable(resizable bool) {
 	_ = w.call("setResizable", map[string]any{"v": resizable})
+	// mirror the runtime flag (GTK parity): the page's frameless
+	// edge-resize detection stays disabled until this is set
+	w.execJS(fmt.Sprintf("if(window._wails&&window._wails.setResizable)window._wails.setResizable(%v);", resizable))
 }
 
 func (w *electronWindow) setMinSize(width, height int) {
