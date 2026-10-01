@@ -70,6 +70,7 @@ static napi_ref g_response_ctor = nullptr;
 static napi_ref g_v8mod = nullptr;      // require('v8') — recv for serde calls
 static napi_ref g_v8ser = nullptr;      // v8.serialize
 static napi_ref g_v8des = nullptr;      // v8.deserialize
+static napi_ref g_objproto = nullptr;   // Object.prototype — exotic gate
 
 // forward declarations (callback wiring order)
 static napi_value FetchOverride(napi_env env, napi_callback_info info);
@@ -95,6 +96,8 @@ static napi_value NativeInvoke(napi_env env, napi_callback_info info);
   X(napi_create_external_arraybuffer, (napi_env env, void* external_data, size_t byte_length, node_api_basic_finalize finalize_cb, void* finalize_hint, napi_value* result), (env, external_data, byte_length, finalize_cb, finalize_hint, result)) \
   X(napi_create_function, (napi_env env, const char* utf8name, size_t length, napi_callback cb, void* data, napi_value* result), (env, utf8name, length, cb, data, result)) \
   X(napi_create_int32, (napi_env env, int32_t value, napi_value* result), (env, value, result)) \
+  X(napi_create_string_latin1, (napi_env env, const char* str, size_t length, napi_value* result), (env, str, length, result)) \
+  X(napi_get_value_string_latin1, (napi_env env, napi_value value, char* buf, size_t bufsize, size_t* result), (env, value, buf, bufsize, result)) \
   X(napi_create_object, (napi_env env, napi_value* result), (env, result)) \
   X(napi_create_reference, (napi_env env, napi_value value, uint32_t initial_refcount, napi_ref* result), (env, value, initial_refcount, result)) \
   X(napi_create_string_utf8, (napi_env env, const char* str, size_t length, napi_value* result), (env, str, length, result)) \
@@ -107,18 +110,27 @@ static napi_value NativeInvoke(napi_env env, napi_callback_info info);
   X(napi_get_global, (napi_env env, napi_value* result), (env, result)) \
   X(napi_get_named_property, (napi_env env, napi_value object, const char* utf8name, napi_value* result), (env, object, utf8name, result)) \
   X(napi_get_null, (napi_env env, napi_value* result), (env, result)) \
+  X(napi_get_prototype, (napi_env env, napi_value object, napi_value* result), (env, object, result)) \
   X(napi_get_reference_value, (napi_env env, napi_ref ref, napi_value* result), (env, ref, result)) \
   X(napi_get_typedarray_info, (napi_env env, napi_value typedarray, napi_typedarray_type* type, size_t* length, void** data, napi_value* arraybuffer, size_t* byte_offset), (env, typedarray, type, length, data, arraybuffer, byte_offset)) \
   X(napi_get_undefined, (napi_env env, napi_value* result), (env, result)) \
   X(napi_get_value_double, (napi_env env, napi_value value, double* result), (env, value, result)) \
   X(napi_get_value_string_utf8, (napi_env env, napi_value value, char* buf, size_t bufsize, size_t* result), (env, value, buf, bufsize, result)) \
   X(napi_is_array, (napi_env env, napi_value value, bool* result), (env, value, result)) \
+  X(napi_is_arraybuffer, (napi_env env, napi_value value, bool* result), (env, value, result)) \
+  X(napi_is_date, (napi_env env, napi_value value, bool* result), (env, value, result)) \
   X(napi_is_exception_pending, (napi_env env, bool* result), (env, result)) \
   X(napi_is_typedarray, (napi_env env, napi_value value, bool* result), (env, value, result)) \
   X(napi_new_instance, (napi_env env, napi_value constructor, size_t argc, const napi_value* argv, napi_value* result), (env, constructor, argc, argv, result)) \
   X(napi_set_element, (napi_env env, napi_value object, uint32_t index, napi_value value), (env, object, index, value)) \
   X(napi_set_named_property, (napi_env env, napi_value object, const char* utf8name, napi_value value), (env, object, utf8name, value)) \
+  X(napi_strict_equals, (napi_env env, napi_value lhs, napi_value rhs, bool* result), (env, lhs, rhs, result)) \
   X(napi_throw_error, (napi_env env, const char* code, const char* msg), (env, code, msg)) \
+X(napi_create_double, (napi_env env, double value, napi_value* result), (env, value, result)) \
+X(napi_get_property, (napi_env env, napi_value object, napi_value key, napi_value* result), (env, object, key, result)) \
+X(napi_get_property_names, (napi_env env, napi_value object, napi_value* result), (env, object, result)) \
+X(napi_get_value_bool, (napi_env env, napi_value value, bool* result), (env, value, result)) \
+X(napi_get_value_string_utf16, (napi_env env, napi_value value, char16_t* buf, size_t bufsize, size_t* result), (env, value, buf, bufsize, result)) \
   X(napi_typeof, (napi_env env, napi_value value, napi_valuetype* result), (env, value, result))
 
 extern "C" {
@@ -372,14 +384,506 @@ static int frame_roundtrip(const uint8_t* req, size_t req_len,
 }
 
 // ----------------------------------------------------------------------
+// fast wire serde — C-side ValueSerializer-format writer/reader that
+// removes the injected-JS serde call boundaries (the measured delta vs
+// the v8-direct addon). The wire subset mirrors internal/v8serde, which
+// is byte-validated against node's v8.serialize: objects, dense arrays,
+// one-byte/two-byte strings (with V8's even-alignment 0x00 padding
+// before two-byte contents), int32 (zigzag varint) / uint32 (varint) /
+// double numbers, booleans, null, undefined, and typed arrays in node's
+// host-object form (0x5C + type 1 + byte length + raw bytes). Any shape
+// outside the subset makes the walker bail (return false) and the
+// caller falls back to the injected JS serde — wire output is always
+// compatible either way.
+
+struct SerBuf {
+  std::vector<uint8_t> b;
+};
+
+static void sb_varint(SerBuf* s, uint64_t v) {
+  while (v >= 0x80) {
+    s->b.push_back(static_cast<uint8_t>(v) | 0x80);
+    v >>= 7;
+  }
+  s->b.push_back(static_cast<uint8_t>(v));
+}
+
+static size_t sb_varint_len(uint64_t v) {
+  size_t n = 1;
+  while (v >= 0x80) {
+    v >>= 7;
+    n++;
+  }
+  return n;
+}
+
+static void sb_zigzag(SerBuf* s, int32_t v) {
+  uint32_t z = (static_cast<uint32_t>(v) << 1) ^ (v >> 31);
+  sb_varint(s, z);
+}
+
+static void sb_utf16_to_utf8(const uint16_t* u, size_t n, std::string* out) {
+  for (size_t i = 0; i < n; i++) {
+    uint32_t c = u[i];
+    if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n) {
+      uint32_t lo = u[i + 1];
+      if (lo >= 0xDC00 && lo <= 0xDFFF) {
+        c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00);
+        i++;
+      }
+    }
+    if (c < 0x80) {
+      out->push_back(static_cast<char>(c));
+    } else if (c < 0x800) {
+      out->push_back(static_cast<char>(0xC0 | (c >> 6)));
+      out->push_back(static_cast<char>(0x80 | (c & 0x3F)));
+    } else if (c < 0x10000) {
+      out->push_back(static_cast<char>(0xE0 | (c >> 12)));
+      out->push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
+      out->push_back(static_cast<char>(0x80 | (c & 0x3F)));
+    } else {
+      out->push_back(static_cast<char>(0xF0 | (c >> 18)));
+      out->push_back(static_cast<char>(0x80 | ((c >> 12) & 0x3F)));
+      out->push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
+      out->push_back(static_cast<char>(0x80 | (c & 0x3F)));
+    }
+  }
+}
+
+// one-byte strings on the wire are latin1 (code units ≤ 0xFF written as
+// raw bytes); two-byte strings are UTF-16LE with the contents aligned to
+// an even buffer offset via a 0x00 padding byte before the tag.
+static void sb_string(SerBuf* s, const uint16_t* u, size_t n) {
+  bool one = true;
+  for (size_t i = 0; i < n; i++) {
+    if (u[i] > 0xFF) {
+      one = false;
+      break;
+    }
+  }
+  if (one) {
+    s->b.push_back(0x22);
+    sb_varint(s, n);
+    for (size_t i = 0; i < n; i++) s->b.push_back(static_cast<uint8_t>(u[i]));
+    return;
+  }
+  size_t payload = n * 2;
+  if ((s->b.size() + 1 + sb_varint_len(payload)) & 1) {
+    s->b.push_back(0x00);  // kPadding
+  }
+  s->b.push_back(0x63);
+  sb_varint(s, payload);
+  for (size_t i = 0; i < n; i++) {
+    s->b.push_back(static_cast<uint8_t>(u[i] & 0xFF));
+    s->b.push_back(static_cast<uint8_t>(u[i] >> 8));
+  }
+}
+
+static bool fast_ser_value(napi_env env, napi_value v, SerBuf* s, int depth) {
+  if (depth > 64) return false;
+  napi_valuetype t = napi_undefined;
+  if (napi_typeof(env, v, &t) != napi_ok) return false;
+  switch (t) {
+    case napi_undefined:
+      s->b.push_back(0x5F);
+      return true;
+    case napi_null:
+      s->b.push_back(0x30);
+      return true;
+    case napi_boolean: {
+      bool bv = false;
+      if (napi_get_value_bool(env, v, &bv) != napi_ok) return false;
+      s->b.push_back(bv ? 0x54 : 0x46);
+      return true;
+    }
+    case napi_number: {
+      double d = 0;
+      if (napi_get_value_double(env, v, &d) != napi_ok) return false;
+      if (d == (double)(int32_t)d && d == d && d * 0 == 0) {
+        // integral, finite, fits int32 — node picks the Int32 tag here
+        s->b.push_back(0x49);
+        sb_zigzag(s, (int32_t)d);
+      } else {
+        s->b.push_back(0x4E);
+        uint64_t bits;
+        memcpy(&bits, &d, 8);
+        for (int i = 0; i < 8; i++) s->b.push_back((uint8_t)(bits >> (8 * i)));
+      }
+      return true;
+    }
+    case napi_string: {
+      // utf8 first: when the utf8 length equals the code-unit count the
+      // string is pure ASCII and its utf8 bytes ARE the one-byte wire
+      // form — no UTF-16 materialization. Non-ASCII falls to the utf16
+      // view to distinguish latin1 from two-byte.
+      size_t n8 = 0, n16 = 0;
+      if (napi_get_value_string_utf8(env, v, nullptr, 0, &n8) != napi_ok ||
+          napi_get_value_string_utf16(env, v, nullptr, 0, &n16) != napi_ok) {
+        return false;
+      }
+      if (n8 == n16) {
+        // pure ASCII: write straight into the wire buffer tail via the
+        // latin1 accessor — a plain memcpy of V8's one-byte chars, no
+        // utf8 transcode (what the v8-direct serializer does too).
+        s->b.push_back(0x22);
+        sb_varint(s, n8);
+        size_t tail = s->b.size();
+        s->b.resize(tail + n8 + 1);  // +1: V8 null-terminates
+        if (n8 > 0 &&
+            napi_get_value_string_latin1(
+                env, v, reinterpret_cast<char*>(&s->b[tail]), n8 + 1,
+                &n8) != napi_ok) {
+          return false;
+        }
+        s->b.resize(tail + n8);
+        return true;
+      }
+      // +1 unit: V8 null-terminates within the given capacity
+      std::vector<uint16_t> u(n16 + 1);
+      if (n16 > 0 && napi_get_value_string_utf16(
+                         env, v, reinterpret_cast<char16_t*>(u.data()), n16 + 1,
+                         &n16) != napi_ok) {
+        return false;
+      }
+      sb_string(s, u.data(), n16);
+      return true;
+    }
+    case napi_object:
+      break;
+    default:
+      return false;  // symbol, external, bigint, function
+  }
+  bool is_ta = false, is_arr = false;
+  napi_is_typedarray(env, v, &is_ta);
+  napi_is_array(env, v, &is_arr);
+  if (is_ta) {
+    napi_typedarray_type tt = (napi_typedarray_type)0;
+    size_t len = 0, off = 0;
+    void* data = nullptr;
+    napi_value ab = nullptr;
+    if (napi_get_typedarray_info(env, v, &tt, &len, &data, &ab, &off) !=
+        napi_ok) {
+      return false;
+    }
+    if (data == nullptr && len > 0) return false;
+    // node's host-object type ids: Buffer = 10, other typed arrays = 1.
+    // napi_is_buffer is unreliable across node bands (returns true for
+    // plain Uint8Arrays on node 25) — identify via the constructor name.
+    napi_value ctor = GetProp(env, v, "constructor");
+    napi_value nm = ctor ? GetProp(env, ctor, "name") : nullptr;
+    std::string cname;
+    if (nm) U8(env, nm, &cname);
+    s->b.push_back(0x5C);
+    sb_varint(s, cname == "Buffer" ? 10 : 1);
+    sb_varint(s, len);
+    const uint8_t* p = static_cast<const uint8_t*>(data);
+    s->b.insert(s->b.end(), p, p + len);
+    return true;
+  }
+  if (is_arr) {
+    uint32_t n = 0;
+    if (napi_get_array_length(env, v, &n) != napi_ok) return false;
+    s->b.push_back(0x41);
+    sb_varint(s, n);
+    for (uint32_t i = 0; i < n; i++) {
+      napi_value el = nullptr;
+      if (napi_get_element(env, v, i, &el) != napi_ok) return false;
+      if (!fast_ser_value(env, el, s, depth + 1)) return false;
+    }
+    s->b.push_back(0x24);
+    sb_varint(s, 0);
+    sb_varint(s, n);
+    return true;
+  }
+  // plain object only beyond here. Exotics (Date, ArrayBuffer, Map, Set,
+  // class instances) take the JS-serde fallback: their prototype must be
+  // exactly Object.prototype (cached once), and dates/arraybuffers are
+  // rejected by direct probe first.
+  bool is_date = false, is_ab = false;
+  napi_is_date(env, v, &is_date);
+  napi_is_arraybuffer(env, v, &is_ab);
+  if (is_date || is_ab) return false;
+  napi_value proto = nullptr;
+  if (napi_get_prototype(env, v, &proto) != napi_ok || !proto) return false;
+  napi_value objproto = RefV(g_objproto);
+  if (!objproto) return false;
+  bool same = false;
+  if (napi_strict_equals(env, proto, objproto, &same) != napi_ok || !same) {
+    return false;
+  }
+  napi_value names = nullptr;
+  if (napi_get_property_names(env, v, &names) != napi_ok || !names) {
+    return false;
+  }
+  uint32_t n = 0;
+  if (napi_get_array_length(env, names, &n) != napi_ok) return false;
+  s->b.push_back(0x6F);
+  uint32_t written = 0;
+  for (uint32_t i = 0; i < n; i++) {
+    napi_value k = nullptr, val = nullptr;
+    if (napi_get_element(env, names, i, &k) != napi_ok || !k) return false;
+    napi_valuetype kt = napi_undefined;
+    napi_typeof(env, k, &kt);
+    if (kt != napi_string) return false;  // symbol keys etc. → JS serde
+    if (napi_get_property(env, v, k, &val) != napi_ok) return false;
+    napi_valuetype vt2 = napi_undefined;
+    napi_typeof(env, val, &vt2);
+    if (vt2 == napi_undefined) {
+      continue;  // V8 drops undefined-valued properties
+    }
+    if (!fast_ser_value(env, k, s, depth + 1)) return false;
+    if (!fast_ser_value(env, val, s, depth + 1)) return false;
+    written++;
+  }
+  s->b.push_back(0x7B);
+  sb_varint(s, written);
+  return true;
+}
+
+static bool fast_deser_value(napi_env env, const uint8_t** p, const uint8_t* end,
+                             napi_value* out, int depth) {
+  if (depth > 64) return false;
+  uint8_t tag = 0;
+  for (;;) {
+    if (*p >= end) return false;
+    tag = *(*p)++;
+    if (tag != 0x00) break;  // kPadding
+  }
+  switch (tag) {
+    case 0x30:
+    case 0x5F:
+      napi_get_null(env, out);
+      return true;
+    case 0x54:
+      napi_get_boolean(env, true, out);
+      return true;
+    case 0x46:
+      napi_get_boolean(env, false, out);
+      return true;
+    case 0x49:
+    case 0x55: {
+      uint64_t v = 0;
+      int shift = 0;
+      bool neg = tag == 0x49;
+      for (;;) {
+        if (*p >= end) return false;
+        uint8_t b = *(*p)++;
+        v |= (uint64_t)(b & 0x7F) << shift;
+        if (b < 0x80) break;
+        shift += 7;
+        if (shift > 63) return false;
+      }
+      double d;
+      if (neg) {
+        int32_t z = (int32_t)((uint32_t)v >> 1) ^ -(int32_t)(v & 1);
+        d = (double)z;
+      } else {
+        d = (double)v;
+      }
+      return napi_create_double(env, d, out) == napi_ok;
+    }
+    case 0x4E: {
+      if (end - *p < 8) return false;
+      uint64_t bits = 0;
+      for (int i = 0; i < 8; i++) bits |= (uint64_t)(*p)[i] << (8 * i);
+      *p += 8;
+      double d;
+      memcpy(&d, &bits, 8);
+      return napi_create_double(env, d, out) == napi_ok;
+    }
+    case 0x22:
+    case 0x63: {
+      uint64_t n = 0;
+      int shift = 0;
+      for (;;) {
+        if (*p >= end) return false;
+        uint8_t b = *(*p)++;
+        n |= (uint64_t)(b & 0x7F) << shift;
+        if (b < 0x80) break;
+        shift += 7;
+        if (shift > 63) return false;
+      }
+      if ((uint64_t)(end - *p) < n) return false;
+      if (tag == 0x22) {
+        // the one-byte contents ARE latin1 — V8 materializes its
+        // one-byte string natively (v8-direct deserializer parity)
+        bool ok = napi_create_string_latin1(
+                      env, reinterpret_cast<const char*>(*p), (size_t)n,
+                      out) == napi_ok;
+        *p += n;
+        return ok;
+      }
+      if (n & 1) return false;
+      std::string utf8;
+      sb_utf16_to_utf8(reinterpret_cast<const uint16_t*>(*p), n / 2, &utf8);
+      *p += n;
+      return napi_create_string_utf8(env, utf8.data(), utf8.size(), out) ==
+             napi_ok;
+    }
+    case 0x6F: {
+      napi_value obj = nullptr;
+      if (napi_create_object(env, &obj) != napi_ok) return false;
+      for (;;) {
+        if (*p >= end) return false;
+        if (**p == 0x7B) {
+          (*p)++;
+          // property count varint
+          for (;;) {
+            if (*p >= end) return false;
+            uint8_t b = *(*p)++;
+            if (b < 0x80) break;
+          }
+          break;
+        }
+        napi_value k = nullptr, val = nullptr;
+        if (!fast_deser_value(env, p, end, &k, depth + 1)) return false;
+        std::string key;
+        if (!U8(env, k, &key)) return false;
+        if (!fast_deser_value(env, p, end, &val, depth + 1)) return false;
+        if (napi_set_named_property(env, obj, key.c_str(), val) != napi_ok) {
+          return false;
+        }
+      }
+      *out = obj;
+      return true;
+    }
+    case 0x41: {
+      uint64_t n = 0;
+      int shift = 0;
+      for (;;) {
+        if (*p >= end) return false;
+        uint8_t b = *(*p)++;
+        n |= (uint64_t)(b & 0x7F) << shift;
+        if (b < 0x80) break;
+        shift += 7;
+        if (shift > 63) return false;
+      }
+      if (n > (uint64_t)1e7) return false;
+      napi_value arr = nullptr;
+      if (napi_create_array_with_length(env, (size_t)n, &arr) != napi_ok) {
+        return false;
+      }
+      for (uint64_t i = 0; i < n; i++) {
+        napi_value el = nullptr;
+        if (!fast_deser_value(env, p, end, &el, depth + 1)) return false;
+        if (napi_set_element(env, arr, (uint32_t)i, el) != napi_ok) {
+          return false;
+        }
+      }
+      if (*p >= end || *(*p)++ != 0x24) return false;
+      for (int k = 0; k < 2; k++) {  // level + element-count varints
+        for (;;) {
+          if (*p >= end) return false;
+          uint8_t b = *(*p)++;
+          if (b < 0x80) break;
+        }
+      }
+      *out = arr;
+      return true;
+    }
+    case 0x5C: {
+      // 0x5C varint(type=1) varint(byteLen) raw bytes → Buffer
+      for (;;) {  // type id varint
+        if (*p >= end) return false;
+        uint8_t b = *(*p)++;
+        if (b < 0x80) break;
+      }
+      uint64_t n = 0;
+      int shift = 0;
+      for (;;) {
+        if (*p >= end) return false;
+        uint8_t b = *(*p)++;
+        n |= (uint64_t)(b & 0x7F) << shift;
+        if (b < 0x80) break;
+        shift += 7;
+        if (shift > 63) return false;
+      }
+      if ((uint64_t)(end - *p) < n || n > (uint64_t)256 * 1024 * 1024) {
+        return false;
+      }
+      void* data = nullptr;
+      napi_value buf = nullptr;
+      if (napi_create_buffer(env, (size_t)n, &data, &buf) != napi_ok) {
+        return false;
+      }
+      memcpy(data, *p, (size_t)n);
+      *p += n;
+      *out = buf;
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+// Bisect gate: unset = both fast paths, "0" = off, "ser" = serialize
+// fast only, "des" = deserialize fast only.
+static int fast_mode() {
+  static int mode = -2;
+  if (mode == -2) {
+    const char* v = getenv("WAILS_ELECTRON_FASTSERDE");
+    if (!v || !*v) mode = 3;
+    else if (!strcmp(v, "0")) mode = 0;
+    else if (!strcmp(v, "ser")) mode = 1;
+    else if (!strcmp(v, "des")) mode = 2;
+    else mode = 3;
+  }
+  return mode;
+}
+
+// Fast-path serialize: fills own->b; returns false when the value is
+// outside the subset (caller falls back to the injected JS serde).
+static bool fast_serialize(napi_value value, SerBuf* s) {
+  if (!(fast_mode() & 1)) return false;
+  s->b.clear();
+  s->b.push_back(0xFF);
+  s->b.push_back(0x0F);  // version 15, what node writes on this band
+  return fast_ser_value(g_env, value, s, 0);
+}
+
+// Fast-path deserialize over a complete frame; returns false when the
+// bytes contain anything outside the subset (caller falls back to the
+// injected JS v8.deserialize).
+static bool fast_deserialize(napi_env env, const uint8_t* data, size_t len,
+                             napi_value* out) {
+  if (!(fast_mode() & 2)) return false;
+  if (len < 2 || data[0] != 0xFF) return false;
+  const uint8_t* p = data + 1;
+  const uint8_t* end = data + len;
+  for (;;) {  // version varint
+    if (p >= end) return false;
+    uint8_t b = *p++;
+    if (b < 0x80) break;
+  }
+  if (!fast_deser_value(env, &p, end, out, 0)) return false;
+  return true;  // trailing bytes tolerated
+}
+
+// ----------------------------------------------------------------------
 // serde via the injected node v8 module
 
-// Serialize any JS value to wire bytes through the injected v8.serialize
-// (native ValueSerializer — the same bytes the Go decoder already speaks).
-// Returns the raw pointer into the returned Buffer; the buffer stays
-// alive via *buf_out on the caller's stack for the synchronous write.
+// Serialize any JS value to wire bytes. Fast C path first (no JS
+// boundary, no intermediate copy — v8-direct parity); values outside the
+// wire subset fall back to the injected v8.serialize (native
+// ValueSerializer — the same bytes the Go decoder already speaks).
+// Returns the raw pointer into the produced bytes. The fast path writes
+// into a thread-local buffer whose capacity persists across calls (the
+// fd write completes before the next serialize on this thread); the JS
+// path's lifetime is *buf_out on the caller's stack.
 static bool serialize_value(napi_value value, const uint8_t** out,
                             size_t* out_len, napi_value* buf_out) {
+  if (g_env) {
+    static thread_local SerBuf s;
+    if (fast_serialize(value, &s)) {
+      *out = s.b.data();
+      *out_len = s.b.size();
+      *buf_out = nullptr;
+      return true;
+    }
+    bool pending = false;
+    napi_is_exception_pending(g_env, &pending);
+    if (pending) return false;  // exotic walker raised — propagate
+  }
   napi_value ser = RefV(g_v8ser);
   napi_value recv = RefV(g_v8mod);
   if (!ser || !recv) {
@@ -414,12 +918,25 @@ static bool serialize_value(napi_value value, const uint8_t** out,
   return false;
 }
 
-// Deserialize wire bytes through the injected v8.deserialize. Zero copy
-// when an external ArrayBuffer is permitted (the finalizer owns and frees
-// the heap vector); otherwise one copy into a fresh Buffer — the same
-// copy v8-direct makes in its deserialize delegate. Takes ownership of
-// *resp either way. Returns nullptr with an exception pending on failure.
+// Deserialize wire bytes. Fast C path first (subset decode, one copy for
+// the Uint8Array — the same materialization v8-direct makes); anything
+// outside the subset falls back to the injected v8.deserialize. Zero
+// copy there when an external ArrayBuffer is permitted (the finalizer
+// owns and frees the heap vector); otherwise one copy into a fresh
+// Buffer. Takes ownership of *resp either way. Returns nullptr with an
+// exception pending on failure.
 static napi_value deserialize_bytes(std::vector<uint8_t>* resp) {
+  napi_value fast = nullptr;
+  if (g_env && fast_deserialize(g_env, resp->data(), resp->size(), &fast)) {
+    delete resp;
+    return fast;
+  }
+  bool pending = false;
+  if (g_env) napi_is_exception_pending(g_env, &pending);
+  if (pending) {
+    delete resp;
+    return nullptr;
+  }
   napi_value des = RefV(g_v8des);
   napi_value recv = RefV(g_v8mod);
   if (!des || !recv) {
@@ -481,6 +998,13 @@ static napi_value PreloadInit(napi_env env, napi_callback_info info) {
       if (ser) napi_create_reference(env, ser, 1, &g_v8ser);
       if (des) napi_create_reference(env, des, 1, &g_v8des);
     }
+  }
+  { // cache Object.prototype for the fast-serde exotic gate
+    napi_value global = nullptr, objctor = nullptr;
+    napi_get_global(env, &global);
+    napi_value obj = GetProp(env, global, "Object");
+    if (obj) objctor = GetProp(env, obj, "prototype");
+    if (objctor) napi_create_reference(env, objctor, 1, &g_objproto);
   }
 
   napi_value global = nullptr;
@@ -925,5 +1449,55 @@ NAPI_MODULE_INIT(/* env, exports, module, context */) {
   napi_set_named_property(env, exports, "preloadInit", fn);
   napi_create_function(env, "close", NAPI_AUTO_LENGTH, Close, nullptr, &fn);
   napi_set_named_property(env, exports, "close", fn);
+#ifdef WAILS_BRIDGE_SERDE_TEST
+  // corpus-test hooks: expose the fast paths directly so a plain-node
+  // harness can byte-compare against node's v8.serialize.
+  napi_create_function(
+      env, "_fastSerialize", NAPI_AUTO_LENGTH,
+      [](napi_env e, napi_callback_info i) -> napi_value {
+        g_env = e;
+        size_t c = 1;
+        napi_value a[1];
+        napi_get_cb_info(e, i, &c, a, nullptr, nullptr);
+        SerBuf s;
+        if (c < 1 || !fast_serialize(a[0], &s)) {
+          napi_value u;
+          napi_get_undefined(e, &u);
+          return u;
+        }
+        void* d = nullptr;
+        napi_value buf = nullptr;
+        if (napi_create_buffer(e, s.b.size(), &d, &buf) != napi_ok) {
+          return nullptr;
+        }
+        memcpy(d, s.b.data(), s.b.size());
+        return buf;
+      },
+      nullptr, &fn);
+  napi_set_named_property(env, exports, "_fastSerialize", fn);
+  napi_create_function(
+      env, "_fastDeserialize", NAPI_AUTO_LENGTH,
+      [](napi_env e, napi_callback_info i) -> napi_value {
+        g_env = e;
+        size_t c = 1;
+        napi_value a[1];
+        napi_get_cb_info(e, i, &c, a, nullptr, nullptr);
+        void* d = nullptr;
+        size_t len = 0;
+        if (c < 1 ||
+            napi_get_buffer_info(e, a[0], &d, &len) != napi_ok) {
+          return nullptr;
+        }
+        napi_value out = nullptr;
+        if (!fast_deserialize(e, (const uint8_t*)d, len, &out)) {
+          napi_value u;
+          napi_get_undefined(e, &u);
+          return u;
+        }
+        return out;
+      },
+      nullptr, &fn);
+  napi_set_named_property(env, exports, "_fastDeserialize", fn);
+#endif
   return exports;
 }
