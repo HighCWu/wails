@@ -1507,6 +1507,13 @@ static Local<Value> CreateWindow(Isolate* isolate, Local<Context> ctx,
   bool frameless = PBool(isolate, ctx, p, "frameless");
   opts->Set(ctx, S(isolate, "frame"), Boolean::New(isolate, !frameless)).Check();
   bool transparent = PBool(isolate, ctx, p, "transparent");
+#ifdef __linux__
+  // Chromium/ozone paints frameless+resizable windows with a dark
+  // non-client resize border (the "black edges" users report vs the
+  // WebKitGTK backend). A transparent window removes it; page content
+  // is painted opaque, so this only enables the ARGB visual.
+  if (frameless) transparent = true;
+#endif
   opts->Set(ctx, S(isolate, "transparent"), Boolean::New(isolate, transparent))
       .Check();
   // JS: resizable: p.resizable !== false  (undefined -> true)
