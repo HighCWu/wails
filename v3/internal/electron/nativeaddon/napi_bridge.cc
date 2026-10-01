@@ -80,6 +80,66 @@ static napi_value NativeEcho(napi_env env, napi_callback_info info);
 static napi_value NativeInvoke(napi_env env, napi_callback_info info);
 
 // ----------------------------------------------------------------------
+// Windows napi dynamic binding. mingw cannot link against electron.exe's
+// exports without an MSVC-style import library (dlltool def-file import
+// libs are unreliable across binutils builds, and mingw ld ignores
+// short-import archives), so every napi call is forwarded through a
+// function pointer bound once at library load from the host module —
+// electron.exe exports the full N-API surface. Call sites stay unchanged.
+#ifdef _WIN32
+#define NAPI_DYN_LIST(X) \
+  X(napi_call_function, (napi_env env, napi_value recv, napi_value func, size_t argc, const napi_value* argv, napi_value* result), (env, recv, func, argc, argv, result)) \
+  X(napi_coerce_to_string, (napi_env env, napi_value value, napi_value* result), (env, value, result)) \
+  X(napi_create_array_with_length, (napi_env env, size_t length, napi_value* result), (env, length, result)) \
+  X(napi_create_buffer, (napi_env env, size_t length, void** data, napi_value* result), (env, length, data, result)) \
+  X(napi_create_external_arraybuffer, (napi_env env, void* external_data, size_t byte_length, node_api_basic_finalize finalize_cb, void* finalize_hint, napi_value* result), (env, external_data, byte_length, finalize_cb, finalize_hint, result)) \
+  X(napi_create_function, (napi_env env, const char* utf8name, size_t length, napi_callback cb, void* data, napi_value* result), (env, utf8name, length, cb, data, result)) \
+  X(napi_create_int32, (napi_env env, int32_t value, napi_value* result), (env, value, result)) \
+  X(napi_create_object, (napi_env env, napi_value* result), (env, result)) \
+  X(napi_create_reference, (napi_env env, napi_value value, uint32_t initial_refcount, napi_ref* result), (env, value, initial_refcount, result)) \
+  X(napi_create_string_utf8, (napi_env env, const char* str, size_t length, napi_value* result), (env, str, length, result)) \
+  X(napi_create_typedarray, (napi_env env, napi_typedarray_type type, size_t length, napi_value arraybuffer, size_t byte_offset, napi_value* result), (env, type, length, arraybuffer, byte_offset, result)) \
+  X(napi_get_array_length, (napi_env env, napi_value value, uint32_t* result), (env, value, result)) \
+  X(napi_get_boolean, (napi_env env, bool value, napi_value* result), (env, value, result)) \
+  X(napi_get_buffer_info, (napi_env env, napi_value value, void** data, size_t* length), (env, value, data, length)) \
+  X(napi_get_cb_info, (napi_env env, napi_callback_info cbinfo, size_t* argc, napi_value* argv, napi_value* this_arg, void** data), (env, cbinfo, argc, argv, this_arg, data)) \
+  X(napi_get_element, (napi_env env, napi_value object, uint32_t index, napi_value* result), (env, object, index, result)) \
+  X(napi_get_global, (napi_env env, napi_value* result), (env, result)) \
+  X(napi_get_named_property, (napi_env env, napi_value object, const char* utf8name, napi_value* result), (env, object, utf8name, result)) \
+  X(napi_get_null, (napi_env env, napi_value* result), (env, result)) \
+  X(napi_get_reference_value, (napi_env env, napi_ref ref, napi_value* result), (env, ref, result)) \
+  X(napi_get_typedarray_info, (napi_env env, napi_value typedarray, napi_typedarray_type* type, size_t* length, void** data, napi_value* arraybuffer, size_t* byte_offset), (env, typedarray, type, length, data, arraybuffer, byte_offset)) \
+  X(napi_get_undefined, (napi_env env, napi_value* result), (env, result)) \
+  X(napi_get_value_double, (napi_env env, napi_value value, double* result), (env, value, result)) \
+  X(napi_get_value_string_utf8, (napi_env env, napi_value value, char* buf, size_t bufsize, size_t* result), (env, value, buf, bufsize, result)) \
+  X(napi_is_array, (napi_env env, napi_value value, bool* result), (env, value, result)) \
+  X(napi_is_exception_pending, (napi_env env, bool* result), (env, result)) \
+  X(napi_is_typedarray, (napi_env env, napi_value value, bool* result), (env, value, result)) \
+  X(napi_new_instance, (napi_env env, napi_value constructor, size_t argc, const napi_value* argv, napi_value* result), (env, constructor, argc, argv, result)) \
+  X(napi_set_element, (napi_env env, napi_value object, uint32_t index, napi_value value), (env, object, index, value)) \
+  X(napi_set_named_property, (napi_env env, napi_value object, const char* utf8name, napi_value value), (env, object, utf8name, value)) \
+  X(napi_throw_error, (napi_env env, const char* code, const char* msg), (env, code, msg)) \
+  X(napi_typeof, (napi_env env, napi_value value, napi_valuetype* result), (env, value, result))
+
+extern "C" {
+#define X(name, params, args)            \
+  static napi_status (*name##_p) params; \
+  napi_status name params { return name##_p args; }
+NAPI_DYN_LIST(X)
+#undef X
+}
+
+__attribute__((constructor)) static void napi_dyn_init() {
+  HMODULE h = GetModuleHandleW(NULL);  // the host: electron.exe
+#define X(name, params, args)                                  \
+  name##_p = reinterpret_cast<napi_status(*) params>(           \
+      GetProcAddress(h, #name));
+  NAPI_DYN_LIST(X)
+#undef X
+}
+#endif
+
+// ----------------------------------------------------------------------
 // small napi helpers
 
 static napi_value NF(napi_env env, const char* s) {

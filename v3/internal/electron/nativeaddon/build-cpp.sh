@@ -38,55 +38,22 @@ V8_DEFS="-DV8_COMPRESS_POINTERS -DV8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES \
 
 LINK_EXTRA=""
 STATIC_LIBS=""
+WIN_DEFS=""
 SRC=bridge.cc
 case "$(uname -s)" in
 MINGW*|MSYS*|CYGWIN*)
   # Windows builds the N-API addon (napi_bridge.cc): electron.exe exports
-  # only the N-API surface (verified on 44.4.5: napi_*/uv_* only, zero
-  # v8:: symbols) and no node.lib is published, so the v8-direct
-  # bridge.cc cannot load there. No V8_DEFS needed — node_api.h is pure
-  # C API. Wire serde comes from node's injected v8.serialize
-  # (byte-compatible with the Go decoder; typed arrays ride the 0x5C
-  # host-object form both sides already speak).
+  # only a partial surface (core v8-direct entry points like
+  # v8::Number::New / node::Buffer::Copy are absent) and no node.lib is
+  # published, so the v8-direct bridge.cc cannot link or load there.
+  # No V8_DEFS needed — node_api.h is pure C API. Wire serde comes from
+  # node's injected v8.serialize (byte-compatible with the Go decoder).
+  # No import library either: napi_bridge.cc binds the napi surface from
+  # the host module at load time (see its NAPI_DYN_LIST block), so the
+  # link has zero electron dependencies.
   SRC=napi_bridge.cc
   V8_DEFS=""
-  # PE linking (mingw ld) rejects unresolved symbols, unlike ELF -shared
-  # where dlopen binds them from the host's export table. Build an import
-  # library straight from electron.exe's export table; at LoadLibrary time
-  # the loader matches the recorded module name against the host process
-  # and binds every napi/uv import there — same end state as node-gyp's
-  # node.lib + delay-load hook, without the hook. NOTE: binds by the name
-  # "electron.exe"; a renamed host exe would need this regenerated.
-  EXE="${BRIDGE_WIN_ELECTRON_EXE:-C:/electron/electron.exe}"
-  if [ ! -f "$EXE" ]; then
-    echo "electron exe not found: $EXE (set BRIDGE_WIN_ELECTRON_EXE)" >&2
-    exit 1
-  fi
-  TMPD="$(mktemp -d)"
-  objdump -p "$EXE" \
-    | awk '/Ordinal\/Name Pointer/{f=1;next} f && /\]/{sub(/^.*\] */,""); print}' \
-    | sort -u > "$TMPD/names.txt"
-  COUNT="$(wc -l < "$TMPD/names.txt")"
-  if [ "$COUNT" -lt 100 ]; then
-    echo "electron.exe export parse yielded only $COUNT names; objdump format changed?" >&2
-    exit 1
-  fi
-  { echo "LIBRARY electron.exe"; echo "EXPORTS"; cat "$TMPD/names.txt"; } > "$TMPD/electron.def"
-  # Import library via the Microsoft short-import archive format (see
-  # gen_importlib.py): dlltool's def-file route proved flaky here — its
-  # -m machine spellings vary across binutils builds and bad ones silently
-  # degrade to 32-bit imports ld skips. GNU ld links MSVC-style short
-  # import archives natively.
-  PY=python3
-  command -v python3 >/dev/null 2>&1 || PY=python
-  "$PY" gen_importlib.py "$TMPD/names.txt" "$TMPD/electron.lib" electron.exe
-  # dllimport on every napi declaration: the short-import members resolve
-  # the __imp_* IAT symbols reliably; mingw ld does not fabricate the
-  # plain-name jmp thunks from import-library members.
-  WIN_DEFS='-DNAPI_EXTERN=__declspec(dllimport)'
-  LINK_EXTRA="$TMPD/electron.lib"
   STATIC_LIBS="-static-libgcc -static-libstdc++"
-  echo "import library built: $COUNT exports from $EXE"
   ;;
 esac
 
