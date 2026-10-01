@@ -31,13 +31,7 @@ chmod 700 "$XDG_RUNTIME_DIR"
 dbus-daemon --session --nofork --print-address=1 > "$XDG_RUNTIME_DIR/bus-addr" 2>/dev/null & DBUS_PID=$!
 sleep 1
 export DBUS_SESSION_BUS_ADDRESS="$(cat "$XDG_RUNTIME_DIR/bus-addr")"
-# Hard isolation guard: ibus engine selection MUST address the private
-# test daemon. A stale/missing IBUS_ADDRESS would fall back to the user's
-# session bus — refuse to run instead.
-case "${IBUS_ADDRESS:-}" in
-  "unix:path=$XDG_RUNTIME_DIR/"*) ;;
-  *) die "IBUS_ADDRESS did not land in the private runtime dir" ;;
-esac
+
 export GTK_IM_MODULE=ibus
 export XMODIFIERS="@im=ibus"
 IBUS_SOCKET="$XDG_RUNTIME_DIR/ibus.socket"
@@ -49,7 +43,13 @@ ibus-daemon --single --xim --address="$IBUS_ADDRESS" \
 sleep 1
 /usr/bin/python3 "$DIR/ime_engine.py" > "$XDG_RUNTIME_DIR/ime-engine.log" 2>&1 & ENGINE_PID=$!
 sleep 1
-[[ -n "${IBUS_ADDRESS:-}" ]] || die "IBUS_ADDRESS not set; refusing to touch the session bus"
+# Hard isolation guard: the engine selection MUST address the private
+# test daemon — a stale/missing IBUS_ADDRESS would fall back to the
+# user's session bus and switch THEIR input engine.
+case "${IBUS_ADDRESS:-}" in
+  "unix:path=$XDG_RUNTIME_DIR/"*) ;;
+  *) die "IBUS_ADDRESS did not land in the private runtime dir" ;;
+esac
 ibus engine wails-compat >/dev/null 2>&1 || die "could not select the wails-compat engine"
 openbox >/dev/null 2>&1 & WM_PID=$!
 sleep 1
