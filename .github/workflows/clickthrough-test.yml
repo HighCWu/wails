@@ -38,6 +38,7 @@ jobs:
           WAILS_WEBVIEW_BACKEND: electron
           WAILS_ELECTRON_DIR: /opt/electron
           WAILS_ELECTRON_DISABLE_SANDBOX: "1"
+          WAILS_ELECTRON_NATIVE_ADDON: /tmp/go_bridge_cpp.node
         run: v3/examples/clickthrough/ci/test-linux.sh /tmp/clickthrough
       - name: Build API compat scenario
         working-directory: v3
@@ -50,21 +51,15 @@ jobs:
           WAILS_ELECTRON_DIR: /opt/electron
           WAILS_ELECTRON_DISABLE_SANDBOX: "1"
         run: v3/examples/webview-compat/ci/test-compat.sh /tmp/webview-compat electron
-      - name: Build native bridge addon (N-API headers)
-        run: |
-          mkdir -p /tmp/napi-headers
-          base=https://raw.githubusercontent.com/nodejs/node/v22.14.0/src
-          for h in node_api.h js_native_api.h node_api_types.h js_native_api_types.h; do
-            curl -sfL -o "/tmp/napi-headers/$h" "$base/$h" || exit 1
-          done
-          NODE_HEADERS=/tmp/napi-headers v3/internal/electron/nativeaddon/build.sh /tmp/go-bridge.node
+      - name: Build native bridge addon (Electron V8 headers)
+        run: v3/internal/electron/nativeaddon/build-cpp.sh 44.4.5 /tmp/go_bridge_cpp.node
       - name: Run API compat scenario (electron backend, native-uds)
         env:
           WAILS_WEBVIEW_BACKEND: electron
           WAILS_ELECTRON_DIR: /opt/electron
           WAILS_ELECTRON_DISABLE_SANDBOX: "1"
           WAILS_ELECTRON_EXPERIMENT: invoke-baseline,fetch-ipc,native-ipc
-          WAILS_ELECTRON_NATIVE_ADDON: /tmp/go-bridge.node
+          WAILS_ELECTRON_NATIVE_ADDON: /tmp/go_bridge_cpp.node
           WAILS_COMPAT_CRASH: "1"
           WAILS_COMPAT_CHURN: "1"
         run: v3/examples/webview-compat/ci/test-compat.sh /tmp/webview-compat electron

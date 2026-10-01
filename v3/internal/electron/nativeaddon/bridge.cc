@@ -37,6 +37,9 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstdarg>
+#include <ctime>
+#include <map>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -691,9 +694,1087 @@ static void NativeInitThunk(const FunctionCallbackInfo<Value>& args) {
   fprintf(stderr, "[go-bridge] native-uds transport ready\n");
 }
 
+
+// ======================================================================
+// main-process surface (stage 3): window management, the stdio control
+// protocol, and event forwarding — the entire former main.js, native.
+//
+//   request : {"t":"req","id":N,"m":"<method>","p":{...,"id":windowID}}
+//   response: {"t":"resp","id":N,"ok":true,"r":...} | {"t":"resp",ok:false,err}
+//   event   : {"t":"ev","e":"<name>","p":{...,"id":windowID}}
+// Quitting: stdin EOF means the host is gone (orphan protection layer 1);
+// a PPID poll covers SIGKILL'd hosts (layer 2).
+#include <uv.h>
+
+static Global<Object> g_app, g_winctor, g_ipcmain;
+static bool g_m_debug = false;
+static std::string g_cfg_preload, g_cfg_bridge_path, g_cfg_bridge_token,
+    g_cfg_native_addon;
+static uint32_t g_orig_ppid = 0;
+static uv_loop_t* g_loop = nullptr;
+static uv_async_t g_lines_async;
+static uv_async_t g_quit_async;
+static std::mutex g_lines_mu;
+static std::vector<std::string> g_lines;
+static bool g_lines_eof = false;
+static std::mutex g_out_mu;
+static Isolate* g_main_isolate = nullptr;
+static std::map<uint32_t, Global<Object>> g_windows;
+static std::map<int32_t, uint32_t> g_by_wc;
+
+// JSON via the global JS object, NOT v8::JSON::*: Electron builds V8
+// against libc++, so v8::JSON::Parse's std::optional parameter mangles
+// differently under g++/libstdc++ and the symbol never resolves. Calling
+// the same engine's JSON global through JS has no std:: types on the wire.
+static Local<Value> JsonParse(Isolate* isolate, Local<Context> ctx,
+                              Local<String> s) {
+  Local<Object> j = ctx->Global()
+                        ->Get(ctx, S(isolate, "JSON"))
+                        .ToLocalChecked()
+                        .As<Object>();
+  Local<Function> parse = j->Get(ctx, S(isolate, "parse"))
+                              .ToLocalChecked()
+                              .As<Function>();
+  Local<Value> argv[1] = {s};
+  return parse->Call(ctx, j, 1, argv).FromMaybe(Local<Value>());
+}
+
+static Local<Value> JsonStringify(Isolate* isolate, Local<Context> ctx,
+                                  Local<Value> v) {
+  Local<Object> j = ctx->Global()
+                        ->Get(ctx, S(isolate, "JSON"))
+                        .ToLocalChecked()
+                        .As<Object>();
+  Local<Function> stringify = j->Get(ctx, S(isolate, "stringify"))
+                                  .ToLocalChecked()
+                                  .As<Function>();
+  Local<Value> argv[1] = {v};
+  return stringify->Call(ctx, j, 1, argv).FromMaybe(Local<Value>());
+}
+
+static void ELog(const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  fputs("[wails-electron] ", stderr);
+  vfprintf(stderr, fmt, ap);
+  fputc('\n', stderr);
+  va_end(ap);
+}
+
+// JSON object -> stdout line (the control channel to Go).
+static void SendObj(Isolate* isolate, Local<Context> ctx, Local<Object> obj) {
+  Local<Value> sv = JsonStringify(isolate, ctx, obj);
+  if (sv.IsEmpty() || !sv->IsString()) return;
+  Local<String> s = sv.As<String>();
+  String::Utf8Value u(isolate, s);
+  std::lock_guard<std::mutex> lk(g_out_mu);
+  std::string line(*u, u.length());
+  line += '\n';
+  if (write_all(1, line.data(), line.size()) != 0 && g_m_debug) {
+    ELog("send failed");
+  }
+}
+
+static Local<Object> NewEv(Isolate* isolate, Local<Context> ctx,
+                           const char* ev, uint32_t id) {
+  Local<Object> o = Object::New(isolate);
+  o->Set(ctx, S(isolate, "t"), S(isolate, "ev")).Check();
+  o->Set(ctx, S(isolate, "e"), S(isolate, ev)).Check();
+  Local<Object> p = Object::New(isolate);
+  p->Set(ctx, S(isolate, "id"), Integer::NewFromUnsigned(isolate, id)).Check();
+  o->Set(ctx, S(isolate, "p"), p).Check();
+  return o;
+}
+
+static void WinEvent(Isolate* isolate, Local<Context> ctx, uint32_t id,
+                     const char* ev) {
+  SendObj(isolate, ctx, NewEv(isolate, ctx, ev, id));
+}
+
+// extra: an object whose own properties are merged into the event payload.
+static void WinEventExtra(Isolate* isolate, Local<Context> ctx, uint32_t id,
+                          const char* ev, Local<Object> extra) {
+  Local<Object> o = NewEv(isolate, ctx, ev, id);
+  Local<Object> p =
+      o->Get(ctx, S(isolate, "p")).ToLocalChecked().As<Object>();
+  Local<Array> names =
+      extra->GetOwnPropertyNames(ctx).ToLocalChecked();
+  uint32_t n = names->Length();
+  for (uint32_t i = 0; i < n; i++) {
+    Local<Value> k = names->Get(ctx, Integer::NewFromUnsigned(isolate, i))
+                         .ToLocalChecked();
+    Local<Value> v = extra->Get(ctx, k).ToLocalChecked();
+    p->Set(ctx, k, v).Check();
+  }
+  SendObj(isolate, ctx, o);
+}
+
+static void SendResp(Isolate* isolate, Local<Context> ctx, int64_t id,
+                     Local<Value> result) {
+  Local<Object> o = Object::New(isolate);
+  o->Set(ctx, S(isolate, "t"), S(isolate, "resp")).Check();
+  o->Set(ctx, S(isolate, "id"), Number::New(isolate, static_cast<double>(id)))
+      .Check();
+  o->Set(ctx, S(isolate, "ok"), Boolean::New(isolate, true)).Check();
+  o->Set(ctx, S(isolate, "r"),
+         result->IsUndefined() ? Null(isolate) : result)
+      .Check();
+  SendObj(isolate, ctx, o);
+}
+
+static void SendRespErr(Isolate* isolate, Local<Context> ctx, int64_t id,
+                        const char* err) {
+  Local<Object> o = Object::New(isolate);
+  o->Set(ctx, S(isolate, "t"), S(isolate, "resp")).Check();
+  o->Set(ctx, S(isolate, "id"), Number::New(isolate, static_cast<double>(id)))
+      .Check();
+  o->Set(ctx, S(isolate, "ok"), Boolean::New(isolate, false)).Check();
+  o->Set(ctx, S(isolate, "err"), S(isolate, err)).Check();
+  SendObj(isolate, ctx, o);
+}
+
+// ---- param readers (JSON-shaped, JS-truthiness for booleans) ----
+static double PNum(Isolate* isolate, Local<Context> ctx, Local<Object> p,
+                   const char* k, double dflt) {
+  Local<Value> v;
+  if (!p->Get(ctx, S(isolate, k)).ToLocal(&v) || !v->IsNumber()) return dflt;
+  return v.As<Number>()->Value();
+}
+static std::string PStr(Isolate* isolate, Local<Context> ctx, Local<Object> p,
+                        const char* k) {
+  Local<Value> v;
+  if (!p->Get(ctx, S(isolate, k)).ToLocal(&v) || !v->IsString())
+    return std::string();
+  String::Utf8Value u(isolate, v);
+  return std::string(*u, u.length());
+}
+static bool PBool(Isolate* isolate, Local<Context> ctx, Local<Object> p,
+                  const char* k) {
+  Local<Value> v;
+  if (!p->Get(ctx, S(isolate, k)).ToLocal(&v)) return false;
+  if (v->IsBoolean()) return v->IsTrue();
+  if (v->IsNullOrUndefined()) return false;
+  if (v->IsNumber()) return v.As<Number>()->Value() != 0;
+  if (v->IsString()) return v.As<String>()->Length() > 0;
+  return true;
+}
+
+static Local<Object> GetWin(Isolate* isolate, Local<Context> ctx,
+                            Local<Object> p) {
+  uint32_t id = static_cast<uint32_t>(PNum(isolate, ctx, p, "id", -1));
+  auto it = g_windows.find(id);
+  if (it == g_windows.end()) {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Error: unknown window %u", id);
+    isolate->ThrowError(msg);
+    return Local<Object>();
+  }
+  return it->second.Get(isolate);
+}
+
+// Call a no-arg method on the window (or webContents) and return its value.
+static Local<Value> CallWin(Isolate* isolate, Local<Context> ctx,
+                            Local<Object> win, const char* obj_key,
+                            const char* method) {
+  Local<Object> target = win;
+  if (obj_key != nullptr) {
+    Local<Value> t;
+    if (!win->Get(ctx, S(isolate, obj_key)).ToLocal(&t) || !t->IsObject()) {
+      return Local<Value>();
+    }
+    target = t.As<Object>();
+  }
+  Local<Value> fv;
+  if (!target->Get(ctx, S(isolate, method)).ToLocal(&fv) ||
+      !fv->IsFunction()) {
+    isolate->ThrowError("missing method");
+    return Local<Value>();
+  }
+  Local<Function> fn = fv.As<Function>();
+  return fn.As<Function>()
+      ->Call(ctx, target, 0, nullptr)
+      .FromMaybe(Local<Value>());
+}
+
+static Local<Value> CallWin1(Isolate* isolate, Local<Context> ctx,
+                             Local<Object> win, const char* obj_key,
+                             const char* method, Local<Value> a) {
+  Local<Object> target = win;
+  if (obj_key != nullptr) {
+    Local<Value> t;
+    if (!win->Get(ctx, S(isolate, obj_key)).ToLocal(&t) || !t->IsObject()) {
+      return Local<Value>();
+    }
+    target = t.As<Object>();
+  }
+  Local<Value> fv;
+  if (!target->Get(ctx, S(isolate, method)).ToLocal(&fv) ||
+      !fv->IsFunction()) {
+    isolate->ThrowError("missing method");
+    return Local<Value>();
+  }
+  Local<Function> fn = fv.As<Function>();
+  return fn.As<Function>()
+      ->Call(ctx, target, 1, &a)
+      .FromMaybe(Local<Value>());
+}
+
+// ---- promise-aware respond: mirror of main.js respond() ----
+static void ResolvedCb(const FunctionCallbackInfo<Value>& args) {
+  Isolate* isolate = I(args);
+  HandleScope hs(isolate);
+  int64_t id = reinterpret_cast<int64_t>(args.Data().As<External>()->Value(v8::kExternalPointerTypeTagDefault));
+  Local<Context> ctx = isolate->GetCurrentContext();
+  SendResp(isolate, ctx, id, args.Length() >= 1 ? Local<Value>(args[0])
+                                                : Undefined(isolate));
+}
+static void RejectedCb(const FunctionCallbackInfo<Value>& args) {
+  Isolate* isolate = I(args);
+  HandleScope hs(isolate);
+  int64_t id = reinterpret_cast<int64_t>(args.Data().As<External>()->Value(v8::kExternalPointerTypeTagDefault));
+  Local<Context> ctx = isolate->GetCurrentContext();
+  Local<String> s;
+  std::string err = "Error";
+  if (args.Length() >= 1 &&
+      args[0]->ToString(ctx).ToLocal(&s)) {
+    String::Utf8Value u(isolate, s);
+    err.assign(*u, u.length());
+  }
+  SendRespErr(isolate, ctx, id, err.c_str());
+}
+
+static void RespondValue(Isolate* isolate, Local<Context> ctx, int64_t id,
+                         Local<Value> result) {
+  if (result.IsEmpty()) return;  // exception path handled by caller
+  if (result->IsPromise()) {
+    int64_t* box = new int64_t(id);
+    Local<External> data = External::New(isolate, box, kExternalPointerTypeTagDefault);
+    Local<Function> ok =
+        FunctionTemplate::New(isolate, ResolvedCb, data)
+            ->GetFunction(ctx).ToLocalChecked();
+    Local<Function> bad =
+        FunctionTemplate::New(isolate, RejectedCb, data)
+            ->GetFunction(ctx).ToLocalChecked();
+    result.As<Promise>()->Then(ctx, ok, bad).FromMaybe(Local<Promise>());
+    return;
+  }
+  SendResp(isolate, ctx, id, result);
+}
+
+// ---- window event wiring ----
+struct EvCtx {
+  uint32_t id;
+  int32_t wc;
+  const char* ev;      // event name reported to Go
+  bool extra_bounds;   // attach win.getBounds() to the payload
+};
+
+static void WindowEventCb(const FunctionCallbackInfo<Value>& args) {
+  Isolate* isolate = I(args);
+  HandleScope hs(isolate);
+  Local<Context> ctx = isolate->GetCurrentContext();
+  EvCtx* ec = reinterpret_cast<EvCtx*>(
+      args.Data().As<External>()->Value(v8::kExternalPointerTypeTagDefault));
+  if (strcmp(ec->ev, "closed") == 0) {
+    WinEvent(isolate, ctx, ec->id, "closed");
+    g_windows.erase(ec->id);
+    g_by_wc.erase(ec->wc);
+    return;
+  }
+  if (ec->extra_bounds) {
+    Local<Object> win = g_windows[ec->id].Get(isolate);
+    if (win.IsEmpty()) {
+      WinEvent(isolate, ctx, ec->id, ec->ev);
+      return;
+    }
+    Local<Value> bounds =
+        CallWin(isolate, ctx, win, nullptr, "getBounds");
+    if (!bounds.IsEmpty() && bounds->IsObject()) {
+      WinEventExtra(isolate, ctx, ec->id, ec->ev, bounds.As<Object>());
+      return;
+    }
+  }
+  WinEvent(isolate, ctx, ec->id, ec->ev);
+}
+
+static void ConsoleMessageCb(const FunctionCallbackInfo<Value>& args) {
+  Isolate* isolate = I(args);
+  HandleScope hs(isolate);
+  if (args.Length() < 3 || !args[2]->IsString()) return;
+  String::Utf8Value msg(isolate, args[2]);
+  fprintf(stderr, "[renderer] %s\n", *msg);
+}
+
+static void RenderGoneCb(const FunctionCallbackInfo<Value>& args) {
+  Isolate* isolate = I(args);
+  HandleScope hs(isolate);
+  Local<Context> ctx = isolate->GetCurrentContext();
+  EvCtx* ec = reinterpret_cast<EvCtx*>(
+      args.Data().As<External>()->Value(v8::kExternalPointerTypeTagDefault));
+  std::string reason;
+  if (args.Length() >= 2 && args[1]->IsObject()) {
+    Local<Value> r;
+    if (args[1].As<Object>()->Get(ctx, S(isolate, "reason")).ToLocal(&r) &&
+        r->IsString()) {
+      String::Utf8Value u(isolate, r);
+      reason.assign(*u, u.length());
+    }
+  }
+  Local<Object> extra = Object::New(isolate);
+  extra->Set(ctx, S(isolate, "reason"), S(isolate, reason.c_str())).Check();
+  WinEventExtra(isolate, ctx, ec->id, "render-gone", extra);
+}
+
+// did-finish-load: the renderer probe + native-transport injection.
+static void InjectDoneOkCb(const FunctionCallbackInfo<Value>& args) {
+  ELog("native init injected ok");
+}
+static void InjectDoneErrCb(const FunctionCallbackInfo<Value>& args) {
+  Isolate* isolate = I(args);
+  HandleScope hs(isolate);
+  Local<Context> ctx = isolate->GetCurrentContext();
+  Local<String> s;
+  std::string e = "?";
+  if (args.Length() >= 1 && args[0]->ToString(ctx).ToLocal(&s)) {
+    String::Utf8Value u(isolate, s);
+    e.assign(*u, u.length());
+  }
+  ELog("native init inject failed: %s", e.c_str());
+}
+static void ProbeOkCb(const FunctionCallbackInfo<Value>& args) {
+  Isolate* isolate = I(args);
+  HandleScope hs(isolate);
+  Local<Context> ctx = isolate->GetCurrentContext();
+  std::string probe = "?";
+  if (args.Length() >= 1 && args[0]->IsString()) {
+    String::Utf8Value u(isolate, args[0]);
+    probe.assign(*u, u.length());
+  }
+  ELog("renderer probe: %s", probe.c_str());
+  if (g_cfg_native_addon.empty() || g_cfg_bridge_path.empty()) return;
+  EvCtx* ec = reinterpret_cast<EvCtx*>(
+      args.Data().As<External>()->Value(v8::kExternalPointerTypeTagDefault));
+  // rebuild the config JSON safely via the engine's own stringify
+  Local<Object> cfg = Object::New(isolate);
+  cfg->Set(ctx, S(isolate, "addon"), S(isolate, g_cfg_native_addon.c_str()))
+      .Check();
+  cfg->Set(ctx, S(isolate, "endpoint"), S(isolate, g_cfg_bridge_path.c_str()))
+      .Check();
+  cfg->Set(ctx, S(isolate, "token"), S(isolate, g_cfg_bridge_token.c_str()))
+      .Check();
+  Local<Value> cfg_json = JsonStringify(isolate, ctx, cfg);
+  if (cfg_json.IsEmpty() || !cfg_json->IsString()) return;
+  String::Utf8Value cj(isolate, cfg_json);
+  std::string script =
+      "typeof __wailsNativeInit === 'function' && __wailsNativeInit(";
+  script += *cj;
+  script += ")";
+  Local<Value> unused;
+  if (!args.This()
+               ->Get(ctx, S(isolate, "executeJavaScript"))
+               .ToLocal(&unused))
+    return;
+  Local<Function> exec = unused.As<Function>();
+  Local<Value> argv[1] = {S(isolate, script.c_str())};
+  Local<Value> prom;
+  if (!exec->Call(ctx, args.This(), 1, argv).ToLocal(&prom)) {
+    ELog("probe executeJavaScript failed: inject call");
+    return;
+  }
+  if (prom->IsPromise()) {
+    int64_t* box = new int64_t(ec->id);
+    Local<External> data = External::New(isolate, box, kExternalPointerTypeTagDefault);
+    Local<Function> ok = FunctionTemplate::New(isolate, InjectDoneOkCb, data)
+                             ->GetFunction(ctx).ToLocalChecked();
+    Local<Function> bad = FunctionTemplate::New(isolate, InjectDoneErrCb, data)
+                              ->GetFunction(ctx).ToLocalChecked();
+    prom.As<Promise>()->Then(ctx, ok, bad).FromMaybe(Local<Promise>());
+  }
+}
+static void ProbeErrCb(const FunctionCallbackInfo<Value>& args) {
+  ELog("probe executeJavaScript failed: probe promise");
+}
+
+static void WireWindow(Isolate* isolate, Local<Context> ctx, uint32_t id,
+                       int32_t wc, Local<Object> win,
+                       Local<Object> webcontents) {
+  static const struct {
+    const char* dom;  // Electron event name
+    const char* go;   // name reported to Go
+    bool bounds;
+  } kEvents[] = {
+      {"close", "close", false},         {"closed", "closed", false},
+      {"focus", "focus", false},         {"blur", "blur", false},
+      {"show", "show", false},           {"hide", "hide", false},
+      {"maximize", "maximise", false},   {"unmaximize", "unmaximise", false},
+      {"minimize", "minimise", false},   {"restore", "restore", false},
+      {"enter-full-screen", "fullscreen", false},
+      {"leave-full-screen", "unfullscreen", false},
+      {"resize", "resize", true},        {"move", "move", true},
+  };
+  for (const auto& e : kEvents) {
+    EvCtx* ec = new EvCtx{id, wc, e.go, e.bounds};
+    Local<Function> fn =
+        FunctionTemplate::New(isolate, WindowEventCb, External::New(isolate, ec, kExternalPointerTypeTagDefault))
+            ->GetFunction(ctx).ToLocalChecked();
+    Local<Value> argv[2] = {S(isolate, e.dom), fn};
+    Local<Value> ignored;
+    win->Get(ctx, S(isolate, "on"))
+        .ToLocalChecked()
+        .As<Function>()
+        ->Call(ctx, win, 2, argv)
+        .ToLocal(&ignored);
+  }
+  // renderer observability
+  {
+    Local<Function> fn =
+        FunctionTemplate::New(isolate, ConsoleMessageCb)
+            ->GetFunction(ctx).ToLocalChecked();
+    Local<Value> argv[2] = {S(isolate, "console-message"), fn};
+    Local<Value> ignored;
+    webcontents->Get(ctx, S(isolate, "on"))
+        .ToLocalChecked()
+        .As<Function>()
+        ->Call(ctx, webcontents, 2, argv)
+        .ToLocal(&ignored);
+  }
+  {
+    EvCtx* ec = new EvCtx{id, wc, "render-gone", false};
+    Local<Function> fn =
+        FunctionTemplate::New(isolate, RenderGoneCb,
+                              External::New(isolate, ec, kExternalPointerTypeTagDefault))
+            ->GetFunction(ctx).ToLocalChecked();
+    Local<Value> argv[2] = {S(isolate, "render-process-gone"), fn};
+    Local<Value> ignored;
+    webcontents->Get(ctx, S(isolate, "on"))
+        .ToLocalChecked()
+        .As<Function>()
+        ->Call(ctx, webcontents, 2, argv)
+        .ToLocal(&ignored);
+  }
+  // did-finish-load: probe + inject
+  {
+    EvCtx* ec = new EvCtx{id, wc, "did-finish-load", false};
+    Local<Function> fn =
+        FunctionTemplate::New(isolate, ProbeOkCb,
+                              External::New(isolate, ec, kExternalPointerTypeTagDefault))
+            ->GetFunction(ctx).ToLocalChecked();
+    Local<Value> argv[2] = {S(isolate, "did-finish-load"), fn};
+    Local<Value> ignored;
+    webcontents->Get(ctx, S(isolate, "on"))
+        .ToLocalChecked()
+        .As<Function>()
+        ->Call(ctx, webcontents, 2, argv)
+        .ToLocal(&ignored);
+  }
+}
+
+static Local<Value> CreateWindow(Isolate* isolate, Local<Context> ctx,
+                                 Local<Object> p) {
+  Local<Object> opts = Object::New(isolate);
+  double x = PNum(isolate, ctx, p, "x", 0), y = PNum(isolate, ctx, p, "y", 0);
+  Local<Value> xv = p->Get(ctx, S(isolate, "x")).ToLocalChecked();
+  Local<Value> yv = p->Get(ctx, S(isolate, "y")).ToLocalChecked();
+  bool has_x = !xv->IsUndefined();
+  bool has_y = !yv->IsUndefined();
+  if (has_x) opts->Set(ctx, S(isolate, "x"), Number::New(isolate, x)).Check();
+  if (has_y) opts->Set(ctx, S(isolate, "y"), Number::New(isolate, y)).Check();
+  double w = PNum(isolate, ctx, p, "width", 800);
+  double h = PNum(isolate, ctx, p, "height", 600);
+  opts->Set(ctx, S(isolate, "width"), Number::New(isolate, w)).Check();
+  opts->Set(ctx, S(isolate, "height"), Number::New(isolate, h)).Check();
+  std::string title = PStr(isolate, ctx, p, "title");
+  opts->Set(ctx, S(isolate, "title"), S(isolate, title.c_str())).Check();
+  bool frameless = PBool(isolate, ctx, p, "frameless");
+  opts->Set(ctx, S(isolate, "frame"), Boolean::New(isolate, !frameless)).Check();
+  bool transparent = PBool(isolate, ctx, p, "transparent");
+  opts->Set(ctx, S(isolate, "transparent"), Boolean::New(isolate, transparent))
+      .Check();
+  // JS: resizable: p.resizable !== false  (undefined -> true)
+  bool resizable = true;
+  {
+    Local<Value> rv = p->Get(ctx, S(isolate, "resizable")).ToLocalChecked();
+    if (rv->IsBoolean() && !rv->IsTrue()) resizable = false;
+  }
+  opts->Set(ctx, S(isolate, "resizable"), Boolean::New(isolate, resizable))
+      .Check();
+  opts->Set(ctx, S(isolate, "alwaysOnTop"),
+            Boolean::New(isolate, PBool(isolate, ctx, p, "alwaysOnTop")))
+      .Check();
+  opts->Set(ctx, S(isolate, "show"), Boolean::New(isolate, true)).Check();
+  if (transparent) {
+    opts->Set(ctx, S(isolate, "backgroundColor"), S(isolate, "#00000000"))
+        .Check();
+  }
+  Local<Object> webprefs = Object::New(isolate);
+  std::string preload = PStr(isolate, ctx, p, "preload");
+  if (preload.empty()) preload = g_cfg_preload;
+  webprefs->Set(ctx, S(isolate, "preload"), S(isolate, preload.c_str()))
+      .Check();
+  webprefs->Set(ctx, S(isolate, "contextIsolation"),
+                Boolean::New(isolate, false))
+      .Check();
+  webprefs->Set(ctx, S(isolate, "nodeIntegration"),
+                Boolean::New(isolate, false))
+      .Check();
+  webprefs->Set(ctx, S(isolate, "sandbox"), Boolean::New(isolate, false))
+      .Check();
+  opts->Set(ctx, S(isolate, "webPreferences"), webprefs).Check();
+
+  Local<Function> ctor = g_winctor.Get(isolate).As<Function>();
+  Local<Value> argv[1] = {opts};
+  Local<Object> win =
+      ctor->NewInstance(ctx, 1, argv).FromMaybe(Local<Object>());
+  if (win.IsEmpty()) return Local<Value>();
+
+  uint32_t id = static_cast<uint32_t>(PNum(isolate, ctx, p, "id", 0));
+  g_windows[id].Reset(isolate, win);
+  int32_t wc_id = static_cast<int32_t>(
+      PNum(isolate, ctx,
+           win->Get(ctx, S(isolate, "webContents")).ToLocalChecked()
+               .As<Object>(),
+           "id", -1));
+  g_by_wc[wc_id] = id;
+
+  WireWindow(isolate, ctx, id, wc_id, win,
+             win->Get(ctx, S(isolate, "webContents")).ToLocalChecked()
+                 .As<Object>());
+
+  std::string url = PStr(isolate, ctx, p, "url");
+  if (!url.empty()) {
+    Local<Value> u = S(isolate, url.c_str());
+    CallWin1(isolate, ctx, win, nullptr, "loadURL", u);
+
+  }
+  return CallWin(isolate, ctx, win, nullptr, "getBounds");
+}
+
+// ---- method dispatch ----
+static Local<Value> DispatchMethod(Isolate* isolate, Local<Context> ctx,
+                                   const std::string& m, Local<Object> p) {
+  Local<Object> win;
+  auto simple = [&](const char* obj_key, const char* method) {
+    return CallWin(isolate, ctx, GetWin(isolate, ctx, p), obj_key, method);
+  };
+  auto simple1 = [&](const char* obj_key, const char* method, Local<Value> a) {
+    return CallWin1(isolate, ctx, GetWin(isolate, ctx, p), obj_key, method, a);
+  };
+
+  if (m == "create") return CreateWindow(isolate, ctx, p);
+  if (m == "close" || m == "destroy") return simple(nullptr, "destroy");
+  if (m == "show") return simple(nullptr, "show");
+  if (m == "hide") return simple(nullptr, "hide");
+  if (m == "focus") {
+    Local<Object> w = GetWin(isolate, ctx, p);
+    Local<Value> min = CallWin(isolate, ctx, w, nullptr, "isMinimized");
+    if (!min.IsEmpty() && min->IsTrue()) {
+      CallWin(isolate, ctx, w, nullptr, "restore");
+    }
+    return CallWin(isolate, ctx, w, nullptr, "focus");
+  }
+  if (m == "setTitle")
+    return simple1(nullptr, "setTitle",
+                   S(isolate, PStr(isolate, ctx, p, "title").c_str()));
+  if (m == "setPosition") {
+    Local<Object> w = GetWin(isolate, ctx, p);
+    Local<Value> argv[2] = {
+        Number::New(isolate, PNum(isolate, ctx, p, "x", 0)),
+        Number::New(isolate, PNum(isolate, ctx, p, "y", 0))};
+    Local<Function> fn = w->Get(ctx, S(isolate, "setPosition"))
+                             .ToLocalChecked()
+                             .As<Function>();
+    return fn->Call(ctx, w, 2, argv).FromMaybe(Local<Value>());
+  }
+  if (m == "setSize") {
+    Local<Object> w = GetWin(isolate, ctx, p);
+    Local<Value> argv[2] = {
+        Number::New(isolate, PNum(isolate, ctx, p, "width", 0)),
+        Number::New(isolate, PNum(isolate, ctx, p, "height", 0))};
+    Local<Function> fn =
+        w->Get(ctx, S(isolate, "setSize")).ToLocalChecked().As<Function>();
+    return fn->Call(ctx, w, 2, argv).FromMaybe(Local<Value>());
+  }
+  if (m == "setBounds") {
+    Local<Object> w = GetWin(isolate, ctx, p);
+    Local<Object> b = Object::New(isolate);
+    const char* keys[4] = {"x", "y", "width", "height"};
+    for (const char* k : keys) {
+      Local<Value> v;
+      if (p->Get(ctx, S(isolate, k)).ToLocal(&v) && !v->IsUndefined()) {
+        b->Set(ctx, S(isolate, k), v).Check();
+      }
+    }
+    Local<Value> argv[1] = {b};
+    Local<Function> fn = w->Get(ctx, S(isolate, "setBounds"))
+                             .ToLocalChecked()
+                             .As<Function>();
+    return fn->Call(ctx, w, 1, argv).FromMaybe(Local<Value>());
+  }
+  if (m == "getBounds") return simple(nullptr, "getBounds");
+  if (m == "center") return simple(nullptr, "center");
+  if (m == "setAlwaysOnTop")
+    return simple1(nullptr, "setAlwaysOnTop",
+                   Boolean::New(isolate, PBool(isolate, ctx, p, "v")));
+  if (m == "setResizable")
+    return simple1(nullptr, "setResizable",
+                   Boolean::New(isolate, PBool(isolate, ctx, p, "v")));
+  if (m == "setFullScreen")
+    return simple1(nullptr, "setFullScreen",
+                   Boolean::New(isolate, PBool(isolate, ctx, p, "v")));
+  if (m == "maximise") return simple(nullptr, "maximize");
+  if (m == "unmaximise") return simple(nullptr, "unmaximize");
+  if (m == "minimise") return simple(nullptr, "minimize");
+  if (m == "unminimise") return simple(nullptr, "restore");
+  if (m == "isVisible") return simple(nullptr, "isVisible");
+  if (m == "isFocused") return simple(nullptr, "isFocused");
+  if (m == "isMinimised") return simple(nullptr, "isMinimized");
+  if (m == "isMaximised") return simple(nullptr, "isMaximized");
+  if (m == "isFullScreen") return simple(nullptr, "isFullScreen");
+  if (m == "execJS")
+    return simple1("webContents", "executeJavaScript",
+                   S(isolate, PStr(isolate, ctx, p, "js").c_str()));
+  if (m == "loadURL")
+    return simple1(nullptr, "loadURL",
+                   S(isolate, PStr(isolate, ctx, p, "url").c_str()));
+  if (m == "reload") return simple("webContents", "reload");
+  if (m == "forceReload") return simple("webContents", "reloadIgnoringCache");
+  if (m == "openDevTools") {
+    Local<Object> w = GetWin(isolate, ctx, p);
+    Local<Object> wc = w->Get(ctx, S(isolate, "webContents"))
+                           .ToLocalChecked()
+                           .As<Object>();
+    Local<Object> mode = Object::New(isolate);
+    mode->Set(ctx, S(isolate, "mode"), S(isolate, "detach")).Check();
+    Local<Value> argv[1] = {mode};
+    Local<Function> fn = wc->Get(ctx, S(isolate, "openDevTools"))
+                             .ToLocalChecked()
+                             .As<Function>();
+    return fn->Call(ctx, wc, 1, argv).FromMaybe(Local<Value>());
+  }
+  if (m == "setZoom")
+    return simple1("webContents", "setZoomFactor",
+                   Number::New(isolate, PNum(isolate, ctx, p, "v", 1)));
+  if (m == "getZoom") return simple("webContents", "getZoomFactor");
+  if (m == "setBackgroundColour")
+    return simple1(nullptr, "setBackgroundColor",
+                   S(isolate, PStr(isolate, ctx, p, "colour").c_str()));
+  if (m == "setIgnoreMouseEvents")
+    return simple1(nullptr, "setIgnoreMouseEvents",
+                   Boolean::New(isolate, PBool(isolate, ctx, p, "v")));
+  if (m == "copy") return simple("webContents", "copy");
+  if (m == "paste") return simple("webContents", "paste");
+  if (m == "cut") return simple("webContents", "cut");
+  if (m == "undo") return simple("webContents", "undo");
+  if (m == "redo") return simple("webContents", "redo");
+  if (m == "selectAll") return simple("webContents", "selectAll");
+  if (m == "delete") return simple("webContents", "delete");
+  if (m == "quit") {
+    Local<Function> fn = g_app.Get(isolate)
+                             ->Get(ctx, S(isolate, "quit"))
+                             .ToLocalChecked()
+                             .As<Function>();
+    return fn->Call(ctx, g_app.Get(isolate), 0, nullptr)
+        .FromMaybe(Local<Value>());
+  }
+  isolate->ThrowException(Exception::Error(S(isolate, ("unknown method " + m).c_str())));
+  return Local<Value>();
+}
+
+// ---- stdin control reader (raw blocking thread — no libuv stream, so
+// window destruction can never stall the poll; EOF = host gone) ----
+static void LinesAsyncCb(uv_async_t*) {
+  Isolate* isolate = g_main_isolate;
+  HandleScope hs(isolate);
+  Local<Context> ctx = isolate->GetCurrentContext();
+  std::vector<std::string> batch;
+  bool eof = false;
+  {
+    std::lock_guard<std::mutex> lk(g_lines_mu);
+    batch.swap(g_lines);
+    eof = g_lines_eof;
+    g_lines_eof = false;
+  }
+  for (auto& line : batch) {
+    if (line == "\x01" "EOF") {
+      if (g_m_debug) ELog("control read ended (eof)");
+      Local<Function> fn = g_app.Get(isolate)
+                               ->Get(ctx, S(isolate, "quit"))
+                               .ToLocalChecked()
+                               .As<Function>();
+      fn->Call(ctx, g_app.Get(isolate), 0, nullptr).FromMaybe(Local<Value>());
+      return;
+    }
+    if (line.empty()) continue;
+    TryCatch tc(isolate);
+    Local<Value> parsed =
+        JsonParse(isolate, ctx, S(isolate, line.c_str()));
+    if (parsed.IsEmpty() || !parsed->IsObject()) {
+      tc.Reset();
+      continue;
+    }
+    Local<Object> msg = parsed.As<Object>();
+    Local<Value> tv;
+    if (msg->Get(ctx, S(isolate, "t")).ToLocal(&tv) && tv->IsString()) {
+      String::Utf8Value tu(isolate, tv);
+      if (strcmp(*tu, "resp") == 0) continue;  // no Electron->Go reqs pending
+    }
+    std::string method;
+    {
+      Local<Value> mv;
+      if (!msg->Get(ctx, S(isolate, "m")).ToLocal(&mv) || !mv->IsString())
+        continue;
+      String::Utf8Value mu(isolate, mv);
+      method.assign(*mu, mu.length());
+    }
+    int64_t id = static_cast<int64_t>(
+        PNum(isolate, ctx, msg, "id", -1));
+    Local<Value> pv;
+    Local<Object> params = Object::New(isolate);
+    if (msg->Get(ctx, S(isolate, "p")).ToLocal(&pv) && pv->IsObject()) {
+      params = pv.As<Object>();
+    }
+    if (g_m_debug) ELog("dispatch %s id=%lld", method.c_str(),
+                        (long long)id);
+    Local<Value> result = DispatchMethod(isolate, ctx, method, params);
+    if (tc.HasCaught()) {
+      Local<Value> exc = tc.Exception();
+      Local<String> s;
+      std::string err = "Error";
+      if (!exc.IsEmpty() && exc->ToString(ctx).ToLocal(&s)) {
+        String::Utf8Value u(isolate, s);
+        err.assign(*u, u.length());
+      }
+      SendRespErr(isolate, ctx, id, err.c_str());
+      continue;
+    }
+    RespondValue(isolate, ctx, id, result);
+  }
+}
+
+static void QuitAsyncCb(uv_async_t*) {
+  Isolate* isolate = g_main_isolate;
+  HandleScope hs(isolate);
+  Local<Context> ctx = isolate->GetCurrentContext();
+  Local<Function> fn = g_app.Get(isolate)
+                           ->Get(ctx, S(isolate, "quit"))
+                           .ToLocalChecked()
+                           .As<Function>();
+  fn->Call(ctx, g_app.Get(isolate), 0, nullptr).FromMaybe(Local<Value>());
+}
+
+static void* ReaderThread(void*) {
+  std::string buf;
+  char tmp[65536];
+  for (;;) {
+    ssize_t n = read(0, tmp, sizeof(tmp));
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
+    if (n == 0) break;
+    buf.append(tmp, static_cast<size_t>(n));
+    size_t idx;
+    while ((idx = buf.find('\n')) != std::string::npos) {
+      std::string line = buf.substr(0, idx);
+      buf.erase(0, idx + 1);
+      {
+        std::lock_guard<std::mutex> lk(g_lines_mu);
+        g_lines.push_back(std::move(line));
+      }
+      uv_async_send(&g_lines_async);
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lk(g_lines_mu);
+    g_lines.push_back("\x01" "EOF");
+  }
+  uv_async_send(&g_lines_async);
+  return nullptr;
+}
+
+// orphan protection layer 2: quit when re-parented (host SIGKILL'd)
+static void* PpidGuardThread(void*) {
+  if (g_m_debug) ELog("guard armed, originalPpid=%u", g_orig_ppid);
+  for (;;) {
+    struct timespec ts = {2, 0};
+    nanosleep(&ts, nullptr);
+    uint32_t ppid = static_cast<uint32_t>(getppid());
+    if (g_m_debug) {
+      fprintf(stderr, "[wails-electron] beat, ppid=%u\n", ppid);
+    }
+    if (ppid != g_orig_ppid) {
+      ELog("parent died, quitting");
+      uv_async_send(&g_quit_async);
+      break;
+    }
+  }
+  return nullptr;
+}
+
+static void PreloadErrorCb(const FunctionCallbackInfo<Value>& args) {
+  Isolate* isolate = I(args);
+  HandleScope hs(isolate);
+  Local<Context> ctx = isolate->GetCurrentContext();
+  std::string path, err;
+  if (args.Length() >= 2 && args[1]->IsString()) {
+    String::Utf8Value u(isolate, args[1]);
+    path.assign(*u, u.length());
+  }
+  if (args.Length() >= 3) {
+    Local<String> s;
+    if (args[2]->ToString(ctx).ToLocal(&s)) {
+      String::Utf8Value u(isolate, s);
+      err.assign(*u, u.length());
+    }
+  }
+  fprintf(stderr, "[wails-electron] preload-error %s: %s\n", path.c_str(),
+          err.c_str());
+}
+
+static void NoopCb(const FunctionCallbackInfo<Value>& args) {}
+
+static void WailsMessageCb(const FunctionCallbackInfo<Value>& args) {
+  Isolate* isolate = I(args);
+  HandleScope hs(isolate);
+  Local<Context> ctx = isolate->GetCurrentContext();
+  // event.sender.id -> windowID (numeric keys: the churning fix)
+  uint32_t id = 0;
+  if (args.Length() >= 1 && args[0]->IsObject()) {
+    Local<Value> sender;
+    if (args[0].As<Object>()->Get(ctx, S(isolate, "sender")).ToLocal(&sender) &&
+        sender->IsObject()) {
+      int32_t wc = static_cast<int32_t>(
+          PNum(isolate, ctx, sender.As<Object>(), "id", -1));
+      auto it = g_by_wc.find(wc);
+      if (it != g_by_wc.end()) id = it->second;
+    }
+  }
+  Local<Value> payload =
+      args.Length() >= 2 ? Local<Value>(args[1]) : Undefined(isolate);
+  // compat diagnostics passthrough (same shape as main.js logged)
+  if (payload->IsString()) {
+    TryCatch tc(isolate);
+    Local<Value> parsed =
+        JsonParse(isolate, ctx, payload.As<String>());
+    if (!parsed.IsEmpty() && parsed->IsObject()) {
+      Local<Value> name;
+      if (parsed.As<Object>()
+              ->Get(ctx, S(isolate, "name"))
+              .ToLocal(&name) &&
+          name->IsString()) {
+        String::Utf8Value nu(isolate, name);
+        if (strncmp(*nu, "compat:", 7) == 0) {
+          Local<Value> data;
+          std::string ds;
+          if (parsed.As<Object>()
+                  ->Get(ctx, S(isolate, "data"))
+                  .ToLocal(&data)) {
+            Local<String> s;
+            if (data->ToString(ctx).ToLocal(&s)) {
+              String::Utf8Value du(isolate, s);
+              ds.assign(*du, du.length());
+            }
+          }
+          fprintf(stderr, "[wails-electron] %s %s\n", *nu, ds.c_str());
+        }
+      }
+    }
+  }
+  Local<Object> o = Object::New(isolate);
+  o->Set(ctx, S(isolate, "t"), S(isolate, "ev")).Check();
+  o->Set(ctx, S(isolate, "e"), S(isolate, "message")).Check();
+  Local<Object> p = Object::New(isolate);
+  p->Set(ctx, S(isolate, "id"), Integer::NewFromUnsigned(isolate, id)).Check();
+  p->Set(ctx, S(isolate, "payload"), payload).Check();
+  o->Set(ctx, S(isolate, "p"), p).Check();
+  SendObj(isolate, ctx, o);
+}
+
+static void CompatPingCb(const FunctionCallbackInfo<Value>& args) {
+  if (args.Length() >= 2) {
+    args.GetReturnValue().Set(args[1]);
+  }
+}
+
+static void ReadyCb(const FunctionCallbackInfo<Value>& args) {
+  Isolate* isolate = I(args);
+  HandleScope hs(isolate);
+  Local<Context> ctx = isolate->GetCurrentContext();
+  static pthread_t reader, guard;
+  pthread_create(&reader, nullptr, ReaderThread, nullptr);
+  pthread_create(&guard, nullptr, PpidGuardThread, nullptr);
+  WinEvent(isolate, ctx, 0, "ready");
+}
+
+static void QuitAsyncFromSignal(const FunctionCallbackInfo<Value>& args);
+
+// mainEntry(electron, cfg): the entire former main.js bootstrap.
+static void MainEntry(const FunctionCallbackInfo<Value>& args) {
+  Isolate* isolate = I(args);
+  HandleScope hs(isolate);
+  Local<Context> ctx = isolate->GetCurrentContext();
+  if (args.Length() < 1 || !args[0]->IsObject()) {
+    isolate->ThrowError("mainEntry(electron, cfg) requires the module");
+    return;
+  }
+  Local<Object> electron = args[0].As<Object>();
+  g_app.Reset(isolate,
+              electron->Get(ctx, S(isolate, "app")).ToLocalChecked()
+                  .As<Object>());
+  g_winctor.Reset(isolate,
+                  electron->Get(ctx, S(isolate, "BrowserWindow"))
+                      .ToLocalChecked()
+                      .As<Function>());
+  g_ipcmain.Reset(isolate,
+                  electron->Get(ctx, S(isolate, "ipcMain")).ToLocalChecked()
+                      .As<Object>());
+  g_m_debug = getenv("WAILS_ELECTRON_DEBUG") != nullptr &&
+              strcmp(getenv("WAILS_ELECTRON_DEBUG"), "1") == 0;
+  g_orig_ppid = static_cast<uint32_t>(getppid());
+  g_main_isolate = isolate;
+
+  if (args.Length() >= 2 && args[1]->IsObject()) {
+    Local<Object> cfg = args[1].As<Object>();
+    g_cfg_preload = PStr(isolate, ctx, cfg, "preload");
+    g_cfg_bridge_path = PStr(isolate, ctx, cfg, "bridgePath");
+    g_cfg_bridge_token = PStr(isolate, ctx, cfg, "bridgeToken");
+    g_cfg_native_addon = PStr(isolate, ctx, cfg, "nativeAddon");
+    if (!g_cfg_bridge_path.empty())
+      setenv("WAILS_ELECTRON_BRIDGE_PATH", g_cfg_bridge_path.c_str(), 1);
+    if (!g_cfg_native_addon.empty())
+      setenv("WAILS_ELECTRON_NATIVE_ADDON", g_cfg_native_addon.c_str(), 1);
+  }
+
+  // Chromium switches: must land before app ready.
+  {
+    Local<Object> cl = g_app.Get(isolate)
+                           ->Get(ctx, S(isolate, "commandLine"))
+                           .ToLocalChecked()
+                           .As<Object>();
+    Local<Function> append =
+        cl->Get(ctx, S(isolate, "appendSwitch")).ToLocalChecked()
+            .As<Function>();
+    Local<Value> argv[2] = {S(isolate, "disable-features"),
+                            S(isolate, "CalculateNativeWinOcclusion")};
+    append->Call(ctx, cl, 2, argv).FromMaybe(Local<Value>());
+    const char* sw = getenv("WAILS_ELECTRON_SWITCHES");
+    if (sw != nullptr) {
+      std::string s(sw);
+      size_t pos = 0;
+      while (pos < s.size()) {
+        size_t e = s.find(' ', pos);
+        if (e == std::string::npos) e = s.size();
+        std::string tok = s.substr(pos, e - pos);
+        pos = e + 1;
+        if (!tok.empty()) {
+          Local<Value> a1[1] = {S(isolate, tok.c_str())};
+          append->Call(ctx, cl, 1, a1).FromMaybe(Local<Value>());
+        }
+      }
+    }
+  }
+  const char* nogpu = getenv("WAILS_ELECTRON_DISABLE_GPU");
+  if (nogpu != nullptr && strcmp(nogpu, "1") == 0) {
+    Local<Function> fn = g_app.Get(isolate)
+                             ->Get(ctx, S(isolate, "disableHardwareAcceleration"))
+                             .ToLocalChecked()
+                             .As<Function>();
+    fn->Call(ctx, g_app.Get(isolate), 0, nullptr).FromMaybe(Local<Value>());
+  }
+
+  // app event wiring
+  auto on = [&](const char* ev, FunctionCallback cb) {
+    Local<Function> fn =
+        FunctionTemplate::New(isolate, cb)->GetFunction(ctx).ToLocalChecked();
+    Local<Value> argv[2] = {S(isolate, ev), fn};
+    Local<Value> ignored;
+    g_app.Get(isolate)
+        ->Get(ctx, S(isolate, "on"))
+        .ToLocalChecked()
+        .As<Function>()
+        ->Call(ctx, g_app.Get(isolate), 2, argv)
+        .ToLocal(&ignored);
+  };
+  on("preload-error", PreloadErrorCb);
+  on("window-all-closed", NoopCb);  // the host owns the lifecycle
+
+  // ipcMain handlers
+  {
+    Local<Object> ipc = g_ipcmain.Get(isolate);
+    Local<Value> ignored;
+    {
+      Local<Function> fn = FunctionTemplate::New(isolate, WailsMessageCb)
+                               ->GetFunction(ctx).ToLocalChecked();
+      Local<Value> argv[2] = {S(isolate, "wails:message"), fn};
+      ipc->Get(ctx, S(isolate, "on"))
+          .ToLocalChecked()
+          .As<Function>()
+          ->Call(ctx, ipc, 2, argv)
+          .ToLocal(&ignored);
+    }
+    {
+      Local<Function> fn = FunctionTemplate::New(isolate, CompatPingCb)
+                               ->GetFunction(ctx).ToLocalChecked();
+      Local<Value> argv[2] = {S(isolate, "handle"), fn};
+      // ipcMain.handle('compat:ping', fn)
+      Local<Value> hargv[2] = {S(isolate, "compat:ping"), fn};
+      ipc->Get(ctx, S(isolate, "handle"))
+          .ToLocalChecked()
+          .As<Function>()
+          ->Call(ctx, ipc, 2, hargv)
+          .ToLocal(&ignored);
+    }
+  }
+
+  // signals
+  {
+    Local<Object> proc = ctx->Global()
+                             ->Get(ctx, S(isolate, "process"))
+                             .ToLocalChecked()
+                             .As<Object>();
+    Local<Function> onfn = proc->Get(ctx, S(isolate, "on"))
+                               .ToLocalChecked()
+                               .As<Function>();
+    for (const char* sig : {"SIGTERM", "SIGINT"}) {
+      Local<Function> fn = FunctionTemplate::New(isolate, QuitAsyncFromSignal)
+                               ->GetFunction(ctx).ToLocalChecked();
+      Local<Value> argv[2] = {S(isolate, sig), fn};
+      Local<Value> ignored;
+      onfn->Call(ctx, proc, 2, argv).ToLocal(&ignored);
+    }
+  }
+
+  // async pumps: line dispatch + quit, on this loop
+  g_loop = node::GetCurrentEventLoop(isolate);
+  uv_async_init(g_loop, &g_lines_async, LinesAsyncCb);
+  uv_async_init(g_loop, &g_quit_async, QuitAsyncCb);
+
+  // app.whenReady().then(ReadyCb)
+  {
+    Local<Function> whenReady =
+        g_app.Get(isolate)
+            ->Get(ctx, S(isolate, "whenReady"))
+            .ToLocalChecked()
+            .As<Function>();
+    Local<Value> prom;
+    if (whenReady->Call(ctx, g_app.Get(isolate), 0, nullptr).ToLocal(&prom) &&
+        prom->IsPromise()) {
+      Local<Function> ok = FunctionTemplate::New(isolate, ReadyCb)
+                               ->GetFunction(ctx).ToLocalChecked();
+      prom.As<Promise>()->Then(ctx, ok).FromMaybe(Local<Promise>());
+    }
+  }
+}
+
+
+static void QuitAsyncFromSignal(const FunctionCallbackInfo<Value>& args) {
+  uv_async_send(&g_quit_async);
+}
+
 // NODE_MODULE_INIT = context-aware registration (required for renderer
 // loading in Electron; the N-API addon was context-aware automatically).
 NODE_MODULE_INIT(/* exports, module, context */) {
   NODE_SET_METHOD(exports, "preloadInit", PreloadInit);
+  NODE_SET_METHOD(exports, "mainEntry", MainEntry);
   NODE_SET_METHOD(exports, "close", Close);
 }
