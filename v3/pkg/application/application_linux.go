@@ -131,7 +131,7 @@ func (a *linuxApp) on(eventID uint) {
 }
 
 func (a *linuxApp) isOnMainThread() bool {
-	return isOnMainThread()
+return isOnMainThread()
 }
 
 func (a *linuxApp) appendGTKVersion(result map[string]string) {

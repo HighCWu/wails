@@ -275,12 +275,15 @@ func pumpElectronEvents(proc *electron.Process) {
 		case "message":
 			// Renderer postMessage payload: route into the standard message
 			// processor exactly like the native script-message handlers do.
+			// The payload is a JSON string (the renderer posts the runtime's
+			// invoke payload verbatim); decoding as RawMessage kept the
+			// surrounding quotes, so "wails:drag" never matched its prefix.
 			var p struct {
-				ID      uint            `json:"id"`
-				Payload json.RawMessage `json:"payload"`
+				ID      uint   `json:"id"`
+				Payload string `json:"payload"`
 			}
 			_ = json.Unmarshal(ev.Params, &p)
-			msg := string(p.Payload)
+			msg := p.Payload
 			if msg == "" {
 				continue
 			}

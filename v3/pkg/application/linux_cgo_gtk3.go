@@ -47,6 +47,11 @@ static gboolean dispatchCallback(gpointer data) {
 static void dispatchOnMainThread(unsigned int id) {
     CallbackID *args = malloc(sizeof(CallbackID));
     args->value = id;
+    // NOTE: g_idle_add is not thread-safe from non-main goroutines; the
+    // electron backend never reaches this (isOnMainThread returns true for
+    // it - every impl call is a thread-safe control-protocol send), so the
+    // GTK loop only serves the system backend, which dispatches from its
+    // own main goroutines.
     g_idle_add((GSourceFunc)dispatchCallback, (gpointer)args);
 }
 

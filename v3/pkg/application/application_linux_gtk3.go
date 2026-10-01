@@ -182,6 +182,14 @@ func (a *linuxApp) destroy() {
 }
 
 func (a *linuxApp) isOnMainThread() bool {
+	// Electron backend: every window/webview impl call is a thread-safe
+	// control-protocol send, so "main thread" execution is meaningless —
+	// and the GTK loop's g_idle path loses callbacks dispatched from the
+	// pump goroutines. Inline execution is both correct and required.
+	// GTK-dependent calls (screens) are guarded separately.
+	if a.parent != nil && a.parent.webviewBackend == WebviewBackendElectron {
+		return true
+	}
 	return isOnMainThread()
 }
 

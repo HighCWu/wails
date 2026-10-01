@@ -3,10 +3,19 @@
 package application
 
 import (
+	"errors"
 	"sync"
 )
 
 func (a *linuxApp) processAndCacheScreens() error {
+	// Electron backend: getScreens is a GDK call; with the electron
+	// backend's inline main-thread dispatch it would run on an arbitrary
+	// goroutine against the GTK main thread's heap (heap corruption).
+	// Electron windows report screens through the control protocol once
+	// implemented; until then screens are unavailable.
+	if a.parent != nil && a.parent.webviewBackend == WebviewBackendElectron {
+		return errors.New("screens are not available on the electron backend yet")
+	}
 	var wg sync.WaitGroup
 	var screens []*Screen
 	var err error

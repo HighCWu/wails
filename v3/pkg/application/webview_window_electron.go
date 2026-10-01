@@ -10,7 +10,9 @@ import (
 	"unsafe"
 
 	"github.com/wailsapp/wails/v3/internal/assetserver"
+	"github.com/wailsapp/wails/v3/internal/debounce"
 	"github.com/wailsapp/wails/v3/internal/electron"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 // electronWindow is the webviewWindowImpl for the electron backend: the
@@ -36,6 +38,12 @@ type electronWindow struct {
 	// crash recovery: one auto-reload per renderer death, with a cooldown
 	// so a page that crashes on every load cannot turn into a reload loop
 	lastCrashReload time.Time
+
+	// interactive resize/move fire per-frame on the Electron side; the
+	// WindowDidResize/WindowDidMove events go out debounced like the GTK
+	// backend's (options.Linux.WindowDidMoveDebounceMS, 50ms default)
+	moveDebouncer   func(func())
+	resizeDebouncer func(func())
 }
 
 // set from WAILS_ELECTRON_DEBUG=1 at backend start; window state events
@@ -126,6 +134,8 @@ func (w *electronWindow) run() {
 		"resizable":   !o.DisableResize,
 		"alwaysOnTop": o.AlwaysOnTop,
 		"url":         startURL,
+
+		"enableFileDrop": o.EnableFileDrop,
 	})
 	if err != nil {
 		globalApplication.Logger.Error("electron: window create failed", "window", w.parent.ID(), "error", err)
@@ -134,6 +144,14 @@ func (w *electronWindow) run() {
 	w.mu.Lock()
 	w.x, w.y, w.curWidth, w.curHeight = x, y, width, height
 	w.mu.Unlock()
+	if w.moveDebouncer == nil {
+		debounceMS := o.Linux.WindowDidMoveDebounceMS
+		if debounceMS == 0 {
+			debounceMS = 50
+		}
+		w.moveDebouncer = debounce.New(time.Duration(debounceMS) * time.Millisecond)
+		w.resizeDebouncer = debounce.New(time.Duration(debounceMS) * time.Millisecond)
+	}
 	electronBackend.setWindow(w.parent.ID(), w)
 }
 
@@ -153,30 +171,52 @@ func (w *electronWindow) handleEvent(ev electron.Event) {
 			"window", w.parent.ID(), "event", ev.Name)
 	}
 	switch ev.Name {
-	case "resize", "move":
+	case "resize":
 		if b.Width > 0 && b.Height > 0 {
 			w.x, w.y, w.curWidth, w.curHeight = b.X, b.Y, b.Width, b.Height
 		}
+		// the GTK backend debounces these (50ms default); without it an
+		// interactive resize floods the windowEvents channel
+		if w.resizeDebouncer != nil {
+			w.resizeDebouncer(func() { w.parent.emit(events.Common.WindowDidResize) })
+		}
+	case "move":
+		if b.Width > 0 && b.Height > 0 {
+			w.x, w.y, w.curWidth, w.curHeight = b.X, b.Y, b.Width, b.Height
+		}
+		if w.moveDebouncer != nil {
+			w.moveDebouncer(func() { w.parent.emit(events.Common.WindowDidMove) })
+		}
 	case "focus":
 		w.focused = true
+		w.parent.emit(events.Common.WindowFocus)
 	case "blur":
 		w.focused = false
+		w.parent.emit(events.Common.WindowLostFocus)
 	case "show":
 		w.visible = true
+		w.parent.emit(events.Common.WindowShow)
 	case "hide":
 		w.visible = false
+		w.parent.emit(events.Common.WindowHide)
 	case "minimise":
 		w.minimised = true
+		w.parent.emit(events.Common.WindowMinimise)
 	case "restore":
 		w.minimised = false
+		w.parent.emit(events.Common.WindowUnMinimise)
 	case "maximise":
 		w.maximised = true
+		w.parent.emit(events.Common.WindowMaximise)
 	case "unmaximise":
 		w.maximised = false
+		w.parent.emit(events.Common.WindowUnMaximise)
 	case "fullscreen":
 		w.inFullscreen = true
+		w.parent.emit(events.Common.WindowFullscreen)
 	case "unfullscreen":
 		w.inFullscreen = false
+		w.parent.emit(events.Common.WindowUnFullscreen)
 	}
 }
 
@@ -203,8 +243,13 @@ func (w *electronWindow) setResizable(resizable bool) {
 	_ = w.call("setResizable", map[string]any{"v": resizable})
 }
 
-func (w *electronWindow) setMinSize(width, height int) {}
-func (w *electronWindow) setMaxSize(width, height int) {}
+func (w *electronWindow) setMinSize(width, height int) {
+	_ = w.call("setMinimumSize", map[string]any{"width": width, "height": height})
+}
+
+func (w *electronWindow) setMaxSize(width, height int) {
+	_ = w.call("setMaximumSize", map[string]any{"width": width, "height": height})
+}
 
 func (w *electronWindow) execJS(js string) {
 	_ = w.call("execJS", map[string]any{"js": js})
@@ -326,12 +371,15 @@ func (w *electronWindow) openContextMenu(menu *Menu, data *ContextMenuData) {}
 
 func (w *electronWindow) nativeWindow() unsafe.Pointer { return nil }
 
+// startDrag/startResize run the frameless window drag/resize through the
+// control protocol: the addon sends _NET_WM_MOVERESIZE to the X server so
+// the window manager conducts the move/resize interactively (GTK parity).
 func (w *electronWindow) startDrag() error {
-	return errors.New("drag not available on the electron backend yet")
+	return w.call("startDrag", nil)
 }
 
 func (w *electronWindow) startResize(border string) error {
-	return errors.New("resize not available on the electron backend yet")
+	return w.call("startResize", map[string]any{"edge": border})
 }
 
 func (w *electronWindow) print() error {
@@ -428,7 +476,14 @@ func (w *electronWindow) setMenu(menu *Menu) {}
 
 func (w *electronWindow) snapAssist() {}
 
-func (w *electronWindow) attachModal(modalWindow *WebviewWindow) {}
+// attachModal links the modal window to this parent via Electron's
+// setParentWindow (Electron's modal flag is construction-time, so this is
+// parent-linking rather than true modality on Linux).
+func (w *electronWindow) attachModal(modalWindow *WebviewWindow) {
+	if mw, ok := modalWindow.impl.(*electronWindow); ok {
+		_ = mw.call("setParent", map[string]any{"parent": w.parent.ID()})
+	}
+}
 
 func (w *electronWindow) setContentProtection(enabled bool) {}
 

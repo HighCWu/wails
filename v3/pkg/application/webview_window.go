@@ -836,6 +836,30 @@ func (w *WebviewWindow) HandleMessage(message string) {
 				w.Error("%w", err)
 			}
 		}
+	case strings.HasPrefix(message, "wails:file-drop:"):
+		// Electron backend: the renderer addon resolves dropped-file paths
+		// (webUtils.getPathForFile) and forwards them here; same payload the
+		// WebView2 host feeds natively. No-op when the app disabled drops.
+		if !w.options.EnableFileDrop {
+			return
+		}
+		var payload struct {
+			X         int      `json:"x"`
+			Y         int      `json:"y"`
+			Filenames []string `json:"filenames"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(message, "wails:file-drop:")), &payload); err != nil {
+			w.Error("file-drop payload: %w", err)
+			return
+		}
+		windowDragAndDropBuffer <- &dragAndDropMessage{
+			windowId:  w.id,
+			filenames: payload.Filenames,
+			DropTarget: &DropTargetDetails{
+				X: payload.X,
+				Y: payload.Y,
+			},
+		}
 	case strings.HasPrefix(message, "wails:non-client-region:"):
 		message = strings.Replace(message, "wails:non-client-region:", "", 1)
 		w.handleNonClientRegionMessage(message)
