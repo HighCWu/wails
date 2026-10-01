@@ -3,7 +3,6 @@
 package application
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
@@ -14,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"time"
 
@@ -78,9 +76,12 @@ func nativeBridgePath() string {
 
 func serveNativeBridgeConn(conn net.Conn, expectedToken string, serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, []byte, error)) {
 	defer conn.Close()
-	// HELLO handshake: the first frame must carry the per-instance token;
-	// anything else is a foreign local process and gets dropped silently.
-	line, err := readFrame(conn, nil)
+	// Every frame on this connection is protocol v3: 4-byte LE length +
+	// payload. The HELLO handshake is the first such frame and must carry
+	// the per-instance token; anything else is a foreign local process
+	// and gets dropped silently.
+	buf := make([]byte, 0, 256*1024)
+	line, err := readMessage(conn, &buf)
 	if err != nil {
 		return
 	}
@@ -92,13 +93,11 @@ func serveNativeBridgeConn(conn net.Conn, expectedToken string, serveHTTP func(m
 		hello.Hello != 1 || hello.Token != expectedToken {
 		return
 	}
-	conn.Write([]byte(`{"ready":true}` + "\n"))
-	// After the (line-framed) HELLO, all frames are protocol v3:
-	// 4-byte LE length + raw bytes of a v8-serialized invoke object
+	writeMessage(conn, []byte(`{"ready":true}`))
+	// All frames after HELLO are v8-serialized invoke objects
 	// {id, channel, method, url, bodyLen, body, headers}. Channels:
 	// "http" rides the bindings data plane through the asset server;
 	// "echo" is answered verbatim (benchmark diagnostics).
-	buf := make([]byte, 0, 256*1024)
 	for {
 		msg, err := readMessage(conn, &buf)
 		if err != nil {
@@ -133,119 +132,16 @@ func serveNativeBridgeConn(conn net.Conn, expectedToken string, serveHTTP func(m
 	}
 }
 
-// serveHTTPFrame handles one {"id":N,"type":"http",...} frame: run the
-// request through the asset server and answer with
-// {"id":N,"status":..,"contentType":..,"payload":"<base64>"}.
-func serveHTTPFrame(conn net.Conn, line []byte, buf *[]byte, serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, []byte, error)) {
-	var req struct {
-		ID      int               `json:"id"`
-		Method  string            `json:"method"`
-		URL     string            `json:"url"`
-		BodyLen int               `json:"bodyLen"`
-		Headers map[string]string `json:"headers"`
+// isV8SerializedBody reports whether the call body carries the V8
+// ValueSerializer version header (0xFF + small varint version — 0x0F on
+// current Node, 0x10 on Electron's Node 24). JSON bodies never start
+// with 0xFF, so the check is unambiguous.
+func isV8SerializedBody(body string) bool {
+	if len(body) < 2 || body[0] != 0xFF {
+		return false
 	}
-	if err := json.Unmarshal(line, &req); err != nil {
-		fmt.Println("[httpframe] unmarshal err:", err)
-		return
-	}
-	fmt.Println("[httpframe] recv id=", req.ID, "url=", req.URL, "bodyLen=", req.BodyLen)
-	body, err := readExactBody(conn, buf, req.BodyLen)
-	if err != nil {
-		fmt.Println("[httpframe] body read err:", err)
-		return
-	}
-	hdr := http.Header{}
-	for k, v := range req.Headers {
-		hdr.Set(k, v)
-	}
-	if req.Method == "" {
-		req.Method = http.MethodGet
-	}
-	status, contentType, bodyB64, err := serveHTTP(req.Method, req.URL, string(body), hdr)
-	respBody := []byte(bodyB64)
-	if err != nil {
-		respBody = []byte(err.Error())
-		status = 500
-		contentType = "text/plain"
-	}
-	respHdr, _ := json.Marshal(map[string]any{
-		"id":          req.ID,
-		"status":      status,
-		"contentType": contentType,
-		"bodyLen":     len(respBody),
-	})
-	if err := writeFrame(conn, respHdr); err != nil {
-		return
-	}
-	if _, err := conn.Write(respBody); err != nil {
-		fmt.Println("[httpframe] body write err:", err)
-	}
-}
-
-// readFrame reads one '\n'-terminated frame into *buf (grown as needed,
-// reused across frames; nil allocates locally). The strict
-// request/response link expects one frame at a time — residual bytes
-// after a frame are a protocol violation.
-// readFrame reads one '\n'-terminated header line into *buf (reused
-// across calls). Bytes after the newline are the frame's raw body
-// (protocol v2) — they stay at the front of *buf for readExactBody to
-// consume; callers of plain echo frames see an empty residue as before.
-func readFrame(conn net.Conn, buf *[]byte) ([]byte, error) {
-	var local []byte
-	if buf == nil {
-		buf = &local // HELLO handshake path passes nil
-	}
-	start := 0
-	for {
-		if i := bytes.IndexByte((*buf)[start:], '\n'); i >= 0 {
-			line := (*buf)[start : start+i]
-			rest := start + i + 1
-			consumed := rest
-			// move the residue (start of the body) to the front
-			copy(*buf, (*buf)[rest:])
-			*buf = (*buf)[:len(*buf)-rest]
-			_ = consumed
-			return line, nil
-		}
-		if len(*buf) == cap(*buf) {
-			*buf = slices.Grow(*buf, cap(*buf)+1)[:len(*buf)]
-		}
-		n, err := conn.Read((*buf)[len(*buf):cap(*buf)])
-		*buf = (*buf)[:len(*buf)+n]
-		if err != nil {
-			return nil, err
-		}
-	}
-}
-
-// readExactBody consumes n bytes: whatever the reader already pulled
-// into buf (the body's first bytes may precede the header's newline),
-// then straight from the connection for the remainder. Returns a copy.
-func readExactBody(conn net.Conn, buf *[]byte, n int) ([]byte, error) {
-	out := make([]byte, n)
-	taken := copy(out, (*buf)[:min(len(*buf), n)])
-	copy(*buf, (*buf)[taken:])
-	*buf = (*buf)[:len(*buf)-taken]
-	for taken < n {
-		m, err := conn.Read(out[taken:n])
-		if m > 0 {
-			taken += m
-		}
-		if err != nil {
-			return nil, err
-		}
-		if m == 0 {
-			return nil, io.EOF
-		}
-	}
-	return out, nil
-}
-
-// writeFrame emits the frame plus newline as one aggregated writev.
-func writeFrame(conn net.Conn, line []byte) error {
-	buffers := net.Buffers{line, []byte{'\n'}}
-	_, err := buffers.WriteTo(conn)
-	return err
+	v := body[1]
+	return v >= 0x01 && v <= 0x1F
 }
 
 // serveInvokeMessage runs one http-channel invoke through the asset
@@ -254,7 +150,13 @@ func serveInvokeMessage(conn net.Conn, obj map[string]any, serveHTTP func(method
 	id, _ := obj["id"].(float64)
 	method, _ := obj["method"].(string)
 	rawURL, _ := obj["url"].(string)
-	body, _ := obj["body"].(string)
+	var body string
+	switch b := obj["body"].(type) {
+	case string:
+		body = b
+	case []byte: // v8-body mode: the call body arrives as raw bytes
+		body = string(b)
+	}
 	hdr := http.Header{}
 	if hm, ok := obj["headers"].(map[string]any); ok {
 		for k, v := range hm {
@@ -269,7 +171,7 @@ func serveInvokeMessage(conn net.Conn, obj map[string]any, serveHTTP func(method
 	// The runtime (with __wailsV8Body gating) sends the call object
 	// v8-serialized: decode it back to the JSON shape the bindings
 	// pipeline consumes. Plain JSON bodies pass through untouched.
-	if bytes.HasPrefix([]byte(body), []byte{0xFF, 0x0F}) {
+	if isV8SerializedBody(body) {
 		if decoded, derr := v8serde.Deserialize([]byte(body)); derr == nil {
 			if b, merr := json.Marshal(decoded); merr == nil {
 				body = string(b)
@@ -290,7 +192,7 @@ func serveInvokeMessage(conn net.Conn, obj map[string]any, serveHTTP func(method
 		"id":          id,
 		"status":      float64(status),
 		"contentType": contentType,
-		"body":        string(respBody),
+		"body":        respBody, // []byte -> Uint8Array on the JS side
 	})
 	if merr != nil {
 		return merr

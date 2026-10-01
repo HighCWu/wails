@@ -16,7 +16,7 @@ process.on('unhandledRejection', (r) => {
 
 const expModes = (process.env.WAILS_ELECTRON_EXPERIMENT || '').split(',');
 try {
-  process.stderr.write(`[wails-electron preload] exp="${expMode}" ppid=${process.ppid}\n`);
+  process.stderr.write(`[wails-electron preload] exp="${expModes.join(',')}" ppid=${process.ppid}\n`);
 } catch (e) {}
 
 window.chrome = window.chrome || {};
@@ -35,43 +35,32 @@ function installNativeHttpFetch() {
   const origFetch = window.fetch.bind(window);
   window.fetch = async (input, init) => {
     let url = typeof input === 'string' ? input : (input && input.url) || String(input);
-    if (url.indexOf('/wails/runtime') !== -1 && window.__nativeCallBin) {
+    if (url.indexOf('/wails/runtime') !== -1 && window.__wailsV8Body && window.__nativeInvoke) {
       url = new URL(url, location.href).toString();
-      // Aligned with Electron's Invoke: the serialized payload carries
-      // ONLY the call arguments ([body] — a single-element array, same
-      // shape as the args list ipcRenderer passes to SerializeV8Value).
-      // Transport metadata (id/channel/method/url/headers) lives in the
-      // frame header, the equivalent of Electron's Mojo parameters.
+      // Frame v3: the whole call object travels as ONE v8-serialized
+      // message (id/channel/method/url/headers/body) — the same shape
+      // as Electron's SerializeV8Value(arguments) on its Mojo invoke.
       const rawBody = init && init.body != null ? init.body : '';
-      const bodyBuf = typeof rawBody === 'string' ? Buffer.from(rawBody) : Buffer.from(rawBody);
-      // headers must ride along: the runtime's chunked upload protocol
-      // (x-wails-chunk-*) and call association (x-wails-call-id) live there
-      const hdrObj = {};
-      if (init && init.headers) {
-        for (const [k, v] of new Headers(init.headers).entries()) hdrObj[k] = v;
-      }
-      const payload = require('v8').serialize([bodyBuf]);
-      const hdr = JSON.stringify({
-        id: __nativeSeq++,
-        type: 'http',
+      const callObj = {
+        channel: 'http',
         method: (init && init.method) || 'GET',
         url: url,
-        headers: hdrObj,
-        payloadLen: payload.length,
-      });
-      // frame = header line + raw payload bytes (one Invoke on the wire)
-      const frame = Buffer.concat([Buffer.from(hdr + '\n'), Buffer.from(payload)]);
-      const respFrame = await window.__nativeCallBin(__nativeSeq - 1, frame, Buffer.alloc(0));
-      // response frame: header line + raw payload bytes
-      const nl = respFrame.indexOf(0x0A);
-      const respHdr = JSON.parse(respFrame.slice(0, nl).toString());
-      const respPayload = respFrame.slice(nl + 1);
-      const decoded = require('v8').deserialize(respPayload);
-      const respBody = decoded[0];
+        body: typeof rawBody === 'string' ? rawBody : new Uint8Array(rawBody),
+        headers: {},
+      };
+      if (init && init.headers) {
+        for (const [k, v] of new Headers(init.headers).entries()) callObj.headers[k] = v;
+      }
+      // The addon serializes the raw object via the injected v8.serialize
+      // (one napi_call from C) — exactly the bytes Electron's renderer
+      // hands its main process on an IPC invoke. Serializing here too
+      // would double-wrap (buffer-of-buffer) — pass the object as is.
+      const out = await window.__nativeInvoke(callObj);
+      if (out.err) throw new Error(out.err);
       const headers = new Headers();
-      if (respHdr.contentType) headers.set('Content-Type', respHdr.contentType);
-      return new Response(respBody.length ? new Uint8Array(respBody) : null, {
-        status: respHdr.status,
+      if (out.contentType) headers.set('Content-Type', out.contentType);
+      return new Response(out.body.length ? new Uint8Array(out.body) : null, {
+        status: out.status,
         headers: headers,
       });
     }
@@ -104,22 +93,28 @@ window.__wailsNativeInit = (initConfig) => {
   console.log('[wails-electron preload] __wailsNativeInit called addon=' + initConfig.addon + ' endpoint=' + initConfig.endpoint);
   if (window.__nativeCall) return; // idempotent across navigations
   const bridge = require(initConfig.addon);
+  // The addon holds these as napi_refs and calls them from C on every
+  // invoke — all serialization logic stays in JS's own v8 module, the
+  // addon never re-implements the format.
+  bridge.setSerde(require('v8').serialize, require('v8').deserialize);
   bridge.connect(initConfig.endpoint, initConfig.token);
+  // Frame v3 is up: the call body travels v8-serialized (binary, args
+  // object direct) instead of JSON.stringify'd — the same bytes
+  // Electron's renderer hands its main process on an IPC invoke.
+  // runtime.js gates its call-body encoding on this flag.
+  window.__wailsV8Body = true;
   // runtime.js gates its call-body encoding on this: when present, the
   // call object is v8-serialized (binary, args object direct) instead
   // of JSON.stringify'd — eliminating the text-encode hop on the wire
   window.__wailsV8Serialize = (obj) => require('v8').serialize(obj);
+  window.__wailsV8Deserialize = (buf) => require('v8').deserialize(buf);
+  window.__nativeInvoke = (msgObj) => bridge.invoke(msgObj);
   // echo diagnostics ride the v3 invoke frame (channel: "echo") —
   // the message is v8-serialized like every other frame on the wire
-  window.__nativeEcho = (payload) => {
-    const msg = require('v8').serialize({
-      id: 0, channel: 'echo', payload: payload,
-    });
-    return bridge.invoke(msg).then((r) => {
-      const decoded = require('v8').deserialize(r);
-      return decoded.payload;
-    });
-  };
+  // echo diagnostics ride the v3 invoke frame (channel: "echo") — the
+  // message is v8-serialized by the addon like every frame on the wire
+  window.__nativeEcho = (payload) =>
+    bridge.invoke({ id: 0, channel: 'echo', payload }).then((r) => r.payload);
   window.__nativeCall = (id, payload) => bridge.call(id, payload);
   console.log('[wails-electron preload] native-uds transport ready');
   // native-http is the DEFAULT data plane for the native-ipc mode
