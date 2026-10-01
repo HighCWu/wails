@@ -102,6 +102,11 @@ func TestCrossCheckWithNode(t *testing.T) {
 		{"one-prop map", map[string]any{"a": float64(1)}, "ff0f6f22016149027b01"},
 		{"dense array", []any{float64(1), float64(2), float64(3)}, "ff0f4103490249044906240003"},
 		{"uint8 array", map[string]any{"d": []byte{1, 2, 3}}, "ff0f6f2201645c01030102037b01"},
+		// padding regression: a two-byte string after an odd-offset
+		// one-byte string carries V8's kPadding (0x00) — this exact frame
+		// is what the IME leg's value RPC produces
+		{"padding before two-byte", []any{"value", "中文输入"},
+			"ff0f4102220576616c75650063082d4e8765938f6551240002"},
 	}
 	for _, tc := range cases {
 		data, err := Serialize(tc.val)

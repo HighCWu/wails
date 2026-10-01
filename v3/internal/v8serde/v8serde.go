@@ -20,6 +20,7 @@ import (
 // tags of the V8 ValueSerializer format (value-serializer.h)
 const (
 	tagVersion     = 0xFF
+	tagPadding     = 0x00 // alignment padding, written before two-byte strings
 	tagNull        = 0x30
 	tagUndefined   = 0x5F
 	tagTrue        = 0x54
@@ -113,9 +114,19 @@ func (d *decoder) value(depth int) (any, error) {
 	if depth > 64 {
 		return nil, errors.New("v8serde: nesting too deep")
 	}
-	tag, err := d.byte()
-	if err != nil {
-		return nil, err
+	var tag byte
+	var err error
+	for {
+		tag, err = d.byte()
+		if err != nil {
+			return nil, err
+		}
+		if tag == tagPadding {
+			// V8 pads to even offsets before two-byte strings; any 0x00
+			// at a tag position is padding, never a value.
+			continue
+		}
+		break
 	}
 	switch tag {
 	case tagNull, tagUndefined:
@@ -267,6 +278,15 @@ type serializer struct {
 func (s *serializer) nextID() uint64 { s.idCount++; return s.idCount }
 
 func (s *serializer) byte(b byte) { s.out = append(s.out, b) }
+func varintLen(v uint64) int {
+	n := 1
+	for v >= 0x80 {
+		v >>= 7
+		n++
+	}
+	return n
+}
+
 func (s *serializer) varint(v uint64) {
 	for v >= 0x80 {
 		s.out = append(s.out, byte(v)|0x80)
@@ -294,6 +314,11 @@ func (s *serializer) stringBytes(str string) {
 	// encode as UTF-8 string tag if the runtime emits it, else two-byte;
 	// two-byte is what Node's v8.serialize produces for non-latin1
 	u16 := utf16.Encode([]rune(str))
+	// Mirror V8's alignment: the reader expects two-byte string contents
+	// at an even buffer offset, padding with kPadding (0x00) when odd.
+	if (len(s.out)+1+varintLen(uint64(len(u16)*2)))&1 != 0 {
+		s.byte(tagPadding)
+	}
 	s.byte(tagTwoByteStr)
 	s.varint(uint64(len(u16) * 2)) // byte length on the wire
 	for _, c := range u16 {
