@@ -114,12 +114,11 @@ jobs:
           curl.exe -sL -o $env:RUNNER_TEMP\electron.zip https://github.com/electron/electron/releases/download/v44.4.5/electron-v44.4.5-win32-x64.zip
           Expand-Archive -Force $env:RUNNER_TEMP\electron.zip C:\electron
       - name: Build native addon (mingw g++, Electron V8 headers)
-        shell: cmd
+        shell: bash
         run: |
-          set PATH=C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin;%PATH%
-          curl.exe -sL -o headers.tar.gz https://www.electronjs.org/headers/v44.4.5/node-v44.4.5-headers.tar.gz
-          mkdir headers && tar -xzf headers.tar.gz -C headers
-          g++ -std=c++20 -fno-rtti -O2 -shared -DNOMINMAX -DWIN32_LEAN_AND_MEAN -D_WIN32_WINNT=0x0A00 -DV8_COMPRESS_POINTERS -DV8_COMPRESS_POINTERS_IN_SHARED_CAGE -DV8_ENABLE_SANDBOX -DV8_31BIT_SMIS_ON_64BIT_ARCH -DV8_EXTERNAL_CODE_SPACE -o go_bridge_cpp.node v3\internal\electron\nativeaddon\bridge.cc -Iheaders\node_headers\include\node -static -static-libgcc -static-libstdc++
+          export PATH="/c/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin:$PATH"
+          BRIDGE_WIN_ELECTRON_EXE=C:/electron/electron.exe \
+            bash v3/internal/electron/nativeaddon/build-cpp.sh 44.4.5 "$PWD/go_bridge_cpp.node"
       - name: Build compat app
         working-directory: v3
         run: go build -o ..\webview-compat.exe ./examples/webview-compat/

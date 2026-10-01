@@ -36,6 +36,39 @@ fi
 V8_DEFS="-DV8_COMPRESS_POINTERS -DV8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES \
   -DV8_ENABLE_SANDBOX -DV8_31BIT_SMIS_ON_64BIT_ARCH -DV8_EXTERNAL_CODE_SPACE"
 
+LINK_EXTRA=""
+STATIC_LIBS=""
+case "$(uname -s)" in
+MINGW*|MSYS*|CYGWIN*)
+  # PE linking (mingw ld) rejects unresolved symbols, unlike ELF -shared
+  # where dlopen binds them from the host's export table. Build an import
+  # library straight from electron.exe's export table; at LoadLibrary time
+  # the loader matches the recorded module name against the host process
+  # and binds every v8/node import there — same end state as node-gyp's
+  # node.lib + delay-load hook, without the hook. NOTE: binds by the name
+  # "electron.exe"; a renamed host exe would need this regenerated.
+  EXE="${BRIDGE_WIN_ELECTRON_EXE:-C:/electron/electron.exe}"
+  if [ ! -f "$EXE" ]; then
+    echo "electron exe not found: $EXE (set BRIDGE_WIN_ELECTRON_EXE)" >&2
+    exit 1
+  fi
+  TMPD="$(mktemp -d)"
+  objdump -p "$EXE" \
+    | awk '/Ordinal\/Name Pointer/{f=1;next} f && /\]/{sub(/^.*\] */,""); print}' \
+    | sort -u > "$TMPD/names.txt"
+  COUNT="$(wc -l < "$TMPD/names.txt")"
+  if [ "$COUNT" -lt 100 ]; then
+    echo "electron.exe export parse yielded only $COUNT names; objdump format changed?" >&2
+    exit 1
+  fi
+  { echo "LIBRARY electron.exe"; echo "EXPORTS"; cat "$TMPD/names.txt"; } > "$TMPD/electron.def"
+  dlltool -d "$TMPD/electron.def" -l "$TMPD/electron.lib" -m i386:x86-64
+  LINK_EXTRA="$TMPD/electron.lib"
+  STATIC_LIBS="-static-libgcc -static-libstdc++"
+  echo "import library built: $COUNT exports from $EXE"
+  ;;
+esac
+
 g++ -std=c++20 -fno-rtti -O2 -fPIC -shared -o "$OUT" bridge.cc \
-  -I"$HDR" $V8_DEFS -lpthread
+  -I"$HDR" $V8_DEFS $LINK_EXTRA -lpthread $STATIC_LIBS
 echo "built $OUT (headers: $HDR)"
