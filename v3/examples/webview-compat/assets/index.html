@@ -11,6 +11,7 @@
 <body>
 <h2>webview-compat</h2>
 <div id="rpc">benchmark running…</div>
+<div style="margin-top:12px"><input id="ime" placeholder="IME target" autocomplete="off"/></div>
 
 <script type="module">
   import * as wails from "/wails/runtime.js";
@@ -19,6 +20,20 @@
   // the experiment mode (see preload): __compatInvoke = pure Electron IPC,
   // Call.ByName = fetch-ipc (Wails runtime), __nativeCall = N-API -> UDS -> Go.
   const PAYLOAD_SIZES = [1, 64, 1024, 65536, 1048576];
+
+  // IME leg (driven by ci/test-ime.sh): composition milestones and the
+  // committed text ride the normal bindings path so the host log can
+  // assert the full preedit -> commit -> RPC chain.
+  const imeInput = document.getElementById("ime");
+  imeInput.addEventListener("compositionstart", () => {
+    wails.Call.ByName("main.CompatService.ImeReport", "compositionstart", "");
+  });
+  imeInput.addEventListener("compositionend", async (e) => {
+    await wails.Call.ByName("main.CompatService.ImeReport", "compositionend", (e && e.data) || "");
+    await new Promise((r) => setTimeout(r, 200));
+    await wails.Call.ByName("main.CompatService.ImeReport", "value", imeInput.value);
+  });
+  imeInput.focus();
   const METHOD = "main.CompatService.Ping";
 
   function pct(sorted, p) {

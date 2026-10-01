@@ -20,6 +20,13 @@ type CompatService struct{}
 
 func (s *CompatService) Ping(payload string) string { return payload }
 
+// ImeReport receives IME composition milestones from the IME leg
+// (ci/test-ime.sh): the host log line is the assertion surface.
+func (s *CompatService) ImeReport(event string, data string) string {
+	fmt.Println("compat: IME " + event + " " + data)
+	return "ok"
+}
+
 var failures int
 
 func check(win *application.WebviewWindow, app *application.App, name string, ok bool, detail string) {
