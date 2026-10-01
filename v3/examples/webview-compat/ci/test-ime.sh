@@ -31,12 +31,12 @@ chmod 700 "$XDG_RUNTIME_DIR"
 dbus-daemon --session --nofork --print-address=1 > "$XDG_RUNTIME_DIR/bus-addr" 2>/dev/null & DBUS_PID=$!
 sleep 1
 export DBUS_SESSION_BUS_ADDRESS="$(cat "$XDG_RUNTIME_DIR/bus-addr")"
-# Hard isolation guard: every ibus command below MUST address the private
-# test instances. A missing address would fall back to the user's session
-# bus and switch THEIR input engine — refuse to run instead.
-case "$DBUS_SESSION_BUS_ADDRESS" in
-  "$XDG_RUNTIME_DIR"/*) ;;
-  *) die "test bus address did not land in the private runtime dir" ;;
+# Hard isolation guard: ibus engine selection MUST address the private
+# test daemon. A stale/missing IBUS_ADDRESS would fall back to the user's
+# session bus — refuse to run instead.
+case "${IBUS_ADDRESS:-}" in
+  "unix:path=$XDG_RUNTIME_DIR/"*) ;;
+  *) die "IBUS_ADDRESS did not land in the private runtime dir" ;;
 esac
 export GTK_IM_MODULE=ibus
 export XMODIFIERS="@im=ibus"
