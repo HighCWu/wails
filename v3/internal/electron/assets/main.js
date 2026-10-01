@@ -12,7 +12,9 @@ const cfg = JSON.parse(process.env.WAILS_ELECTRON_CONFIG || '{}');
 if (cfg.nativeAddon) process.env.WAILS_ELECTRON_NATIVE_ADDON = cfg.nativeAddon;
 if (cfg.bridgePath) process.env.WAILS_ELECTRON_BRIDGE_PATH = cfg.bridgePath;
 if (process.platform === 'win32' || process.env.WAILS_ELECTRON_MAIN_JS === '1') {
-  require('./main-js.js')(require('electron'), cfg);
+  // main-js.js is self-contained (requires electron, reads the config
+  // env itself) and registers everything at require time.
+  require('./main-js.js');
   return;
 }
 if (!process.env.WAILS_ELECTRON_NATIVE_ADDON) {

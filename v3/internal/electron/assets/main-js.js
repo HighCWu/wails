@@ -39,6 +39,9 @@ function send(obj) {
 }
 
 function winEvent(id, name, extra) {
+  if (process.env.WAILS_ELECTRON_DEBUG === '1') {
+    try { process.stderr.write('[wails-electron] ev ' + name + ' id=' + id + '\n'); } catch (e) {}
+  }
   const p = Object.assign({}, extra || {}, { id: id });
   send({ t: 'ev', e: name, p: p });
 }
