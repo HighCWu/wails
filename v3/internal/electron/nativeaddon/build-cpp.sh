@@ -38,13 +38,23 @@ V8_DEFS="-DV8_COMPRESS_POINTERS -DV8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES \
 
 LINK_EXTRA=""
 STATIC_LIBS=""
+SRC=bridge.cc
 case "$(uname -s)" in
 MINGW*|MSYS*|CYGWIN*)
+  # Windows builds the N-API addon (napi_bridge.cc): electron.exe exports
+  # only the N-API surface (verified on 44.4.5: napi_*/uv_* only, zero
+  # v8:: symbols) and no node.lib is published, so the v8-direct
+  # bridge.cc cannot load there. No V8_DEFS needed — node_api.h is pure
+  # C API. Wire serde comes from node's injected v8.serialize
+  # (byte-compatible with the Go decoder; typed arrays ride the 0x5C
+  # host-object form both sides already speak).
+  SRC=napi_bridge.cc
+  V8_DEFS=""
   # PE linking (mingw ld) rejects unresolved symbols, unlike ELF -shared
   # where dlopen binds them from the host's export table. Build an import
   # library straight from electron.exe's export table; at LoadLibrary time
   # the loader matches the recorded module name against the host process
-  # and binds every v8/node import there — same end state as node-gyp's
+  # and binds every napi/uv import there — same end state as node-gyp's
   # node.lib + delay-load hook, without the hook. NOTE: binds by the name
   # "electron.exe"; a renamed host exe would need this regenerated.
   EXE="${BRIDGE_WIN_ELECTRON_EXE:-C:/electron/electron.exe}"
@@ -69,6 +79,6 @@ MINGW*|MSYS*|CYGWIN*)
   ;;
 esac
 
-g++ -std=c++20 -fno-rtti -O2 -fPIC -shared -o "$OUT" bridge.cc \
+g++ -std=c++20 -fno-rtti -O2 -fPIC -shared -o "$OUT" "$SRC" \
   -I"$HDR" $V8_DEFS $LINK_EXTRA -lpthread $STATIC_LIBS
-echo "built $OUT (headers: $HDR)"
+echo "built $OUT from $SRC (headers: $HDR)"
