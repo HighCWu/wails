@@ -1874,6 +1874,9 @@ static void* ReaderThread(void*) {
 }
 
 // orphan protection layer 2: quit when re-parented (host SIGKILL'd)
+#ifndef _WIN32
+// Orphan protection layer 2 (POSIX only): a dead host on Windows is
+// reaped by electron.go's job teardown instead.
 static void* PpidGuardThread(void*) {
   if (g_m_debug) ELog("guard armed, originalPpid=%u", g_orig_ppid);
   for (;;) {
@@ -1891,6 +1894,7 @@ static void* PpidGuardThread(void*) {
   }
   return nullptr;
 }
+#endif // _WIN32
 
 static void PreloadErrorCb(const FunctionCallbackInfo<Value>& args) {
   Isolate* isolate = I(args);
@@ -1987,7 +1991,9 @@ static void ReadyCb(const FunctionCallbackInfo<Value>& args) {
   Local<Context> ctx = isolate->GetCurrentContext();
   static pthread_t reader, guard;
   pthread_create(&reader, nullptr, ReaderThread, nullptr);
+#ifndef _WIN32
   pthread_create(&guard, nullptr, PpidGuardThread, nullptr);
+#endif
   WinEvent(isolate, ctx, 0, "ready");
 }
 
@@ -2015,7 +2021,9 @@ static void MainEntry(const FunctionCallbackInfo<Value>& args) {
                       .As<Object>());
   g_m_debug = getenv("WAILS_ELECTRON_DEBUG") != nullptr &&
               strcmp(getenv("WAILS_ELECTRON_DEBUG"), "1") == 0;
+#ifndef _WIN32
   g_orig_ppid = static_cast<uint32_t>(getppid());
+#endif
   g_main_isolate = isolate;
 
   if (args.Length() >= 2 && args[1]->IsObject()) {
@@ -2024,10 +2032,15 @@ static void MainEntry(const FunctionCallbackInfo<Value>& args) {
     g_cfg_bridge_path = PStr(isolate, ctx, cfg, "bridgePath");
     g_cfg_bridge_token = PStr(isolate, ctx, cfg, "bridgeToken");
     g_cfg_native_addon = PStr(isolate, ctx, cfg, "nativeAddon");
+#ifdef _WIN32
+#define br_setenv(name, value) _putenv_s(name, value)
+#else
+#define br_setenv(name, value) setenv(name, value, 1)
+#endif
     if (!g_cfg_bridge_path.empty())
-      setenv("WAILS_ELECTRON_BRIDGE_PATH", g_cfg_bridge_path.c_str(), 1);
+      br_setenv("WAILS_ELECTRON_BRIDGE_PATH", g_cfg_bridge_path.c_str());
     if (!g_cfg_native_addon.empty())
-      setenv("WAILS_ELECTRON_NATIVE_ADDON", g_cfg_native_addon.c_str(), 1);
+      br_setenv("WAILS_ELECTRON_NATIVE_ADDON", g_cfg_native_addon.c_str());
   }
 
   // Chromium switches: must land before app ready.
