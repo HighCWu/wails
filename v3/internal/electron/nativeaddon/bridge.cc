@@ -1475,7 +1475,7 @@ static void WireWindow(Isolate* isolate, Local<Context> ctx, uint32_t id,
   }
 }
 
-static Local<Value> CreateWindow(Isolate* isolate, Local<Context> ctx,
+static Local<Value> WinCreate(Isolate* isolate, Local<Context> ctx,
                                  Local<Object> p) {
   Local<Object> opts = Object::New(isolate);
   double x = PNum(isolate, ctx, p, "x", 0), y = PNum(isolate, ctx, p, "y", 0);
@@ -1576,7 +1576,7 @@ static Local<Value> DispatchMethod(Isolate* isolate, Local<Context> ctx,
     return CallWin1(isolate, ctx, GetWin(isolate, ctx, p), obj_key, method, a);
   };
 
-  if (m == "create") return CreateWindow(isolate, ctx, p);
+  if (m == "create") return WinCreate(isolate, ctx, p);
   if (m == "close" || m == "destroy") return simple(nullptr, "destroy");
   if (m == "show") return simple(nullptr, "show");
   if (m == "hide") return simple(nullptr, "hide");
