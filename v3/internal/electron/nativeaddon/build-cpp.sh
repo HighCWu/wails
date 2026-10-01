@@ -72,12 +72,15 @@ MINGW*|MSYS*|CYGWIN*)
     exit 1
   fi
   { echo "LIBRARY electron.exe"; echo "EXPORTS"; cat "$TMPD/names.txt"; } > "$TMPD/electron.def"
-  # No -m: the mingw64 dlltool defaults to its own native machine
-  # (x86_64) — its accepted -m spellings vary by build ('x86_64' was
-  # rejected by binutils 15.2's dlltool), and the native default is
-  # exactly what we want. -m i386:x86-64 (the BFD arch string) silently
-  # produced 32-bit imports that ld skipped.
-  dlltool -d "$TMPD/electron.def" -l "$TMPD/electron.lib"
+  # Import library via the Microsoft short-import archive format (see
+  # gen_importlib.py): dlltool's def-file route proved flaky here — its
+  # -m machine spellings vary across binutils builds and bad ones silently
+  # degrade to 32-bit imports ld skips. GNU ld links MSVC-style short
+  # import archives natively.
+  PY=python3
+  command -v python3 >/dev/null 2>&1 || PY=python
+  "$PY" gen_importlib.py "$TMPD/names.txt" "$TMPD/electron.lib" electron.exe
+  LINK_EXTRA="$TMPD/electron.lib"
   LINK_EXTRA="$TMPD/electron.lib"
   STATIC_LIBS="-static-libgcc -static-libstdc++"
   echo "import library built: $COUNT exports from $EXE"
