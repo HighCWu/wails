@@ -34,7 +34,7 @@ jobs:
           curl -sL -o /tmp/electron.zip https://github.com/electron/electron/releases/download/v44.4.5/electron-v44.4.5-linux-x64.zip
           mkdir -p /opt/electron && unzip -q /tmp/electron.zip -d /opt/electron
       - name: Build native bridge addon (Electron V8 headers)
-        run: v3/internal/electron/nativeaddon/build-cpp.sh 44.4.5 /tmp/go_bridge_cpp.node
+        run: bash v3/internal/electron/nativeaddon/build-cpp.sh 44.4.5 /tmp/go_bridge_cpp.node
       - name: Run hit-test scenario (electron backend)
         env:
           WAILS_WEBVIEW_BACKEND: electron
