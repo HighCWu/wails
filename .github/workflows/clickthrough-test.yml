@@ -64,6 +64,17 @@ jobs:
           WAILS_COMPAT_CRASH: "1"
           WAILS_COMPAT_CHURN: "1"
         run: v3/examples/webview-compat/ci/test-compat.sh /tmp/webview-compat electron
+      - name: Install IME test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ibus gir1.2-ibus-1.0 python3-gi openbox xdotool >/dev/null
+      - name: Run IME scenario (electron backend)
+        env:
+          WAILS_ELECTRON_DIR: /opt/electron
+          WAILS_ELECTRON_DISABLE_SANDBOX: "1"
+          WAILS_ELECTRON_EXPERIMENT: native-ipc,native-http
+          WAILS_ELECTRON_NATIVE_ADDON: /tmp/go_bridge_cpp.node
+        run: bash v3/examples/webview-compat/ci/test-ime.sh /tmp/webview-compat
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
