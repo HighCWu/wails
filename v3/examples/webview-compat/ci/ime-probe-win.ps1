@@ -75,12 +75,28 @@ function Wait-Marker($pattern, $timeoutSec = 60) {
   return $false
 }
 
-# ---- activate the preinstalled Chinese (Simplified) MS Pinyin layout
-# KLID 00000804 = Chinese (Simplified, PRC) default → MS Pinyin on
-# modern Windows via TSF.
+# ---- install Chinese (Simplified) + MS Pinyin on the runner.
+# KLID 00000804 alone is a pass-through US placeholder unless the MS
+# Pinyin TIP (TSF) is actually provisioned — that was the earlier
+# probe's failure. Install the language properly first.
+Write-Output "languages before:"
+Get-WinUserLanguageList | ForEach-Object { Write-Output ("  " + $_.LanguageTag + " tips: " + ($_.InputMethodTips -join ",")) }
+$List = Get-WinUserLanguageList
+$List.Add("zh-Hans-CN")
+Set-WinUserLanguageList $List -Force
+try {
+  Install-Language zh-Hans-CN
+} catch {
+  Write-Output ("Install-Language failed (continuing with Set-WinUserLanguageList result): " + $_.Exception.Message)
+}
+$zh = Get-WinUserLanguageList | Where-Object { $_.LanguageTag -like "zh-Hans*" }
+if ($null -eq $zh) { Write-Output "IME-PROBE-RESULT: zh-Hans language install failed"; exit 0 }
+Write-Output ("zh tips after install: " + ($zh.InputMethodTips -join " | "))
+Start-Sleep -Seconds 3  # let the IME TIP finish registering
+
+# ---- activate the layout system-side, for the electron window later
 $hkl = [Win32Input]::LoadKeyboardLayout("00000804", 1)  # KLF_ACTIVATE
 Write-Output ("LoadKeyboardLayout(00000804) -> {0}" -f $hkl)
-if ($hkl -eq [IntPtr]::Zero) { Write-Output "IME-PROBE-RESULT: layout activation failed"; exit 0 }
 
 # ---- launch the app
 $env:WAILS_WEBVIEW_BACKEND = "electron"
