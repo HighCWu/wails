@@ -117,7 +117,13 @@ func (a *linuxApp) getApplicationMenu() *Menu {
 	return nil
 }
 
-func (a *linuxApp) setApplicationMenu(menu *Menu) {}
+func (a *linuxApp) setApplicationMenu(menu *Menu) {
+	// electron backend: route to the Electron application menu
+	if globalApplication != nil && menu != nil &&
+		globalApplication.webviewBackend == WebviewBackendElectron {
+		electronSetApplicationMenu(menu)
+	}
+}
 
 func (a *linuxApp) hide() {
 	a.hideAllWindows()

@@ -117,6 +117,56 @@ if [ "${WAILS_COMPAT_RELOAD:-}" = "1" ]; then
   fi
   echo "PASS: same-process reload re-connected ($RELOAD_BENCHES bench runs)"
 fi
+# apiext leg (WAILS_COMPAT_APIEXT=1, electron backend): accelerator feed,
+# menubar item accelerators, and the intercepted close → WindowClosing chain.
+# Ends with Alt+F4, which must log CLOSING-EVENT and exit the app.
+if [ "${WAILS_COMPAT_APIEXT:-}" = "1" ]; then
+  wait_log "compat: APIEXT-ARMED" 30
+  export DISPLAY="$DISP"
+  WID=""
+  for _ in $(seq 1 60); do
+    WID=$(xdotool search --onlyvisible --name "^webview-compat$" | head -1)
+    [ -n "$WID" ] && break
+    sleep 0.5
+  done
+  [ -n "$WID" ] || die "app window not found"
+  xdotool windowactivate --sync "$WID"
+  sleep 1
+  xdotool key ctrl+shift+k
+  wait_log "compat: ACCEL-FIRED" 10
+  echo "PASS: accelerator fired through before-input-event"
+  sleep 1 # let the key release settle before the pointer click
+  # real mouse click on the rendered menubar item (top-left, ~25px strip):
+  # exercises the full menu-click pipeline (JS click -> stdout -> Go).
+  # xdotool's getwindowgeometry can report a stale origin after the
+  # suite's fullscreen/maximise churn — xwininfo's absolute position is
+  # authoritative, and a low click would hit the page's drag strip.
+  ABS=$(xwininfo -id "$WID" -stats | grep -E "^ +Absolute upper-left" | awk '{print $NF}')
+  AX=$(echo "$ABS" | head -1)
+  AY=$(echo "$ABS" | tail -1)
+  xdotool mousemove "$((AX + 60))" "$((AY + 12))" sleep 0.5 click 1
+  wait_log "compat: MENUBAR-CLICKED" 10
+  echo "PASS: menubar item clicked (menu-click pipeline)"
+  xdotool key ctrl+shift+m
+  wait_log "compat: MENUBAR-CLICKED" 10
+  CLICKS=$(grep -c "compat: MENUBAR-CLICKED" "$LOG" || true)
+  if [ "$CLICKS" -lt 2 ]; then
+    die "expected 2 menubar clicks (mouse + accelerator), got $CLICKS"
+  fi
+  echo "PASS: menubar item accelerator fired"
+  xdotool key alt+F4
+  wait_log "compat: CLOSING-EVENT" 10
+  echo "PASS: user close emits WindowClosing"
+  # the window must actually close now (destroy via the closing chain)
+  for _ in $(seq 1 40); do
+    kill -0 "$APP_PID" 2>/dev/null || break
+    sleep 0.5
+  done
+  if kill -0 "$APP_PID" 2>/dev/null && xdotool search --onlyvisible --name "^webview-compat$" >/dev/null 2>&1; then
+    die "window still visible after Alt+F4 close"
+  fi
+  echo "PASS: app exited through the closing chain"
+fi
 FAILS=$(grep -c "compat:.*FAIL" "$LOG" || true)
 if [ "$FAILS" -ne 0 ]; then
   grep "compat:" "$LOG"

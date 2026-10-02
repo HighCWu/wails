@@ -2,6 +2,7 @@ package application
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,13 @@ type electronBackendState struct {
 
 	listener net.Listener
 	server   *http.Server
+
+	// menus persists the menubar *Menu per window id so "menu-click"
+	// reports can resolve uids back to menu items
+	menus map[uint]*Menu
+	// icon is the app icon (data URL) set via App.SetIcon, applied to
+	// every live window and to windows created later
+	icon string
 }
 
 var electronBackend electronBackendState
@@ -162,6 +170,7 @@ func startPlatformElectron(app *App) error {
 	electronBackend.proc = proc
 	electronBackend.windows = make(map[uint]*electronWindow)
 	electronBackend.contextMenus = make(map[uint]*electronContextMenu)
+	electronBackend.menus = make(map[uint]*Menu)
 
 	go pumpElectronEvents(proc)
 	return nil
@@ -314,6 +323,21 @@ func pumpElectronEvents(proc *electron.Process) {
 				electronBackend.mu.Unlock()
 				InvokeSync(func() { cm.selectUID(p.UID) })
 			}
+		case "menu-click":
+			var p struct {
+				ID  uint `json:"id"`
+				UID uint `json:"uid"`
+			}
+			_ = json.Unmarshal(ev.Params, &p)
+			electronBackend.mu.Lock()
+			menu := electronBackend.menus[p.ID]
+			electronBackend.mu.Unlock()
+			if menu == nil {
+				continue
+			}
+			if item := findElectronMenuItem(menu.items, p.UID); item != nil {
+				InvokeSync(item.handleClick)
+			}
 		case "render-gone":
 			if w := electronBackend.window(ev.WindowID); w != nil {
 				var p struct {
@@ -328,4 +352,111 @@ func pumpElectronEvents(proc *electron.Process) {
 			}
 		}
 	}
+}
+
+// electronAcceleratorString canonicalizes a before-input-event key report
+// into the exact acc.String() form the binding registries are keyed by
+// (modifiers sorted, key uppercased). DOM key names are mapped to the
+// wails named keys; unparseable keys (media keys, dead keys) are dropped.
+func electronAcceleratorString(key string, alt, ctrl, shift, meta bool) (string, bool) {
+	if key == "" {
+		return "", false
+	}
+	if mapped, ok := electronDOMKeyMap[strings.ToLower(key)]; ok {
+		key = mapped
+	}
+	parts := make([]string, 0, 5)
+	if shift {
+		parts = append(parts, "shift")
+	}
+	if ctrl {
+		parts = append(parts, "ctrl")
+	}
+	if alt {
+		parts = append(parts, "alt")
+	}
+	if meta {
+		parts = append(parts, "super")
+	}
+	parts = append(parts, key)
+	acc, err := parseAccelerator(strings.Join(parts, "+"))
+	if err != nil {
+		return "", false
+	}
+	return acc.String(), true
+}
+
+var electronDOMKeyMap = map[string]string{
+	"escape":     "escape",
+	"enter":      "enter",
+	"return":     "return",
+	"tab":        "tab",
+	"backspace":  "backspace",
+	"delete":     "delete",
+	"arrowup":    "up",
+	"arrowdown":  "down",
+	"arrowleft":  "left",
+	"arrowright": "right",
+	" ":          "space",
+	"pageup":     "page up",
+	"pagedown":   "page down",
+}
+
+// findElectronMenuItem resolves a serialized uid back to its menu item.
+func findElectronMenuItem(items []*MenuItem, uid uint) *MenuItem {
+	for _, it := range items {
+		if it.id == uid {
+			return it
+		}
+		if it.submenu != nil {
+			if found := findElectronMenuItem(it.submenu.items, uid); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+// electronSetApplicationMenu is the electron branch of the platform
+// setApplicationMenu (hooked from the linuxApp/windowsApp methods):
+// id 0 routes to Menu.setApplicationMenu in main.js.
+func electronSetApplicationMenu(menu *Menu) {
+	electronBackend.mu.Lock()
+	electronBackend.menus[0] = menu
+	electronBackend.mu.Unlock()
+	if menu == nil {
+		return
+	}
+	// the spec rides any live window's control channel (id 0 selects the
+	// application menu in main.js); with no window up there is nothing to
+	// attach a menu to yet
+	for _, w := range electronWindowsSnapshot() {
+		_ = w.call("setMenu", map[string]any{
+			"id":   uint(0),
+			"menu": electronSerializeMenu(menu.items),
+		})
+		break
+	}
+}
+
+// electronSetIcon is the electron branch of the platform setIcon: apply to
+// every live window now and remember it for windows created later.
+func electronSetIcon(icon []byte) {
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(icon)
+	electronBackend.mu.Lock()
+	electronBackend.icon = dataURL
+	electronBackend.mu.Unlock()
+	for _, w := range electronWindowsSnapshot() {
+		_ = w.call("setIcon", map[string]any{"icon": dataURL})
+	}
+}
+
+func electronWindowsSnapshot() []*electronWindow {
+	electronBackend.mu.Lock()
+	defer electronBackend.mu.Unlock()
+	out := make([]*electronWindow, 0, len(electronBackend.windows))
+	for _, w := range electronBackend.windows {
+		out = append(out, w)
+	}
+	return out
 }

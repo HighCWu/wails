@@ -238,6 +238,11 @@ func (a *linuxApp) showAllWindows() {
 }
 
 func (a *linuxApp) setIcon(icon []byte) {
+	// electron backend: forward to the electron windows (see gtk3 variant)
+	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		electronSetIcon(icon)
+		return
+	}
 	// GTK4 removed per-window icon APIs. The application icon is determined by
 	// the .desktop file's Icon= field at the desktop-integration level.
 	// No programmatic equivalent exists for setting icons from bytes in GTK4.

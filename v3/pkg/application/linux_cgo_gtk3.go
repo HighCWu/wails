@@ -733,6 +733,12 @@ func (a *linuxApp) setIcon(icon []byte) {
 	if len(icon) == 0 {
 		return
 	}
+	// electron backend: the Go-side GTK icon does not reach the Electron
+	// windows — forward to the electron backend instead
+	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		electronSetIcon(icon)
+		return
+	}
 	// Use g_bytes_new instead of g_bytes_new_static because Go memory can be
 	// moved or freed by the GC. g_bytes_new copies the data to C-owned memory.
 	gbytes := C.g_bytes_new(C.gconstpointer(unsafe.Pointer(&icon[0])), C.ulong(len(icon)))

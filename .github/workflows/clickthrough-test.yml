@@ -90,6 +90,17 @@ jobs:
           WAILS_ELECTRON_NATIVE_ADDON: /tmp/go_bridge_cpp.node
           WAILS_COMPAT_RELOAD: "1"
         run: v3/examples/webview-compat/ci/test-compat.sh /tmp/webview-compat electron
+      - name: Run API extensions scenario (electron backend)
+        # accelerator feed (before-input-event), menubar + menu-click
+        # pipeline, and the intercepted X-close -> WindowClosing chain
+        env:
+          WAILS_WEBVIEW_BACKEND: electron
+          WAILS_ELECTRON_DIR: /opt/electron
+          WAILS_ELECTRON_DISABLE_SANDBOX: "1"
+          WAILS_ELECTRON_EXPERIMENT: native-ipc,native-http
+          WAILS_ELECTRON_NATIVE_ADDON: /tmp/go_bridge_cpp.node
+          WAILS_COMPAT_APIEXT: "1"
+        run: v3/examples/webview-compat/ci/test-compat.sh /tmp/webview-compat electron
       - name: Install IME test dependencies
         run: |
           sudo apt-get update -qq

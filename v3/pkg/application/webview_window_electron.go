@@ -33,6 +33,7 @@ type electronWindow struct {
 	maximised    bool
 	inFullscreen bool
 	ignoring     bool
+	menuBarVisible bool
 	zoomLevel    float64
 
 	// crash recovery: one auto-reload per renderer death, with a cooldown
@@ -153,6 +154,13 @@ func (w *electronWindow) run() {
 		w.resizeDebouncer = debounce.New(time.Duration(debounceMS) * time.Millisecond)
 	}
 	electronBackend.setWindow(w.parent.ID(), w)
+	// apply an icon set before this window existed (App.SetIcon before Run)
+	electronBackend.mu.Lock()
+	icon := electronBackend.icon
+	electronBackend.mu.Unlock()
+	if icon != "" {
+		_ = w.call("setIcon", map[string]any{"icon": icon})
+	}
 }
 
 // handleEvent applies window state events from the Electron process.
@@ -171,6 +179,29 @@ func (w *electronWindow) handleEvent(ev electron.Event) {
 			"window", w.parent.ID(), "event", ev.Name)
 	}
 	switch ev.Name {
+	case "close":
+		// user-initiated close (X / Alt+F4): the addon preventDefault()d,
+		// so the window is still alive. Run the closing chain — the
+		// default WindowClosing listener performs the real close via
+		// destroy(), which bypasses 'close' and cannot loop.
+		w.parent.emit(events.Common.WindowClosing)
+	case "key":
+		// raw before-input-event report; canonicalize into the exact
+		// accelerator string the binding registries are keyed by
+		var k struct {
+			Key   string `json:"key"`
+			Alt   bool   `json:"alt"`
+			Ctrl  bool   `json:"control"`
+			Shift bool   `json:"shift"`
+			Meta  bool   `json:"meta"`
+		}
+		_ = json.Unmarshal(ev.Params, &k)
+		if acc, ok := electronAcceleratorString(k.Key, k.Alt, k.Ctrl, k.Shift, k.Meta); ok {
+			windowKeyEvents <- &windowKeyEvent{
+				windowId:          w.parent.ID(),
+				acceleratorString: acc,
+			}
+		}
 	case "resize":
 		if b.Width > 0 && b.Height > 0 {
 			w.x, w.y, w.curWidth, w.curHeight = b.X, b.Y, b.Width, b.Height
@@ -237,7 +268,9 @@ func (w *electronWindow) setAlwaysOnTop(alwaysOnTop bool) {
 	_ = w.call("setAlwaysOnTop", map[string]any{"v": alwaysOnTop})
 }
 
-func (w *electronWindow) setURL(url string) {}
+func (w *electronWindow) setURL(url string) {
+	_ = w.call("loadURL", map[string]any{"url": url})
+}
 
 func (w *electronWindow) setResizable(resizable bool) {
 	_ = w.call("setResizable", map[string]any{"v": resizable})
@@ -295,8 +328,16 @@ func (w *electronWindow) openDevTools()       { _ = w.call("openDevTools", nil) 
 func (w *electronWindow) zoomReset()          { w.setZoom(1.0) }
 func (w *electronWindow) zoomIn()             { w.mu.Lock(); z := w.zoomLevel * 1.1; w.mu.Unlock(); w.setZoom(z) }
 func (w *electronWindow) zoomOut()            { w.mu.Lock(); z := w.zoomLevel / 1.1; w.mu.Unlock(); w.setZoom(z) }
-func (w *electronWindow) zoom()               {}
-func (w *electronWindow) setHTML(html string) {}
+func (w *electronWindow) zoom() {
+	if w.isMaximised() {
+		w.unmaximise()
+	} else {
+		w.maximise()
+	}
+}
+func (w *electronWindow) setHTML(html string) {
+	w.execJS(fmt.Sprintf("document.documentElement.innerHTML = %q;", html))
+}
 
 func (w *electronWindow) getZoom() float64 {
 	w.mu.Lock()
@@ -452,7 +493,7 @@ type electronMenuItemJSON struct {
 	Checked bool                   `json:"checked,omitempty"`
 	UID     uint                    `json:"uid"`
 	Accel   string                 `json:"accelerator,omitempty"`
-	Items   []electronMenuItemJSON `json:"items,omitempty"`
+	Items   []electronMenuItemJSON `json:"menu,omitempty"`
 }
 
 func electronSerializeMenu(items []*MenuItem) []electronMenuItemJSON {
@@ -570,8 +611,24 @@ func (w *electronWindow) relativePosition() (int, int) { return w.position() }
 
 func (w *electronWindow) setRelativePosition(x, y int) { w.setPosition(x, y) }
 
-func (w *electronWindow) flash(enabled bool)                      {}
-func (w *electronWindow) handleKeyEvent(acceleratorString string) {}
+func (w *electronWindow) flash(enabled bool) {
+	_ = w.call("flash", map[string]any{"v": enabled})
+}
+
+// handleKeyEvent processes a key report that arrived via the renderer's
+// before-input-event (see the "key" event). Mirrors the linux backend:
+// per-window bindings first, then the app bindings, with the built-in
+// undo/redo fallbacks.
+func (w *electronWindow) handleKeyEvent(acceleratorString string) {
+	if !w.parent.processKeyBinding(acceleratorString) {
+		switch acceleratorString {
+		case "Ctrl+Z":
+			w.undo()
+		case "Ctrl+Shift+Z":
+			w.redo()
+		}
+	}
+}
 
 func (w *electronWindow) getBorderSizes() *LRTB { return &LRTB{} }
 
@@ -607,10 +664,52 @@ func (w *electronWindow) selectAll() {
 }
 func (w *electronWindow) redo() { _ = w.call("redo", nil) }
 
-func (w *electronWindow) showMenuBar()       {}
-func (w *electronWindow) hideMenuBar()       {}
-func (w *electronWindow) toggleMenuBar()     {}
-func (w *electronWindow) setMenu(menu *Menu) {}
+func (w *electronWindow) showMenuBar() { w.setMenuBarVisible(true) }
+func (w *electronWindow) hideMenuBar() { w.setMenuBarVisible(false) }
+func (w *electronWindow) toggleMenuBar() {
+	w.mu.Lock()
+	v := !w.menuBarVisible
+	w.menuBarVisible = v
+	w.mu.Unlock()
+	_ = w.call("setMenuBarVisibility", map[string]any{"v": v})
+}
+
+func (w *electronWindow) setMenuBarVisible(visible bool) {
+	w.mu.Lock()
+	w.menuBarVisible = visible
+	w.mu.Unlock()
+	_ = w.call("setMenuBarVisibility", map[string]any{"v": visible})
+}
+func (w *electronWindow) setMenu(menu *Menu) {
+	wid := w.parent.ID()
+	electronBackend.mu.Lock()
+	electronBackend.menus[wid] = menu
+	electronBackend.mu.Unlock()
+	if err := w.call("setMenu", map[string]any{
+		"id":   wid,
+		"menu": electronSerializeMenu(menu.items),
+	}); err != nil {
+		globalApplication.error("electron: setMenu: %v", err)
+	}
+	w.registerMenuAccelerators(menu.items)
+}
+
+// registerMenuAccelerators binds menubar item accelerators into the
+// window's binding table (same as the native GTK menubar), so e.g.
+// Ctrl+O fires the item even while the webview holds focus.
+func (w *electronWindow) registerMenuAccelerators(items []*MenuItem) {
+	for _, it := range items {
+		if it.hidden {
+			continue
+		}
+		if it.accelerator != nil {
+			w.parent.addMenuBinding(it.accelerator, it)
+		}
+		if it.submenu != nil {
+			w.registerMenuAccelerators(it.submenu.items)
+		}
+	}
+}
 
 func (w *electronWindow) snapAssist() {}
 
@@ -623,6 +722,8 @@ func (w *electronWindow) attachModal(modalWindow *WebviewWindow) {
 	}
 }
 
-func (w *electronWindow) setContentProtection(enabled bool) {}
+func (w *electronWindow) setContentProtection(enabled bool) {
+	_ = w.call("setContentProtection", map[string]any{"v": enabled})
+}
 
 func (w *electronWindow) setNonClientHitTestRegions(regions []nonClientHitTestRegion) {}

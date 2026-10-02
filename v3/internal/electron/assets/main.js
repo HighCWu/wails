@@ -49,4 +49,36 @@ globalThis.__wailsShowContextMenu = (json) => {
   }, 0);
 };
 
+// Menubar (window.setMenu / application menu): same pure-JS build path as
+// the context menu. spec = {id, menu} — id 0 means the application menu
+// (Menu.setApplicationMenu), any other id targets that BrowserWindow.
+// Item clicks report back as menu-click events (uid-carried, same channel).
+globalThis.__wailsSetMenu = (json) => {
+  const spec = JSON.parse(json);
+  const { Menu, BrowserWindow } = require('electron');
+  const conv = (items) => items.map((it) => {
+    if (it.type === 'separator') return { type: 'separator' };
+    const out = { label: it.label, enabled: it.enabled };
+    if (it.type === 'checkbox' || it.type === 'radio') {
+      out.type = it.type;
+      out.checked = !!it.checked;
+    }
+    if (it.accelerator) out.accelerator = it.accelerator;
+    if (it.menu) out.submenu = conv(it.menu);
+    out.click = () => {
+      process.stdout.write(JSON.stringify({
+        t: 'ev', e: 'menu-click', p: { id: spec.id, uid: it.uid },
+      }) + '\n');
+    };
+    return out;
+  });
+  const menu = Menu.buildFromTemplate(conv(spec.menu));
+  if (spec.id) {
+    const win = BrowserWindow.fromId(spec.id);
+    if (win) win.setMenu(menu);
+  } else {
+    Menu.setApplicationMenu(menu);
+  }
+};
+
 require(addon).mainEntry(require('electron'), cfg);

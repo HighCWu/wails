@@ -1953,6 +1953,60 @@ struct EvCtx {
 
 static void MQuitApp(napi_env env);
 
+// user-initiated close (X button / Alt+F4): always preventDefault and let
+// Go decide — the emitted WindowClosing chain re-enters with destroy(),
+// which bypasses 'close' and cannot loop. Mirrors the GTK backend's
+// blocked delete-event.
+static napi_value CloseEventCb(napi_env env, napi_callback_info info) {
+  g_env = env;
+  size_t c = 1;
+  napi_value a[1];
+  napi_get_cb_info(env, info, &c, a, nullptr, nullptr);
+  void* data = nullptr;
+  napi_get_cb_info(env, info, nullptr, nullptr, nullptr, &data);
+  EvCtx* ec = (EvCtx*)data;
+  if (c >= 1 && a[0]) {
+    napi_value pd = GetProp(env, a[0], "preventDefault");
+    if (pd) CallFn(pd, a[0], 0, nullptr);
+  }
+  WinEvent(env, ec->id, "close");
+  return nullptr;
+}
+
+// webContents 'before-input-event' → raw key report. Go canonicalizes the
+// DOM key name into the wails accelerator string; only keyDown feeds the
+// accelerator machinery (matches the GTK backend), IME composition is
+// skipped. The event is NOT consumed — the page still sees the key, just
+// like the native GTK handler.
+static napi_value BeforeInputCb(napi_env env, napi_callback_info info) {
+  g_env = env;
+  size_t c = 2;
+  napi_value a[2];
+  napi_get_cb_info(env, info, &c, a, nullptr, nullptr);
+  void* data = nullptr;
+  napi_get_cb_info(env, info, nullptr, nullptr, nullptr, &data);
+  EvCtx* ec = (EvCtx*)data;
+  if (c < 2 || !a[1]) return nullptr;
+  napi_value tv = GetProp(env, a[1], "type");
+  std::string t;
+  if (!tv || !U8(env, tv, &t) || t != "keyDown") return nullptr;
+  napi_value ic = GetProp(env, a[1], "isComposing");
+  if (ic) {
+    bool composing = false;
+    napi_get_value_bool(env, ic, &composing);
+    if (composing) return nullptr;
+  }
+  napi_value o = NewEv(env, ec->ev, ec->id);
+  napi_value p = GetProp(env, o, "p");
+  const char* keys[] = {"key", "alt", "control", "shift", "meta"};
+  for (const char* k : keys) {
+    napi_value v = GetProp(env, a[1], k);
+    if (v) napi_set_named_property(env, p, k, v);
+  }
+  SendObj(env, o);
+  return nullptr;
+}
+
 static napi_value WindowEventCb(napi_env env, napi_callback_info info) {
   g_env = env;
   void* data = nullptr;
@@ -2152,10 +2206,25 @@ static void WireWindow(napi_env env, uint32_t id, int32_t wc,
   for (const auto& e : kEvents) {
     EvCtx* ec = new EvCtx{id, wc, e.go, e.bounds, false, false, false};
     napi_value fn = nullptr;
-    napi_create_function(env, e.go, NAPI_AUTO_LENGTH, WindowEventCb, ec, &fn);
+    // close gets a dedicated callback: it must preventDefault before the
+    // report (the generic callback can't touch the event object)
+    napi_create_function(env, e.go, NAPI_AUTO_LENGTH,
+                         strcmp(e.dom, "close") == 0 ? CloseEventCb
+                                                     : WindowEventCb,
+                         ec, &fn);
     napi_value on = GetProp(env, win, "on");
     napi_value argv[2] = {NF(env, e.dom), fn};
     CallFn(on, win, 2, argv);
+  }
+  // accelerator feed: raw key reports for Go's binding machinery
+  {
+    EvCtx* ec = new EvCtx{id, wc, "key", false, false, false, false};
+    napi_value fn = nullptr;
+    napi_create_function(env, "bie", NAPI_AUTO_LENGTH, BeforeInputCb, ec,
+                         &fn);
+    napi_value on = GetProp(env, webcontents, "on");
+    napi_value argv[2] = {NF(env, "before-input-event"), fn};
+    CallFn(on, webcontents, 2, argv);
   }
   // renderer observability
   {
@@ -2389,6 +2458,50 @@ static napi_value DispatchMethod(napi_env env, const std::string& m,
   if (m == "setIgnoreMouseEvents") {
     napi_get_boolean(env, MPBool(env, p, "v"), &bv);
     return simple1(nullptr, "setIgnoreMouseEvents", bv);
+  }
+  if (m == "flash") {
+    napi_get_boolean(env, MPBool(env, p, "v"), &bv);
+    return simple1(nullptr, "flashFrame", bv);
+  }
+  if (m == "setMenuBarVisibility") {
+    napi_get_boolean(env, MPBool(env, p, "v"), &bv);
+    return simple1(nullptr, "setMenuBarVisibility", bv);
+  }
+  if (m == "setContentProtection") {
+    napi_get_boolean(env, MPBool(env, p, "v"), &bv);
+    return simple1(nullptr, "setContentProtection", bv);
+  }
+  if (m == "setIcon") {
+    // data URL -> nativeImage -> win.setIcon
+    napi_value win = MGetWin(env, p);
+    napi_value electron = RefV(g_electron);
+    napi_value ni = electron ? GetProp(env, electron, "nativeImage") : nullptr;
+    napi_value cidf = ni ? GetProp(env, ni, "createFromDataURL") : nullptr;
+    std::string url = MPStr(env, p, "icon");
+    if (!cidf || url.empty()) {
+      napi_throw_error(env, nullptr, "setIcon: nativeImage unavailable");
+      return nullptr;
+    }
+    napi_value iargv[1] = {NF(env, url.c_str())};
+    napi_value img = CallFn(cidf, ni, 1, iargv);
+    if (!img) return nullptr;
+    return MCallWin1(env, win, nullptr, "setIcon", img);
+  }
+  if (m == "setMenu") {
+    // menubar: forward the serialized template to main.js's
+    // __wailsSetMenu — same pure-JS build path as the context menu
+    // (buildFromTemplate from the addon never renders on linux)
+    napi_value global = nullptr;
+    napi_get_global(env, &global);
+    napi_value fn = GetProp(env, global, "__wailsSetMenu");
+    if (!fn) {
+      napi_throw_error(env, nullptr, "setMenu: __wailsSetMenu missing");
+      return nullptr;
+    }
+    napi_value jv = MJsonStringify(env, p);
+    if (!jv) return nullptr;
+    napi_value jargv[1] = {jv};
+    return CallFn(fn, global, 1, jargv);
   }
   if (m == "copy") return simple("webContents", "copy");
   if (m == "paste") return simple("webContents", "paste");

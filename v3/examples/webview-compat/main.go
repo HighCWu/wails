@@ -231,6 +231,28 @@ func main() {
 				return
 			}
 			app.Logger.Info("compat: SUITE PASS")
+			if os.Getenv("WAILS_COMPAT_APIEXT") == "1" {
+				// electron-backend API extensions: accelerator feed
+				// (before-input-event), menubar + item accelerators,
+				// and the intercepted X-close → WindowClosing chain.
+				// The driver presses the combos with xdotool and ends
+				// with Alt+F4; CLOSING-EVENT must appear before exit.
+				win.RegisterKeyBinding("Ctrl+Shift+K", func(application.Window) {
+					app.Logger.Info("compat: ACCEL-FIRED ctrl+shift+k")
+				})
+				mb := application.NewMenu()
+				mb.Add("CompatAction").SetAccelerator("Ctrl+Shift+M").OnClick(func(*application.Context) {
+					app.Logger.Info("compat: MENUBAR-CLICKED")
+				})
+				win.SetMenu(mb)
+				win.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
+					app.Logger.Info("compat: CLOSING-EVENT")
+				})
+				win.Flash(true)
+				time.Sleep(200 * time.Millisecond)
+				win.Flash(false)
+				app.Logger.Info("compat: APIEXT-ARMED")
+			}
 			if os.Getenv("WAILS_COMPAT_RELOAD") == "1" {
 				// Same-process reload: the renderer re-injects into the
 				// reloaded page and must re-dial the bridge endpoint. The

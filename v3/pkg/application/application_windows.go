@@ -122,7 +122,11 @@ func (m *windowsApp) show() {
 func (m *windowsApp) on(_ uint) {
 }
 
-func (m *windowsApp) setIcon(_ []byte) {
+func (m *windowsApp) setIcon(icon []byte) {
+	if globalApplication != nil && len(icon) > 0 &&
+		globalApplication.webviewBackend == WebviewBackendElectron {
+		electronSetIcon(icon)
+	}
 }
 
 func (m *windowsApp) name() string {
@@ -137,6 +141,13 @@ func (m *windowsApp) getCurrentWindowID() uint {
 }
 
 func (m *windowsApp) setApplicationMenu(menu *Menu) {
+	// electron backend: route to the Electron application menu; the
+	// native assignment below is still kept so app state stays consistent
+	if globalApplication != nil && menu != nil &&
+		globalApplication.webviewBackend == WebviewBackendElectron {
+		electronSetApplicationMenu(menu)
+		return
+	}
 	if menu == nil {
 		// Create a default menu for windows
 		menu = DefaultApplicationMenu()
