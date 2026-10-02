@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# Build the C++/V8 renderer addon against Electron's own node headers.
-# This addon is deliberately pinned to the Electron version: it uses the
-# V8 C++ API directly (ValueSerializer/ValueDeserializer), which is what
-# makes the renderer-side serialization JS-free. Rebuild on Electron bumps.
+# Build the electron backend's native bridge addon (pure N-API, both the
+# renderer and main-process surfaces). The addon is version-agnostic: it
+# compiles against node_api.h (a stable C API) with no V8 build-config
+# macros, and binds the handful of host functions it needs from the
+# running module at load time — the same binary idea works across
+# Electron bands. Wire serde rides node's v8 module injected by the
+# preload (fallback path) or the C-side wire writer (fast path), both
+# byte-compatible with the Go decoder.
 #   ./build-cpp.sh <electron-version> [output.node]
+#   (or BRIDGE_NODE_HEADERS to an include dir)
 # Headers are fetched from electronjs.org (cached under /tmp).
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -29,34 +34,16 @@ if [ -z "$HDR" ]; then
   HDR="$CACHE/node_headers/include/node"
 fi
 
-# V8 build-config macros MUST match the Electron binary (its config.gypi:
-# pointer compression + sandbox + 31-bit Smis + external code space).
-# Without them, tagged values decode wrong and the first args[i] access
-# segfaults the renderer.
-V8_DEFS="-DV8_COMPRESS_POINTERS -DV8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES \
-  -DV8_ENABLE_SANDBOX -DV8_31BIT_SMIS_ON_64BIT_ARCH -DV8_EXTERNAL_CODE_SPACE"
-
-LINK_EXTRA=""
-STATIC_LIBS=""
-WIN_DEFS=""
-SRC=bridge.cc
+EXTRA=""
 case "$(uname -s)" in
 MINGW*|MSYS*|CYGWIN*)
-  # Windows builds the N-API addon (napi_bridge.cc): electron.exe exports
-  # only a partial surface (core v8-direct entry points like
-  # v8::Number::New / node::Buffer::Copy are absent) and no node.lib is
-  # published, so the v8-direct bridge.cc cannot link or load there.
-  # No V8_DEFS needed — node_api.h is pure C API. Wire serde comes from
-  # node's injected v8.serialize (byte-compatible with the Go decoder).
-  # No import library either: napi_bridge.cc binds the napi surface from
-  # the host module at load time (see its NAPI_DYN_LIST block), so the
-  # link has zero electron dependencies.
-  SRC=napi_bridge.cc
-  V8_DEFS=""
-  STATIC_LIBS="-static-libgcc -static-libstdc++"
+  # windows.h hygiene + static CRT strings; the napi surface itself is
+  # bound at load time (NAPI_DYN_LIST), so the link has zero electron
+  # dependencies.
+  EXTRA="-static-libgcc -static-libstdc++"
   ;;
 esac
 
-g++ -std=c++20 -fno-rtti -O2 -fPIC -shared -o "$OUT" "$SRC" \
-  -I"$HDR" $V8_DEFS $WIN_DEFS $LINK_EXTRA -lpthread $STATIC_LIBS
-echo "built $OUT from $SRC (headers: $HDR)"
+g++ -std=c++20 -fno-rtti -O2 -fPIC -shared -o "$OUT" bridge.cc \
+  -I"$HDR" -lpthread $EXTRA
+echo "built $OUT from bridge.cc (headers: $HDR)"
