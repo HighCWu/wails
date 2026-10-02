@@ -172,6 +172,16 @@ jobs:
           WAILS_ELECTRON_NATIVE_ADDON: go_bridge_cpp.node
           WAILS_ELECTRON_DEBUG: "1"
         run: bash v3/examples/webview-compat/ci/test-compat-win.sh ./webview-compat.exe
+      - name: Run same-process reload scenario (electron backend, windows)
+        shell: bash
+        env:
+          WAILS_WEBVIEW_BACKEND: electron
+          WAILS_ELECTRON_DIR: C:/electron
+          WAILS_ELECTRON_DISABLE_SANDBOX: "1"
+          WAILS_ELECTRON_EXPERIMENT: native-ipc,native-http
+          WAILS_ELECTRON_NATIVE_ADDON: go_bridge_cpp.node
+          WAILS_COMPAT_RELOAD: "1"
+        run: bash v3/examples/webview-compat/ci/test-compat-win.sh ./webview-compat.exe
 
   macos:
     name: macOS (flips hard, click best-effort)

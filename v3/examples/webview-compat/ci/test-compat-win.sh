@@ -44,4 +44,19 @@ if grep -q "compat: BENCH-ERROR" "$LOG"; then
 fi
 grep -q "compat: events PASS" "$LOG" || die "window-event parity failed"
 
+# reload leg (WAILS_COMPAT_RELOAD=1): the app reloads the page after the
+# suite; the renderer re-injects, re-dials the named-pipe bridge endpoint
+# and the re-run bench proves the new connection end to end
+if [ "${WAILS_COMPAT_RELOAD:-}" = "1" ]; then
+  for _ in $(seq 1 240); do
+    grep -q "compat: RELOAD-OK\|compat: RELOAD-TIMEOUT" "$LOG" && break
+    kill -0 "$APP_PID" 2>/dev/null || die "app exited during reload"
+    sleep 0.5
+  done
+  grep -q "compat: RELOAD-OK" "$LOG" || { grep "compat: RELOAD" "$LOG"; die "reload reconnection failed"; }
+  BENCHES=$(grep -c "compat: BENCH-FINISHED" "$LOG" || true)
+  [ "$BENCHES" -ge 2 ] || die "expected >= 2 bench completions (pre + post reload), got $BENCHES"
+  echo "PASS: same-process reload re-connected ($BENCHES bench runs)"
+fi
+
 echo "PASS: windows electron compat (suite + events + bench)"
