@@ -3,7 +3,6 @@
 package application
 
 import (
-	"errors"
 	"sync"
 )
 
@@ -14,7 +13,21 @@ func (a *linuxApp) processAndCacheScreens() error {
 	// Electron windows report screens through the control protocol once
 	// implemented; until then screens are unavailable.
 	if a.parent != nil && a.parent.webviewBackend == WebviewBackendElectron {
-		return errors.New("screens are not available on the electron backend yet")
+		// Displays come from the control protocol (Electron's screen
+		// module, valid only after app ready). Before the process is
+		// started there is nothing to cache — window-level getScreen
+		// queries lazily per window instead.
+		electronBackend.mu.Lock()
+		proc := electronBackend.proc
+		electronBackend.mu.Unlock()
+		if proc == nil {
+			return nil
+		}
+		var screens []*Screen
+		if err := proc.Call("getScreens", 0, nil, &screens); err != nil {
+			return err
+		}
+		return a.parent.Screen.LayoutScreens(screens)
 	}
 	var wg sync.WaitGroup
 	var screens []*Screen

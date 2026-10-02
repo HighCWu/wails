@@ -365,7 +365,41 @@ func (w *electronWindow) show()  { _ = w.call("show", nil) }
 func (w *electronWindow) hide()  { _ = w.call("hide", nil) }
 
 func (w *electronWindow) getScreen() (*Screen, error) {
-	return nil, errors.New("screens not available on the electron backend yet")
+	screens, err := w.getScreens()
+	if err != nil {
+		return nil, err
+	}
+	// the display containing the window's centre wins; the primary is
+	// the fallback for off-screen windows
+	w.mu.Lock()
+	cx := w.x + w.curWidth/2
+	cy := w.y + w.curHeight/2
+	w.mu.Unlock()
+	for _, s := range screens {
+		if cx >= s.X && cx < s.X+s.Size.Width && cy >= s.Y && cy < s.Y+s.Size.Height {
+			return s, nil
+		}
+	}
+	for _, s := range screens {
+		if s.IsPrimary {
+			return s, nil
+		}
+	}
+	return nil, errors.New("no screen found")
+}
+
+// getScreens asks the control plane for the display set, mapped to the
+// wails Screen shape by the addon.
+func (w *electronWindow) getScreens() ([]*Screen, error) {
+	proc, err := w.proc()
+	if err != nil {
+		return nil, err
+	}
+	var screens []*Screen
+	if err := proc.Call("getScreens", w.parent.ID(), nil, &screens); err != nil {
+		return nil, err
+	}
+	return screens, nil
 }
 
 func (w *electronWindow) setFrameless(frameless bool) {}
@@ -386,10 +420,12 @@ func (w *electronWindow) startResize(border string) error {
 }
 
 func (w *electronWindow) print() error {
-	return errors.New("print not available on the electron backend yet")
+	return w.call("print", nil)
 }
 
-func (w *electronWindow) setEnabled(enabled bool) {}
+func (w *electronWindow) setEnabled(enabled bool) {
+	_ = w.call("setEnabled", map[string]any{"v": enabled})
+}
 
 func (w *electronWindow) physicalBounds() Rect {
 	w.mu.Lock()

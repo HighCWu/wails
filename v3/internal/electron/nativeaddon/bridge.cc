@@ -1635,7 +1635,8 @@ static napi_value DispatchMethod(napi_env env, const std::string& m,
 // a PPID poll covers SIGKILL'd hosts (layer 2; Windows uses electron.go's
 // job teardown instead).
 
-static napi_ref g_app = nullptr, g_winctor = nullptr, g_ipcmain = nullptr;
+static napi_ref g_app = nullptr, g_winctor = nullptr, g_ipcmain = nullptr,
+                 g_electron = nullptr;
 static bool g_m_debug = false;
 static std::string g_cfg_preload, g_cfg_bridge_path, g_cfg_bridge_token,
     g_cfg_native_addon;
@@ -2438,6 +2439,115 @@ static napi_value DispatchMethod(napi_env env, const std::string& m,
     return u;
 #endif
   }
+  if (m == "setEnabled") {
+    napi_get_boolean(env, MPBool(env, p, "v"), &bv);
+    return simple1(nullptr, "setEnabled", bv);
+  }
+  if (m == "print") return simple("webContents", "print");
+  if (m == "getScreens") {
+    napi_value nv = nullptr;
+    // electron.screen is only valid once the app is ready — every
+    // dispatch happens post-ready
+    napi_value electron = RefV(g_electron);
+    napi_value screen = electron ? GetProp(env, electron, "screen") : nullptr;
+    napi_value displays = screen ? CallFn(GetProp(env, screen, "getAllDisplays"), screen, 0, nullptr) : nullptr;
+    napi_value primary = screen ? CallFn(GetProp(env, screen, "getPrimaryDisplay"), screen, 0, nullptr) : nullptr;
+    if (!displays || !primary) {
+      napi_throw_error(env, nullptr, "getScreens: screen module unavailable");
+      return nullptr;
+    }
+    napi_value primary_id = GetProp(env, primary, "id");
+    uint32_t count = 0;
+    napi_get_array_length(env, displays, &count);
+    napi_value out = nullptr;
+    napi_create_array_with_length(env, count, &out);
+    for (uint32_t i = 0; i < count; i++) {
+      napi_value d = nullptr, o = nullptr;
+      napi_get_element(env, displays, i, &d);
+      napi_create_object(env, &o);
+      // ID: stringified display id (stable within the session)
+      napi_value idv = GetProp(env, d, "id");
+      std::string ids;
+      if (idv) U8(env, idv, &ids);
+      if (ids.empty() && idv) {
+        double dd = 0;
+        napi_get_value_double(env, idv, &dd);
+        ids = std::to_string((long long)dd);
+      }
+      napi_set_named_property(env, o, "ID", NF(env, ids.c_str()));
+      napi_value label = GetProp(env, d, "label");
+      std::string label_s;
+      if (label) U8(env, label, &label_s);
+      napi_set_named_property(env, o, "Name", NF(env, label_s.c_str()));
+      auto num = [&](napi_value obj, const char* k) -> double {
+        if (!obj) return 0;
+        napi_valuetype vt = napi_undefined;
+        napi_typeof(env, obj, &vt);
+        if (vt != napi_object) return 0;  // property reads on primitives throw
+        napi_value v = GetProp(env, obj, k);
+        double d2 = 0;
+        if (v) napi_get_value_double(env, v, &d2);
+        return d2;
+      };
+      auto rect = [&](napi_value o2, const char* k, const char* src_key,
+                      napi_value src, double scale) {
+        napi_value r = GetProp(env, src, src_key);
+        if (!r) return;
+        napi_valuetype rt = napi_undefined;
+        napi_typeof(env, r, &rt);
+        if (rt != napi_object) return;
+        napi_value ro = nullptr;
+        napi_create_object(env, &ro);
+        napi_value nv = nullptr;
+        napi_create_double(env, num(r, "x") * scale, &nv);
+        napi_set_named_property(env, ro, "X", nv);
+        napi_create_double(env, num(r, "y") * scale, &nv);
+        napi_set_named_property(env, ro, "Y", nv);
+        napi_create_double(env, num(r, "width") * scale, &nv);
+        napi_set_named_property(env, ro, "Width", nv);
+        napi_create_double(env, num(r, "height") * scale, &nv);
+        napi_set_named_property(env, ro, "Height", nv);
+        napi_set_named_property(env, o2, k, ro);
+      };
+      double sf = num(d, "scaleFactor");
+      if (sf <= 0) sf = 1;
+      napi_value sfv = nullptr;
+      napi_create_double(env, sf, &sfv);
+      napi_set_named_property(env, o, "ScaleFactor", sfv);
+      napi_value bounds0 = GetProp(env, d, "bounds");
+      napi_create_double(env, num(bounds0, "x"), &nv);
+      napi_set_named_property(env, o, "X", nv);
+      napi_create_double(env, num(bounds0, "y"), &nv);
+      napi_set_named_property(env, o, "Y", nv);
+      rect(o, "Bounds", "bounds", d, 1.0);
+      napi_value bounds = GetProp(env, d, "bounds");
+      napi_value sizeo = nullptr;
+      napi_create_object(env, &sizeo);
+      napi_create_double(env, num(bounds, "width"), &nv);
+      napi_set_named_property(env, sizeo, "Width", nv);
+      napi_create_double(env, num(bounds, "height"), &nv);
+      napi_set_named_property(env, sizeo, "Height", nv);
+      napi_set_named_property(env, o, "Size", sizeo);
+      rect(o, "PhysicalBounds", "bounds", d, sf);
+      rect(o, "WorkArea", "workArea", d, 1.0);
+      rect(o, "PhysicalWorkArea", "workArea", d, sf);
+      bool is_primary = false;
+      napi_value pid = primary_id;
+      double a2 = 0, b2 = 0;
+      if (pid && idv) {
+        napi_get_value_double(env, pid, &a2);
+        napi_get_value_double(env, idv, &b2);
+        is_primary = a2 == b2;
+      }
+      napi_get_boolean(env, is_primary, &bv);
+      napi_set_named_property(env, o, "IsPrimary", bv);
+      double rot = num(d, "rotation");
+      napi_create_double(env, rot, &nv);
+      napi_set_named_property(env, o, "Rotation", nv);
+      napi_set_element(env, out, i, o);
+    }
+    return out;
+  }
   if (m == "quit") {
     napi_value app = RefV(g_app);
     napi_value fn = app ? GetProp(env, app, "quit") : nullptr;
@@ -2698,6 +2808,7 @@ static napi_value MainEntry(napi_env env, napi_callback_info info) {
     if (a) napi_create_reference(env, a, 1, &g_app);
     if (b) napi_create_reference(env, b, 1, &g_winctor);
     if (c) napi_create_reference(env, c, 1, &g_ipcmain);
+    napi_create_reference(env, electron, 1, &g_electron);
   }
   g_m_debug = getenv("WAILS_ELECTRON_DEBUG") != nullptr &&
               strcmp(getenv("WAILS_ELECTRON_DEBUG"), "1") == 0;
