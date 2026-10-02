@@ -94,7 +94,10 @@ $proc = Start-Process -FilePath $runner -PassThru -WindowStyle Hidden
 
 try {
   if (!(Wait-Marker "compat: backend=electron" 150)) { Write-Output "IME-PROBE-RESULT: app boot failed"; return }
-  Start-Sleep -Seconds 3
+  # let the internal suite finish — its window ops steal focus and would
+  # break both the click-focus and the composition session
+  Wait-Marker "compat: SUITE PASS" 180
+  Start-Sleep -Seconds 2
 
   # locate + normalize the window, then click the IME input
   $hwnd = [IntPtr]::Zero
