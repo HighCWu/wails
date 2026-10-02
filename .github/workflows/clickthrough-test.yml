@@ -54,6 +54,13 @@ jobs:
           WAILS_ELECTRON_DISABLE_SANDBOX: "1"
           WAILS_ELECTRON_NATIVE_ADDON: /tmp/go_bridge_cpp.node
         run: v3/examples/webview-compat/ci/test-compat.sh /tmp/webview-compat electron
+      - name: Run dialog/menu scenario (electron backend)
+        env:
+          WAILS_WEBVIEW_BACKEND: electron
+          WAILS_ELECTRON_DIR: /opt/electron
+          WAILS_ELECTRON_DISABLE_SANDBOX: "1"
+          WAILS_ELECTRON_NATIVE_ADDON: /tmp/go_bridge_cpp.node
+        run: v3/examples/webview-compat/ci/test-dialogs.sh /tmp/webview-compat
       - name: Run API compat scenario (electron backend, native-uds)
         env:
           WAILS_WEBVIEW_BACKEND: electron
