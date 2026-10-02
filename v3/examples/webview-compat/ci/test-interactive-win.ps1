@@ -38,11 +38,11 @@ public class Win32Input {
     }, IntPtr.Zero);
     return list;
   }
-  public static void LeftDown() { mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); }
-  public static void LeftUp()   { mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero); }
+  public static void LeftDown() { mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero); }
+  public static void LeftUp()   { mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero); }
   public static void Key(byte vk) {
-    keybd_event(vk, 0, 0, [UIntPtr]::Zero);
-    keybd_event(vk, 0, 0x0002, [UIntPtr]::Zero);  // KEYEVENTF_KEYUP
+    keybd_event(vk, 0, 0, UIntPtr.Zero);
+    keybd_event(vk, 0, 0x0002, UIntPtr.Zero);  // KEYEVENTF_KEYUP
   }
 }
 "@
