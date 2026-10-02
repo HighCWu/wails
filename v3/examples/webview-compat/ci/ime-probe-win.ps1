@@ -26,6 +26,7 @@ public class Win32Input {
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
   [DllImport("user32.dll")] public static extern IntPtr LoadKeyboardLayout(string klid, uint flags);
   [DllImport("user32.dll")] public static extern IntPtr GetKeyboardLayout(uint idThread);
+  [DllImport("user32.dll")] public static extern IntPtr PostMessage(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam);
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc proc, IntPtr lparam);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
@@ -107,6 +108,11 @@ try {
   # the #ime input sits at ~(100, 208) window-relative
   [Win32Input]::LeftClick(100 + 100, 100 + 208)
   Start-Sleep -Milliseconds 400
+
+  # ---- ask the electron window's thread to activate the Chinese layout
+  # (LoadKeyboardLayout alone only affects the calling thread)
+  [Win32Input]::PostMessage($hwnd, 0x0050, [UIntPtr]::Zero, $hkl) | Out-Null  # WM_INPUTLANGCHANGEREQUEST
+  Start-Sleep -Milliseconds 800
 
   # ---- type "ni" through the real keyboard pipeline (the IME intercepts)
   [Win32Input]::Key(0x4E)  # N
