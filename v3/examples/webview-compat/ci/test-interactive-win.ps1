@@ -70,9 +70,11 @@ $env:WAILS_COMPAT_FRAMELESS = "1"
 $env:WAILS_COMPAT_DIALOGS = "1"
 $env:WAILS_COMPAT_MENUS = "1"
 
-$proc = Start-Process -FilePath $AppPath -PassThru -RedirectStandardOutput $script:LogPath -RedirectStandardError "$($script:LogPath).err"
+# cmd-level redirection: Start-Process's own handles proved unreliable
+# for the electron process tree on headless runners (log stayed empty)
+$proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$AppPath`" > `"$script:LogPath`" 2>&1" -PassThru -WindowStyle Hidden
 try {
-  Wait-Marker "compat: backend=electron" 60
+  Wait-Marker "compat: backend=electron" 150
 
   # locate the main visible window of the electron child (the Go process
   # spawns electron; the window belongs to the electron pid)

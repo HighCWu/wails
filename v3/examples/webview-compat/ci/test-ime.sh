@@ -68,7 +68,13 @@ for _ in $(seq 1 200); do
 done
 grep -q "compat: backend=electron" "$LOG" || die "backend is not electron"
 
-WID=$(xdotool search --onlyvisible --name "^webview-compat$" | head -1)
+# electron creates the window after the backend marker — retry the search
+WID=""
+for _ in $(seq 1 40); do
+  WID=$(xdotool search --onlyvisible --name "^webview-compat$" | head -1)
+  [[ -n "$WID" ]] && break
+  sleep 0.5
+done
 [[ -n "$WID" ]] || die "app window not found"
 xdotool windowactivate --sync "$WID"
 sleep 1.5
