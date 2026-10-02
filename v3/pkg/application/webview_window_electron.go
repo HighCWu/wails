@@ -495,12 +495,14 @@ func (w *electronWindow) openContextMenu(menu *Menu, data *ContextMenuData) {
 	electronBackend.mu.Lock()
 	electronBackend.contextMenus[wid] = cm
 	electronBackend.mu.Unlock()
-	_ = w.call("showContextMenu", map[string]any{
+	if err := w.call("showContextMenu", map[string]any{
 		"id":   wid,
 		"x":    data.X,
 		"y":    data.Y,
 		"menu": electronSerializeMenu(menu.items),
-	})
+	}); err != nil {
+		globalApplication.error("electron: showContextMenu: %v", err)
+	}
 }
 
 func (w *electronWindow) nativeWindow() unsafe.Pointer { return nil }

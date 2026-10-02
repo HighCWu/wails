@@ -151,6 +151,64 @@ func main() {
 				// verdict so known suite gaps can't gate lifecycle work
 				runChurn(app)
 			}
+			if os.Getenv("WAILS_COMPAT_DIALOGS") == "1" {
+				// interactive dialog scenario: the driver script watches
+				// for DIALOG-OPENED / MSG-OPENED and drives the real
+				// dialogs with xdotool (Escape cancels the chooser,
+				// Return confirms the message box). Gated on a go-file so
+				// the dialogs run AFTER the suite (its window ops would
+				// otherwise dismiss them mid-flight).
+				go func() {
+					for {
+						if _, err := os.Stat("/tmp/compat-dialogs-go"); err == nil {
+							break
+						}
+						time.Sleep(300 * time.Millisecond)
+					}
+					app.Logger.Info("compat: DIALOG-OPENED")
+					path, err := app.Dialog.OpenFile().PromptForSingleSelection()
+					if err != nil {
+						app.Logger.Info("compat: DIALOG-RESULT err=" + err.Error())
+					} else if path == "" {
+						app.Logger.Info("compat: DIALOG-RESULT canceled")
+					} else {
+						app.Logger.Info("compat: DIALOG-RESULT path=" + path)
+					}
+					app.Logger.Info("compat: MSG-OPENED")
+					q := app.Dialog.Question().SetMessage("compat dialogs?")
+					q.AttachToWindow(win)
+					q.AddButton("OK")
+					q.Show()
+					time.Sleep(2 * time.Second)
+					app.Logger.Info("compat: DIALOGS-DONE")
+				}()
+			}
+			if os.Getenv("WAILS_COMPAT_MENUS") == "1" {
+				// interactive context-menu scenario: the driver presses
+				// Down + Return on the real popup; the item callback
+				// reports the selection through the wails state machine.
+				// Gated like the dialogs — the suite's window ops would
+				// dismiss the popup.
+				cm := application.NewMenu()
+				cm.Add("compat-menu-item").OnClick(func(*application.Context) {
+					app.Logger.Info("compat: MENU-CLICKED")
+				})
+				app.ContextMenu.Add("compat-menu", &application.ContextMenu{Menu: cm})
+				go func() {
+					// serialize after the dialog scenario: a concurrent
+					// message dialog (modal) would dismiss the popup
+					for {
+						if _, err := os.Stat("/tmp/compat-dialogs-done"); err == nil {
+							break
+						}
+						time.Sleep(300 * time.Millisecond)
+					}
+					app.Logger.Info("compat: MENU-OPENED")
+					win.OpenContextMenu(&application.ContextMenuData{
+						Id: "compat-menu", X: 40, Y: 60,
+					})
+				}()
+			}
 			runSuite(app, win)
 			// Window-event parity is asserted on the electron backend only:
 			// the GTK impl does not surface focus/maximise state signals as
