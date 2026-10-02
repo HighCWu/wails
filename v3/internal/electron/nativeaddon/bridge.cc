@@ -127,15 +127,15 @@ static napi_value NativeInvoke(napi_env env, napi_callback_info info);
   X(napi_set_named_property, (napi_env env, napi_value object, const char* utf8name, napi_value value), (env, object, utf8name, value)) \
   X(napi_strict_equals, (napi_env env, napi_value lhs, napi_value rhs, bool* result), (env, lhs, rhs, result)) \
   X(napi_throw_error, (napi_env env, const char* code, const char* msg), (env, code, msg)) \
-X(napi_create_double, (napi_env env, double value, napi_value* result), (env, value, result)) \
-X(napi_get_property, (napi_env env, napi_value object, napi_value key, napi_value* result), (env, object, key, result)) \
-X(napi_get_property_names, (napi_env env, napi_value object, napi_value* result), (env, object, result)) \
-X(napi_get_value_bool, (napi_env env, napi_value value, bool* result), (env, value, result)) \
-X(napi_get_value_string_utf16, (napi_env env, napi_value value, char16_t* buf, size_t bufsize, size_t* result), (env, value, buf, bufsize, result)) \
-  X(napi_typeof, (napi_env env, napi_value value, napi_valuetype* result), (env, value, result))
+  X(napi_create_double, (napi_env env, double value, napi_value* result), (env, value, result)) \
+  X(napi_get_property, (napi_env env, napi_value object, napi_value key, napi_value* result), (env, object, key, result)) \
+  X(napi_get_property_names, (napi_env env, napi_value object, napi_value* result), (env, object, result)) \
+  X(napi_get_value_bool, (napi_env env, napi_value value, bool* result), (env, value, result)) \
+  X(napi_get_value_string_utf16, (napi_env env, napi_value value, char16_t* buf, size_t bufsize, size_t* result), (env, value, buf, bufsize, result)) \
+  X(napi_typeof, (napi_env env, napi_value value, napi_valuetype* result), (env, value, result)) \
   X(napi_get_uv_event_loop, (napi_env env, uv_loop_t** loop), (env, loop)) \
   X(napi_open_handle_scope, (napi_env env, napi_handle_scope* result), (env, result)) \
-  X(napi_close_handle_scope, (napi_env env, napi_handle_scope scope), (env, scope)) \
+  X(napi_close_handle_scope, (napi_env env, napi_handle_scope scope), (env, scope))
 
 extern "C" {
 #define X(name, params, args)            \
