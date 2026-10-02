@@ -138,7 +138,7 @@ static napi_value NativeInvoke(napi_env env, napi_callback_info info);
   X(napi_typeof, (napi_env env, napi_value value, napi_valuetype* result), (env, value, result)) \
   X(napi_get_uv_event_loop, (napi_env env, uv_loop_t** loop), (env, loop)) \
   X(napi_open_handle_scope, (napi_env env, napi_handle_scope* result), (env, result)) \
-  X(napi_close_handle_scope, (napi_env env, napi_handle_scope scope), (env, scope))
+  X(napi_close_handle_scope, (napi_env env, napi_handle_scope scope), (env, scope)) \
   X(napi_create_uint32, (napi_env env, uint32_t value, napi_value* result), (env, value, result)) \
   X(napi_get_and_clear_last_exception, (napi_env env, napi_value* result), (env, result)) \
   X(napi_delete_reference, (napi_env env, napi_ref ref), (env, ref)) \
