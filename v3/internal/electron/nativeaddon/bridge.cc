@@ -49,6 +49,7 @@
 
 #include <cerrno>
 #include <cstdarg>
+#include <functional>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1636,7 +1637,7 @@ static napi_value DispatchMethod(napi_env env, const std::string& m,
 // job teardown instead).
 
 static napi_ref g_app = nullptr, g_winctor = nullptr, g_ipcmain = nullptr,
-                 g_electron = nullptr;
+                 g_electron = nullptr, g_popup_menu = nullptr;
 static bool g_m_debug = false;
 static std::string g_cfg_preload, g_cfg_bridge_path, g_cfg_bridge_token,
     g_cfg_native_addon;
@@ -1649,6 +1650,15 @@ static std::vector<std::string> g_lines;
 static std::mutex g_out_mu;
 static std::map<uint32_t, napi_ref> g_windows;
 static std::map<int32_t, uint32_t> g_by_wc;
+
+// raw stdout line writer for menu click callbacks (no napi objects
+// involved — plain JSON built in place)
+void __popup_send_raw(const char* line) {
+  std::string l = line;
+  l += '\n';
+  std::lock_guard<std::mutex> lk(g_out_mu);
+  write_all(1, l.data(), l.size());
+}
 
 static void ELog(const char* fmt, ...) {
   va_list ap;
@@ -2547,6 +2557,111 @@ static napi_value DispatchMethod(napi_env env, const std::string& m,
       napi_set_element(env, out, i, o);
     }
     return out;
+  }
+  if (m == "showContextMenu") {
+    // p: {id, x, y, menu: [{type,label,enabled,checked,uid,accelerator,items}]}
+    napi_value electron = RefV(g_electron);
+    napi_value menuctor = electron ? GetProp(env, electron, "Menu") : nullptr;
+    napi_value tmpl_in = GetProp(env, p, "menu");
+    napi_valuetype tt = napi_undefined;
+    if (!menuctor || !tmpl_in || napi_typeof(env, tmpl_in, &tt) != napi_ok ||
+        tt != napi_object) {
+      napi_throw_error(env, nullptr, "showContextMenu: no menu");
+      return nullptr;
+    }
+    uint32_t wid = (uint32_t)MPNum(env, p, "id", 0);
+
+    // buildFromTemplate needs each item's click as a function; the uid+
+    // window id ride the callback's data slot so the select event can
+    // name the exact item. Submenus recurse into their own templates.
+    struct CtxBox { uint32_t uid, wid; };
+    std::function<napi_value(napi_value, int)> build =
+        [&](napi_value items, int depth) -> napi_value {
+      napi_value out = nullptr;
+      uint32_t n = 0;
+      napi_get_array_length(env, items, &n);
+      napi_create_array_with_length(env, n, &out);
+      uint32_t w = 0;
+      for (uint32_t i = 0; i < n && depth < 16; i++) {
+        napi_value d = nullptr;
+        napi_get_element(env, items, i, &d);
+        std::string type = MPStr(env, d, "type");
+        if (type == "separator") {
+          napi_value sep = nullptr;
+          napi_create_object(env, &sep);
+          napi_set_named_property(env, sep, "type", NF(env, "separator"));
+          napi_set_element(env, out, w++, sep);
+          continue;
+        }
+        napi_value it = nullptr;
+        napi_create_object(env, &it);
+        napi_set_named_property(env, it, "type", NF(env, type.c_str()));
+        napi_set_named_property(env, it, "label",
+                                NF(env, MPStr(env, d, "label").c_str()));
+        napi_get_boolean(env, MPBool(env, d, "enabled"), &bv);
+        napi_set_named_property(env, it, "enabled", bv);
+        if (type == "checkbox" || type == "radio") {
+          napi_get_boolean(env, MPBool(env, d, "checked"), &bv);
+          napi_set_named_property(env, it, "checked", bv);
+        }
+        std::string accel = MPStr(env, d, "accelerator");
+        if (!accel.empty())
+          napi_set_named_property(env, it, "accelerator", NF(env, accel.c_str()));
+        double uid = MPNum(env, d, "uid", 0);
+        CtxBox* box = new CtxBox{(uint32_t)uid, wid};
+        napi_value click = nullptr;
+        napi_create_function(
+            env, "click", NAPI_AUTO_LENGTH,
+            [](napi_env e, napi_callback_info info) -> napi_value {
+              void* data = nullptr;
+              napi_get_cb_info(e, info, nullptr, nullptr, nullptr, &data);
+              CtxBox* box2 = (CtxBox*)data;
+              char evname[64];
+              snprintf(evname, sizeof(evname), "{\"t\":\"ev\",\"e\":\"contextmenu-select\",\"p\":{\"id\":%u,\"uid\":%u}}",
+                       box2->wid, box2->uid);
+              // route through the same stdout line writer
+              extern void __popup_send_raw(const char* line);
+              __popup_send_raw(evname);
+              delete box2;
+              return nullptr;
+            },
+            box, &click);
+        napi_set_named_property(env, it, "click", click);
+        if (type == "submenu") {
+          napi_value sub = GetProp(env, d, "items");
+          napi_value subtmpl = build(sub, depth + 1);
+          napi_set_named_property(env, it, "submenu", subtmpl);
+        }
+        napi_set_element(env, out, w++, it);
+      }
+      return out;
+    };
+    napi_value tmpl = build(tmpl_in, 0);
+    napi_value menuobj = nullptr;
+    if (napi_new_instance(env, menuctor, 1, &tmpl, &menuobj) != napi_ok ||
+        !menuobj) {
+      return nullptr;
+    }
+    // keep the menu (and its click closures) alive while popped up
+    if (g_popup_menu) napi_delete_reference(env, g_popup_menu);
+    napi_create_reference(env, menuobj, 1, &g_popup_menu);
+    napi_value popup = GetProp(env, menuobj, "popup");
+    napi_value popopts = nullptr;
+    napi_create_object(env, &popopts);
+    napi_value win = nullptr;
+    auto it = g_windows.find(wid);
+    if (it != g_windows.end()) win = RefV(it->second);
+    if (win) napi_set_named_property(env, popopts, "window", win);
+    napi_value xnum = nullptr, ynum = nullptr;
+    napi_create_double(env, MPNum(env, p, "x", 0), &xnum);
+    napi_create_double(env, MPNum(env, p, "y", 0), &ynum);
+    napi_set_named_property(env, popopts, "x", xnum);
+    napi_set_named_property(env, popopts, "y", ynum);
+    napi_value pargv[1] = {popopts};
+    CallFn(popup, menuobj, 1, pargv);
+    napi_value u = nullptr;
+    napi_get_undefined(env, &u);
+    return u;
   }
   if (m == "showOpenDialog" || m == "showSaveDialog" || m == "showMessageDialog") {
     // Go sends Electron-shaped options; copy the known fields onto the

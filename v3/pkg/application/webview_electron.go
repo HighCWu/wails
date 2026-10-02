@@ -32,6 +32,7 @@ var platformSetAssetBaseURL func(scheme, host string)
 var platformStartNativeBridge func(serveHTTP func(method, rawURL, body string, hdr http.Header) (int, string, []byte, error)) (string, string, error)
 
 type electronBackendState struct {
+	contextMenus map[uint]*electronContextMenu
 	mu        sync.Mutex
 	proc      *electron.Process
 	assetsURL string
@@ -160,6 +161,7 @@ func startPlatformElectron(app *App) error {
 	}
 	electronBackend.proc = proc
 	electronBackend.windows = make(map[uint]*electronWindow)
+	electronBackend.contextMenus = make(map[uint]*electronContextMenu)
 
 	go pumpElectronEvents(proc)
 	return nil
@@ -296,6 +298,21 @@ func pumpElectronEvents(proc *electron.Process) {
 			if w := electronBackend.window(ev.WindowID); w != nil {
 				InvokeSync(func() { w.parent.markAsDestroyed() })
 				electronBackend.dropWindow(ev.WindowID)
+			}
+		case "contextmenu-select":
+			var p struct {
+				ID  uint   `json:"id"`
+				UID uint   `json:"uid"`
+			}
+			_ = json.Unmarshal(ev.Params, &p)
+			electronBackend.mu.Lock()
+			cm := electronBackend.contextMenus[p.ID]
+			electronBackend.mu.Unlock()
+			if cm != nil {
+				electronBackend.mu.Lock()
+				delete(electronBackend.contextMenus, p.ID)
+				electronBackend.mu.Unlock()
+				InvokeSync(func() { cm.selectUID(p.UID) })
 			}
 		case "render-gone":
 			if w := electronBackend.window(ev.WindowID); w != nil {

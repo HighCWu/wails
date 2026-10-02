@@ -404,7 +404,93 @@ func (w *electronWindow) getScreens() ([]*Screen, error) {
 
 func (w *electronWindow) setFrameless(frameless bool) {}
 
-func (w *electronWindow) openContextMenu(menu *Menu, data *ContextMenuData) {}
+// electronContextMenu is a context menu shown via the control protocol,
+// kept until an item is picked so the selection can be routed back to
+// the wails MenuItem callbacks.
+type electronContextMenu struct {
+	menu *Menu
+	data *ContextMenuData
+}
+
+// selectUID walks the menu tree and triggers the item with the given
+// id (handleClick applies checkbox/radio state and runs the callback).
+func (c *electronContextMenu) selectUID(uid uint) {
+	var find func(items []*MenuItem) *MenuItem
+	find = func(items []*MenuItem) *MenuItem {
+		for _, it := range items {
+			if it.id == uid {
+				return it
+			}
+			if it.submenu != nil {
+				if hit := find(it.submenu.items); hit != nil {
+					return hit
+				}
+			}
+		}
+		return nil
+	}
+	if item := find(c.menu.items); item != nil {
+		item.handleClick()
+	}
+}
+
+type electronMenuItemJSON struct {
+	Type    string                  `json:"type"`
+	Label   string                  `json:"label,omitempty"`
+	Enabled bool                    `json:"enabled"`
+	Checked bool                   `json:"checked,omitempty"`
+	UID     uint                    `json:"uid"`
+	Accel   string                 `json:"accelerator,omitempty"`
+	Items   []electronMenuItemJSON `json:"items,omitempty"`
+}
+
+func electronSerializeMenu(items []*MenuItem) []electronMenuItemJSON {
+	out := []electronMenuItemJSON{}
+	for _, it := range items {
+		if it.hidden {
+			continue
+		}
+		mi := electronMenuItemJSON{
+			Label:   it.label,
+			Enabled: !it.disabled,
+			Checked: it.checked,
+			UID:     it.id,
+			Accel:   it.GetAccelerator(),
+		}
+		switch it.itemType {
+		case separator:
+			mi.Type = "separator"
+		case checkbox:
+			mi.Type = "checkbox"
+		case radio:
+			mi.Type = "radio"
+		case submenu:
+			mi.Type = "submenu"
+			if it.submenu != nil {
+				mi.Items = electronSerializeMenu(it.submenu.items)
+			}
+		default:
+			mi.Type = "normal"
+		}
+		out = append(out, mi)
+	}
+	return out
+}
+
+func (w *electronWindow) openContextMenu(menu *Menu, data *ContextMenuData) {
+	menu.setContextData(data)
+	cm := &electronContextMenu{menu: menu, data: data}
+	wid := w.parent.ID()
+	electronBackend.mu.Lock()
+	electronBackend.contextMenus[wid] = cm
+	electronBackend.mu.Unlock()
+	_ = w.call("showContextMenu", map[string]any{
+		"id":   wid,
+		"x":    data.X,
+		"y":    data.Y,
+		"menu": electronSerializeMenu(menu.items),
+	})
+}
 
 func (w *electronWindow) nativeWindow() unsafe.Pointer { return nil }
 
