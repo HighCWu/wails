@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# Frameless edge-resize scenario (electron backend, X11 groundwork):
-# a frameless window whose runtime resizable flag is on; real mouse
-# drags from the right/bottom edges through xdotool must resize the
-# window via the X11 pointer-tracking groundwork
-# (WAILS_COMPAT_X11_DRAG=1 enables the self-managed conductor).
+# Frameless edge-resize scenario (electron backend, linux): ozone conducts
+# the resize natively for frameless+resizable windows, and it works under
+# Xvfb+openbox with plain xdotool corner drags (verified: 900x700 →
+# 1050x800, exact +150/+100). NOTE the drag (move) gesture is different:
+# the WM-conducted move does not complete under Xvfb, so frameless drag
+# stays a real-desktop check (see test-drag.sh).
 set -uo pipefail
 APP="${1:?usage: test-resize.sh <app-path>}"
-DISP="${CLICKTHROUGH_DISPLAY:-:98}"
+DISP="${CLICKTHROUGH_DISPLAY:-:97}"
 LOG="$(mktemp /tmp/resize-log.XXXXXX)"
 
 APP_PID=""; WM_PID=""; XVFB_PID=""
-cleanup() { for p in "$APP_PID" "$WM_PID" "$XVFB_PID"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null; done; }
+cleanup() {
+  for p in "$APP_PID" "$WM_PID" "$XVFB_PID"; do
+    [[ -n "$p" ]] && kill "$p" 2>/dev/null
+  done
+}
 trap cleanup EXIT
 die() { echo "FAIL: $*"; tail -20 "$LOG"; exit 1; }
 
@@ -22,7 +27,6 @@ sleep 1
 
 env WAILS_WEBVIEW_BACKEND=electron \
     WAILS_COMPAT_FRAMELESS=1 \
-    WAILS_COMPAT_X11_DRAG=1 \
     ${WAILS_ELECTRON_DIR:+WAILS_ELECTRON_DIR=$WAILS_ELECTRON_DIR} \
     ${WAILS_ELECTRON_DISABLE_SANDBOX:+WAILS_ELECTRON_DISABLE_SANDBOX=$WAILS_ELECTRON_DISABLE_SANDBOX} \
     ${WAILS_ELECTRON_EXPERIMENT:+WAILS_ELECTRON_EXPERIMENT=$WAILS_ELECTRON_EXPERIMENT} \
@@ -36,8 +40,8 @@ for _ in $(seq 1 200); do
 done
 sleep 2
 
-# pick the normal-state app window (the suite may leave a maximised
-# 1280x800 shell behind; restore/unmaximise it instead of measuring it)
+# the suite may leave a maximised 1280x800 shell behind; pick the
+# normal-state app window instead of measuring the shell
 WID=""
 for w in $(xdotool search --onlyvisible --name "^webview-compat$" 2>/dev/null)          $(xdotool search --onlyvisible --class "electron-baseline" 2>/dev/null); do
   eval "$(xdotool getwindowgeometry --shell "$w")"
@@ -82,4 +86,4 @@ DH=$((HEIGHT - H0))
 if [ "$DW" -lt 60 ] || [ "$DH" -lt 50 ]; then
   die "edge resize did not take (dW=$DW dH=$DH)"
 fi
-echo "PASS: frameless edge resize via X11 groundwork (dW=$DW dH=$DH)"
+echo "PASS: frameless edge resize via ozone native frameless (dW=$DW dH=$DH)"

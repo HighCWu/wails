@@ -54,6 +54,14 @@ jobs:
           WAILS_ELECTRON_DISABLE_SANDBOX: "1"
           WAILS_ELECTRON_NATIVE_ADDON: /tmp/go_bridge_cpp.node
         run: v3/examples/webview-compat/ci/test-compat.sh /tmp/webview-compat electron
+      - name: Run frameless resize scenario (electron backend)
+        env:
+          WAILS_WEBVIEW_BACKEND: electron
+          WAILS_ELECTRON_DIR: /opt/electron
+          WAILS_ELECTRON_DISABLE_SANDBOX: "1"
+          WAILS_ELECTRON_EXPERIMENT: native-ipc,native-http
+          WAILS_ELECTRON_NATIVE_ADDON: /tmp/go_bridge_cpp.node
+        run: v3/examples/webview-compat/ci/test-resize.sh /tmp/webview-compat
       - name: Run dialog/menu scenario (electron backend)
         env:
           WAILS_WEBVIEW_BACKEND: electron
