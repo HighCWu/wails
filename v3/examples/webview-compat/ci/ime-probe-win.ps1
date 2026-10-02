@@ -119,6 +119,7 @@ try {
   Start-Sleep -Milliseconds 1200
   $compEnded = Wait-Marker "compat: IME compositionend" 5
 
+  $raw = Get-Content $script:LogPath -Raw
   $imeLines = @(Select-String -Path $script:LogPath -Pattern "compat: IME" -SimpleMatch)
   $committed = $false
   $evidence = ($imeLines | ForEach-Object { $_.Line }) -join " | "
@@ -127,7 +128,14 @@ try {
       if ($Matches[1] -match "[\u4e00-\u9fff]") { $committed = $true }
     }
   }
-  Write-Output ("compositionstart={0} compositionend={1} committedCJK={2} lines={3} evidence={4}" -f $compStarted, $compEnded, $committed, $imeLines.Count, $evidence)
+  $tail = ""
+  if ($raw) {
+    $rawLen = $raw.Length
+    $tail = $raw.Substring([Math]::Max(0, $rawLen - 500)) -replace "[\r\n]+", " / "
+  } else {
+    $rawLen = 0
+  }
+  Write-Output ("compositionstart={0} compositionend={1} committedCJK={2} matches={3} fileLen={4} tail={5}" -f $compStarted, $compEnded, $committed, $imeLines.Count, $rawLen, $tail)
   if ($compStarted -and $compEnded -and $committed) {
     Write-Output "IME-PROBE-RESULT: PASS — real IME composition works on the runner"
   } else {
