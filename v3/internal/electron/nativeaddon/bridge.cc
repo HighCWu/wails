@@ -89,6 +89,9 @@ static napi_value NativeInvoke(napi_env env, napi_callback_info info);
 // function pointer bound once at library load from the host module —
 // electron.exe exports the full N-API surface. Call sites stay unchanged.
 #ifdef _WIN32
+#define NAPI_UV_LIST(X) \
+  X(uv_async_init, (uv_loop_t* loop, uv_async_t* async, uv_async_cb cb), (loop, async, cb)) \
+  X(uv_async_send, (uv_async_t* async), (async))
 #define NAPI_DYN_LIST(X) \
   X(napi_call_function, (napi_env env, napi_value recv, napi_value func, size_t argc, const napi_value* argv, napi_value* result), (env, recv, func, argc, argv, result)) \
   X(napi_coerce_to_string, (napi_env env, napi_value value, napi_value* result), (env, value, result)) \
@@ -136,12 +139,21 @@ static napi_value NativeInvoke(napi_env env, napi_callback_info info);
   X(napi_get_uv_event_loop, (napi_env env, uv_loop_t** loop), (env, loop)) \
   X(napi_open_handle_scope, (napi_env env, napi_handle_scope* result), (env, result)) \
   X(napi_close_handle_scope, (napi_env env, napi_handle_scope scope), (env, scope))
+  X(napi_create_uint32, (napi_env env, uint32_t value, napi_value* result), (env, value, result)) \
+  X(napi_get_and_clear_last_exception, (napi_env env, napi_value* result), (env, result)) \
+  X(napi_delete_reference, (napi_env env, napi_ref ref), (env, ref)) \
+  X(napi_is_promise, (napi_env env, napi_value value, bool* result), (env, value, result))
 
 extern "C" {
 #define X(name, params, args)            \
   static napi_status (*name##_p) params; \
   napi_status name params { return name##_p args; }
 NAPI_DYN_LIST(X)
+#undef X
+#define X(name, params, args)   \
+  static void (*name##_p) params; \
+  void name params { name##_p args; }
+NAPI_UV_LIST(X)
 #undef X
 }
 
@@ -151,6 +163,11 @@ __attribute__((constructor)) static void napi_dyn_init() {
   name##_p = reinterpret_cast<napi_status(*) params>(           \
       GetProcAddress(h, #name));
   NAPI_DYN_LIST(X)
+#undef X
+#define X(name, params, args)                \
+  name##_p = reinterpret_cast<void(*) params>( \
+      GetProcAddress(h, #name));
+  NAPI_UV_LIST(X)
 #undef X
 }
 #endif
