@@ -402,7 +402,18 @@ func (w *electronWindow) getScreens() ([]*Screen, error) {
 	return screens, nil
 }
 
-func (w *electronWindow) setFrameless(frameless bool) {}
+// setFrameless is a no-op: Electron's BrowserWindow takes `frame` only
+// as a constructor option (the native webview backends toggle it at
+// runtime — gtk_window_set_decorated / WM_NCCALCSIZE / styleMask), so
+// runtime toggles via SetFrameless/ToggleFrameless are accepted but
+// have no effect here. A true toggle would mean destroying and
+// recreating the window, losing all renderer state.
+func (w *electronWindow) setFrameless(frameless bool) {
+	if frameless != w.parent.options.Frameless {
+		globalApplication.debug("electron: runtime SetFrameless is not supported by Electron (create-time option only); window %d keeps its current frame state", w.parent.ID())
+	}
+	w.parent.options.Frameless = frameless
+}
 
 // electronContextMenu is a context menu shown via the control protocol,
 // kept until an item is picked so the selection can be routed back to
