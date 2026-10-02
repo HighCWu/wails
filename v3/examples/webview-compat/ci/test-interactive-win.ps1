@@ -19,6 +19,7 @@ public class Win32Input {
   public struct RECT { public int Left, Top, Right, Bottom; }
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lparam);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmd);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
@@ -124,7 +125,13 @@ try {
   if ([Math]::Abs($dx) -lt 80 -or [Math]::Abs($dy) -lt 40) { throw "frameless drag did not move the window (delta $dx,$dy)" }
   Write-Output "PASS: frameless drag"
 
-  # ---- frameless edge resize: drag the bottom-right corner outward
+  # ---- frameless edge resize: drag the bottom-right corner outward.
+  # The suite may have left the window maximized — restore and normalize
+  # first, or the corner drag just un-maximizes with unrelated deltas.
+  [Win32Input]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
+  Start-Sleep -Milliseconds 500
+  [Win32Input]::SetWindowPos($hwnd, [IntPtr]::Zero, 100, 100, 800, 600, 0) | Out-Null
+  Start-Sleep -Milliseconds 500
   [Win32Input]::GetWindowRect($hwnd, [ref]$rect) | Out-Null
   $grabX = $rect.Right - 4; $grabY = $rect.Bottom - 4
   Move-Cursor $grabX $grabY
