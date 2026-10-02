@@ -5,10 +5,14 @@
 const cfg = JSON.parse(process.env.WAILS_ELECTRON_CONFIG || '{}');
 if (cfg.nativeAddon) process.env.WAILS_ELECTRON_NATIVE_ADDON = cfg.nativeAddon;
 if (cfg.bridgePath) process.env.WAILS_ELECTRON_BRIDGE_PATH = cfg.bridgePath;
-if (!process.env.WAILS_ELECTRON_NATIVE_ADDON) {
+const path = require('path');
+// resolve relative addon paths against the host's cwd — a bare specifier
+// would go through node_modules lookup and miss the file entirely
+let addon = process.env.WAILS_ELECTRON_NATIVE_ADDON;
+if (addon && !path.isAbsolute(addon)) addon = path.join(process.cwd(), addon);
+if (!addon) {
   process.stderr.write(
     '[wails-electron] fatal: no native addon configured (WAILS_ELECTRON_NATIVE_ADDON)\n');
   process.exit(1);
 }
-require(process.env.WAILS_ELECTRON_NATIVE_ADDON).mainEntry(
-  require('electron'), cfg);
+require(addon).mainEntry(require('electron'), cfg);
