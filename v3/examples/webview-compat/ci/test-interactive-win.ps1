@@ -70,9 +70,12 @@ $env:WAILS_COMPAT_FRAMELESS = "1"
 $env:WAILS_COMPAT_DIALOGS = "1"
 $env:WAILS_COMPAT_MENUS = "1"
 
-# cmd-level redirection: Start-Process's own handles proved unreliable
-# for the electron process tree on headless runners (log stayed empty)
-$proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$AppPath`" > `"$script:LogPath`" 2>&1" -PassThru -WindowStyle Hidden
+# Launch through a batch file: pwsh's Start-Process mangles embedded
+# quotes in -ArgumentList, and Start-Process's own redirection handles
+# lost the app's output entirely on headless runners.
+$runner = Join-Path $env:TEMP "run-compat.cmd"
+Set-Content -Path $runner -Value "@echo off`r`n`"$AppPath`" > `"$script:LogPath`" 2>&1"
+$proc = Start-Process -FilePath $runner -PassThru -WindowStyle Hidden
 try {
   Wait-Marker "compat: backend=electron" 150
 
@@ -164,6 +167,8 @@ try {
   Write-Output "PASS: electron interactive scenario"
 }
 finally {
-  if (!$proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+  if (!$proc.HasExited) {
+    cmd /c "taskkill /PID $($proc.Id) /T /F" 2>&1 | Out-Null
+  }
   Get-Process electron -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
