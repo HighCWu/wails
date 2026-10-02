@@ -198,6 +198,15 @@ const methods = {
   setPosition: (p) => getWindow(p).setPosition(p.x, p.y),
   setSize: (p) => getWindow(p).setSize(p.width, p.height),
   setBounds: (p) => getWindow(p).setBounds({ x: p.x, y: p.y, width: p.width, height: p.height }),
+  setMinimumSize: (p) => getWindow(p).setMinimumSize(p.width, p.height),
+  setMaximumSize: (p) => getWindow(p).setMaximumSize(p.width, p.height),
+  // modal/child attachment: parent arrives as a window id from the host
+  setParent: (p) => {
+    const w = getWindow(p);
+    const parent = p.parent ? windows.get(p.parent) : null;
+    if (p.parent && !parent) throw new Error('setParent: unknown parent ' + p.parent);
+    w.setParentWindow(parent || null);
+  },
   getBounds: (p) => getWindow(p).getBounds(),
   center: (p) => getWindow(p).center(),
   setAlwaysOnTop: (p) => getWindow(p).setAlwaysOnTop(!!p.v),
