@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -160,7 +161,7 @@ func main() {
 				// otherwise dismiss them mid-flight).
 				go func() {
 					for {
-						if _, err := os.Stat("/tmp/compat-dialogs-go"); err == nil {
+						if _, err := os.Stat(filepath.Join(os.TempDir(), "compat-dialogs-go")); err == nil {
 							break
 						}
 						time.Sleep(300 * time.Millisecond)
@@ -198,7 +199,7 @@ func main() {
 					// serialize after the dialog scenario: a concurrent
 					// message dialog (modal) would dismiss the popup
 					for {
-						if _, err := os.Stat("/tmp/compat-dialogs-done"); err == nil {
+						if _, err := os.Stat(filepath.Join(os.TempDir(), "compat-dialogs-done")); err == nil {
 							break
 						}
 						time.Sleep(300 * time.Millisecond)

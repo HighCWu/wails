@@ -23,4 +23,4 @@ internal/commands/appimage_testfiles/appimage_testfiles
 /internal/commands/android/
 testiosapp/
 test/manual/systray/bin/
-v3/examples/webview-compat/webview-compat-*
+examples/webview-compat/webview-compat-*

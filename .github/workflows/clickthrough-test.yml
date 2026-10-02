@@ -129,6 +129,13 @@ jobs:
       - name: Build compat app
         working-directory: v3
         run: go build -o ..\webview-compat.exe ./examples/webview-compat/
+      - name: Run interactive scenario (electron backend, windows)
+        env:
+          WAILS_ELECTRON_DIR: C:/electron
+          WAILS_ELECTRON_DISABLE_SANDBOX: "1"
+          WAILS_ELECTRON_EXPERIMENT: native-ipc,native-http
+          WAILS_ELECTRON_NATIVE_ADDON: go_bridge_cpp.node
+        run: powershell -ExecutionPolicy Bypass -File v3\examples\webview-compat\ci\test-interactive-win.ps1 -AppPath webview-compat.exe
       - name: Run compat scenario (electron backend, windows)
         shell: bash
         env:
