@@ -122,10 +122,12 @@ try {
   $imeLines = Select-String -Path $script:LogPath -Pattern "compat: IME" -SimpleMatch
   $committed = $false
   foreach ($line in $imeLines) {
-    if ($line.Line -match "value (\S+)") { if ($Matches[1] -match "[\u4e00-\u9fff]") { $committed = $true } }
+    Write-Output ("IME-LINE: " + $line.Line)
+    if ($line.Line -match "value (\S+)") {
+      if ($Matches[1] -match "[\u4e00-\u9fff]") { $committed = $true }
+    }
   }
   Write-Output ("compositionstart={0} compositionend={1} committedCJK={2}" -f $compStarted, $compEnded, $committed)
-  Write-Output (Dump-Log | Select-String -SimpleMatch "compat: IME" | ForEach-Object { $_.Line })
   if ($compStarted -and $compEnded -and $committed) {
     Write-Output "IME-PROBE-RESULT: PASS — real IME composition works on the runner"
   } else {
