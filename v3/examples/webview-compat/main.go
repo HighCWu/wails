@@ -62,6 +62,9 @@ func main() {
 	// Window-event parity: the impl must raise the Common events (state
 	// transitions and debounced resize/move) — asserted at suite end.
 	var evFocus, evResize, evMaximise, evShow int32
+	// reload leg: count bench completions; the second one proves the page
+	// came back and re-ran the full transport matrix after the reload
+	var benchFinished int32
 	win.OnWindowEvent(events.Common.WindowFocus, func(*application.WindowEvent) {
 		atomic.AddInt32(&evFocus, 1)
 	})
@@ -131,6 +134,7 @@ func main() {
 		}
 	})
 	app.Event.On("compat:bench-finished", func(e *application.CustomEvent) {
+		atomic.AddInt32(&benchFinished, 1)
 		app.Logger.Info("compat: BENCH-FINISHED")
 	})
 
@@ -227,6 +231,31 @@ func main() {
 				return
 			}
 			app.Logger.Info("compat: SUITE PASS")
+			if os.Getenv("WAILS_COMPAT_RELOAD") == "1" {
+				// Same-process reload: the renderer re-injects into the
+				// reloaded page and must re-dial the bridge endpoint. The
+				// re-run transport bench over the NEW connection is the
+				// end-to-end proof; a leaked old fd shows up as a stranded
+				// serve goroutine, a broken re-injection as a timeout.
+				// the suite and the bench run concurrently: wait for
+				// bench #1 to complete first, or the reload aborts it
+				// mid-run and the completion counter never reaches two
+				deadline := time.Now().Add(180 * time.Second)
+				for atomic.LoadInt32(&benchFinished) < 1 && time.Now().Before(deadline) {
+					time.Sleep(300 * time.Millisecond)
+				}
+				app.Logger.Info("compat: RELOAD-BEGIN")
+				win.ExecJS("window.location.reload()")
+				deadline = time.Now().Add(180 * time.Second)
+				for atomic.LoadInt32(&benchFinished) < 2 && time.Now().Before(deadline) {
+					time.Sleep(300 * time.Millisecond)
+				}
+				if atomic.LoadInt32(&benchFinished) >= 2 {
+					app.Logger.Info("compat: RELOAD-OK")
+				} else {
+					app.Logger.Info("compat: RELOAD-TIMEOUT")
+				}
+			}
 		}()
 	})
 

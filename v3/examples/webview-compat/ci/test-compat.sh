@@ -106,6 +106,17 @@ if [ "${WAILS_COMPAT_CRASH:-}" = "1" ]; then
   wait_log "compat: CRASH-EVENT" 20
   echo "PASS: crash recovery event fired"
 fi
+# reload leg (WAILS_COMPAT_RELOAD=1): after the suite passes, the app
+# reloads the page; the renderer re-injects and re-dials the bridge
+# endpoint, and the re-run bench over the new connection must complete.
+if [ "${WAILS_COMPAT_RELOAD:-}" = "1" ]; then
+  wait_log "compat: RELOAD-OK" 90
+  RELOAD_BENCHES=$(grep -c "compat: BENCH-FINISHED" "$LOG" || true)
+  if [ "$RELOAD_BENCHES" -lt 2 ]; then
+    die "expected >= 2 bench completions (pre + post reload), got $RELOAD_BENCHES"
+  fi
+  echo "PASS: same-process reload re-connected ($RELOAD_BENCHES bench runs)"
+fi
 FAILS=$(grep -c "compat:.*FAIL" "$LOG" || true)
 if [ "$FAILS" -ne 0 ]; then
   grep "compat:" "$LOG"

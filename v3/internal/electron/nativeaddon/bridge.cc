@@ -333,6 +333,10 @@ static int dial_bridge_endpoint(const char* endpoint) {
 #endif
 
 static bool Connect(const char* endpoint, const char* token) {
+  // a re-injection (same-process navigation) must not leak the previous
+  // connection: close the old fd so the Go accept loop sees EOF and
+  // retires its serve goroutine
+  if (g_fd >= 0) teardown_connection();
   int fd = dial_bridge_endpoint(endpoint);
   if (fd < 0) {
     ThrowE(g_env, "go-bridge: connect failed");
@@ -1196,12 +1200,23 @@ static napi_value NativeInitThunk(napi_env env, napi_callback_info info) {
   SetProp(env, global, "__nativeEcho", echo);
   SetProp(env, global, "__nativeCall", echo);  // legacy existence gate
 
-  // install the fetch override, keeping the original
-  napi_value orig = GetProp(env, global, "fetch");
-  if (orig) napi_create_reference(env, orig, 1, &g_orig_fetch);
+  // install the fetch override, keeping the original. If the current
+  // fetch is already ours (double injection in the same context), keep
+  // the previously saved original — otherwise the chain would grow a
+  // level per injection.
+  napi_value cur = GetProp(env, global, "fetch");
+  if (cur) {
+    napi_value m = GetProp(env, cur, "__wailsBridgeFetch");
+    napi_valuetype mt = napi_undefined;
+    if (m) napi_typeof(env, m, &mt);
+    if (mt != napi_boolean) napi_create_reference(env, cur, 1, &g_orig_fetch);
+  }
   napi_value fo = nullptr;
   napi_create_function(env, "fetch", NAPI_AUTO_LENGTH, FetchOverride, nullptr,
                        &fo);
+  napi_value mark = nullptr;
+  napi_get_boolean(env, true, &mark);
+  napi_set_named_property(env, fo, "__wailsBridgeFetch", mark);
   SetProp(env, global, "fetch", fo);
   SetProp(env, global, "__nativeHttpActive", tru);
 
