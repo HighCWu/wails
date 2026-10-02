@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 	"unsafe"
@@ -154,6 +155,17 @@ func (w *electronWindow) run() {
 		w.resizeDebouncer = debounce.New(time.Duration(debounceMS) * time.Millisecond)
 	}
 	electronBackend.setWindow(w.parent.ID(), w)
+	// creation-time menu option (SetMenu before Run lands in the options
+	// table; the native backends apply it during construction)
+	var menuOpt *Menu
+	if runtime.GOOS == "windows" {
+		menuOpt = o.Windows.Menu
+	} else if runtime.GOOS == "linux" {
+		menuOpt = o.Linux.Menu
+	}
+	if menuOpt != nil {
+		w.setMenu(menuOpt)
+	}
 	// apply an icon set before this window existed (App.SetIcon before Run)
 	electronBackend.mu.Lock()
 	icon := electronBackend.icon

@@ -489,6 +489,10 @@ func (s *linuxSystemTray) setTemplateIcon(icon []byte) {
 }
 
 func newSystemTrayImpl(s *SystemTray) systemTrayImpl {
+	// electron backend: the tray renders in the Electron process
+	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return newElectronSystemTray(s)
+	}
 	label := s.label
 	if label == "" {
 		label = "Wails"

@@ -2487,6 +2487,22 @@ static napi_value DispatchMethod(napi_env env, const std::string& m,
     if (!img) return nullptr;
     return MCallWin1(env, win, nullptr, "setIcon", img);
   }
+  if (m == "trayOp") {
+    // system tray ops forward to main.js's __wailsTray (pure-JS build
+    // path, same reasoning as the menus); the 'bounds' action returns
+    // getBounds() through the control-plane response
+    napi_value global = nullptr;
+    napi_get_global(env, &global);
+    napi_value fn = GetProp(env, global, "__wailsTray");
+    if (!fn) {
+      napi_throw_error(env, nullptr, "trayOp: __wailsTray missing");
+      return nullptr;
+    }
+    napi_value jv = MJsonStringify(env, p);
+    if (!jv) return nullptr;
+    napi_value jargv[1] = {jv};
+    return CallFn(fn, global, 1, jargv);
+  }
   if (m == "setMenu") {
     // menubar: forward the serialized template to main.js's
     // __wailsSetMenu — same pure-JS build path as the context menu

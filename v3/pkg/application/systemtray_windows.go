@@ -446,6 +446,10 @@ func (s *windowsSystemTray) setDarkModeIcon(icon []byte) {
 }
 
 func newSystemTrayImpl(parent *SystemTray) systemTrayImpl {
+	// electron backend: the tray renders in the Electron process
+	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return newElectronSystemTray(parent)
+	}
 	return &windowsSystemTray{
 		parent: parent,
 	}

@@ -167,6 +167,19 @@ if [ "${WAILS_COMPAT_APIEXT:-}" = "1" ]; then
   fi
   echo "PASS: app exited through the closing chain"
 fi
+# tray leg (WAILS_COMPAT_TRAY=1, electron backend): the Tray mapping
+# lifecycle — create, icon/tooltip/menu setters and the programmatic
+# openMenu call must all complete without a backend error marker. Visual
+# presence and tray-icon clicks need a real tray host (none on Xvfb).
+if [ "${WAILS_COMPAT_TRAY:-}" = "1" ]; then
+  wait_log "compat: TRAY-ARMED" 30
+  if grep -q "electron: tray" "$LOG"; then
+    grep "electron: tray" "$LOG"
+    die "tray backend errors"
+  fi
+  wait_log "compat: TRAY-OPEN-CALLED" 10
+  echo "PASS: electron tray lifecycle (create + setters + menu)"
+fi
 FAILS=$(grep -c "compat:.*FAIL" "$LOG" || true)
 if [ "$FAILS" -ne 0 ]; then
   grep "compat:" "$LOG"

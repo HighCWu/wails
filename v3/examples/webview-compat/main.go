@@ -253,6 +253,36 @@ func main() {
 				win.Flash(false)
 				app.Logger.Info("compat: APIEXT-ARMED")
 			}
+			if os.Getenv("WAILS_COMPAT_TRAY") == "1" {
+				// electron-backend tray mapping: create + setters + menu
+				// uid round-trip. Visual presence and tray-icon clicks
+				// need a tray host (none exists on a bare Xvfb); the
+				// driver asserts the lifecycle markers and the program
+				//matic openMenu menu-click chain.
+				icon := make([]byte, 4*16*16) // dummy RGBA payload
+				for i := range icon {
+					icon[i] = 0x80
+				}
+				tray := app.SystemTray.New()
+				tray.SetIcon(icon)
+				tray.SetTooltip("compat tray")
+				mt := application.NewMenu()
+				mt.Add("TrayItem").OnClick(func(*application.Context) {
+					app.Logger.Info("compat: TRAY-CLICKED")
+				})
+				tray.SetMenu(mt)
+				tray.OnClick(func() {
+					app.Logger.Info("compat: TRAY-LEFT-CLICK")
+				})
+				tray.Run()
+				app.Logger.Info("compat: TRAY-ARMED")
+				go func() {
+					time.Sleep(2 * time.Second)
+					// programmatic menu open → click round trip
+					tray.OpenMenu()
+					app.Logger.Info("compat: TRAY-OPEN-CALLED")
+				}()
+			}
 			if os.Getenv("WAILS_COMPAT_RELOAD") == "1" {
 				// Same-process reload: the renderer re-injects into the
 				// reloaded page and must re-dial the bridge endpoint. The

@@ -45,6 +45,8 @@ type electronBackendState struct {
 	// menus persists the menubar *Menu per window id so "menu-click"
 	// reports can resolve uids back to menu items
 	menus map[uint]*Menu
+	// trays persists per-tray state (the menu for uid resolution)
+	trays map[uint]*electronTrayState
 	// icon is the app icon (data URL) set via App.SetIcon, applied to
 	// every live window and to windows created later
 	icon string
@@ -171,6 +173,7 @@ func startPlatformElectron(app *App) error {
 	electronBackend.windows = make(map[uint]*electronWindow)
 	electronBackend.contextMenus = make(map[uint]*electronContextMenu)
 	electronBackend.menus = make(map[uint]*Menu)
+	electronBackend.trays = make(map[uint]*electronTrayState)
 
 	go pumpElectronEvents(proc)
 	return nil
@@ -338,6 +341,62 @@ func pumpElectronEvents(proc *electron.Process) {
 			if item := findElectronMenuItem(menu.items, p.UID); item != nil {
 				InvokeSync(item.handleClick)
 			}
+		case "tray-menu-click":
+			var p struct {
+				ID  uint `json:"id"`
+				UID uint `json:"uid"`
+			}
+			_ = json.Unmarshal(ev.Params, &p)
+			electronBackend.mu.Lock()
+			state := electronBackend.trays[p.ID]
+			electronBackend.mu.Unlock()
+			if state == nil || state.menu == nil {
+				continue
+			}
+			if item := findElectronMenuItem(state.menu.items, p.UID); item != nil {
+				InvokeSync(item.handleClick)
+			}
+		case "tray-click", "tray-right-click", "tray-double-click",
+			"tray-right-double-click", "tray-mouse-enter", "tray-mouse-leave":
+			var p struct {
+				ID uint `json:"id"`
+			}
+			_ = json.Unmarshal(ev.Params, &p)
+			electronBackend.mu.Lock()
+			st := electronBackend.trays[p.ID]
+			electronBackend.mu.Unlock()
+			if st == nil {
+				continue
+			}
+			tray := st.parent
+			InvokeSync(func() {
+				switch ev.Name {
+				case "tray-click":
+					if tray.clickHandler != nil {
+						tray.clickHandler()
+					}
+				case "tray-right-click":
+					if tray.rightClickHandler != nil {
+						tray.rightClickHandler()
+					}
+				case "tray-double-click":
+					if tray.doubleClickHandler != nil {
+						tray.doubleClickHandler()
+					}
+				case "tray-right-double-click":
+					if tray.rightDoubleClickHandler != nil {
+						tray.rightDoubleClickHandler()
+					}
+				case "tray-mouse-enter":
+					if tray.mouseEnterHandler != nil {
+						tray.mouseEnterHandler()
+					}
+				case "tray-mouse-leave":
+					if tray.mouseLeaveHandler != nil {
+						tray.mouseLeaveHandler()
+					}
+				}
+			})
 		case "render-gone":
 			if w := electronBackend.window(ev.WindowID); w != nil {
 				var p struct {
