@@ -41,11 +41,16 @@ done
 sleep 2
 
 # the suite may leave a maximised 1280x800 shell behind; pick the
-# normal-state app window instead of measuring the shell
+# normal-state app window instead of measuring the shell. The window is
+# created AFTER the backend marker — retry the search until it appears.
 WID=""
-for w in $(xdotool search --onlyvisible --name "^webview-compat$" 2>/dev/null)          $(xdotool search --onlyvisible --class "electron-baseline" 2>/dev/null); do
-  eval "$(xdotool getwindowgeometry --shell "$w")"
-  if [ "${WIDTH:-0}" -lt 1280 ] && [ "${HEIGHT:-0}" -le 800 ]; then WID=$w; fi
+for _ in $(seq 1 60); do
+  for w in $(xdotool search --onlyvisible --name "^webview-compat$" 2>/dev/null)            $(xdotool search --onlyvisible --class "electron" 2>/dev/null); do
+    eval "$(xdotool getwindowgeometry --shell "$w")"
+    if [ "${WIDTH:-0}" -lt 1280 ] && [ "${HEIGHT:-0}" -le 800 ]; then WID=$w; fi
+  done
+  [ -n "$WID" ] && break
+  sleep 0.5
 done
 [[ -n "$WID" ]] || die "app window not found"
 xdotool key --window "$WID" alt+F5 2>/dev/null  # unmaximise if needed
