@@ -161,6 +161,8 @@ try {
   Start-Sleep -Milliseconds 800
   [Win32Input]::Key(0x0D)  # Return
   Wait-Marker "compat: DIALOGS-DONE" 30
+  # release the menu scenario (it serializes after the dialogs)
+  [System.IO.File]::WriteAllText((Join-Path $env:TEMP "compat-dialogs-done"), "go") | Out-Null
   Write-Output "PASS: dialogs"
 
   # ---- context menu: Down selects the first item, Return clicks it
