@@ -2548,6 +2548,53 @@ static napi_value DispatchMethod(napi_env env, const std::string& m,
     }
     return out;
   }
+  if (m == "showOpenDialog" || m == "showSaveDialog" || m == "showMessageDialog") {
+    // Go sends Electron-shaped options; copy the known fields onto the
+    // options object and hand back the dialog promise (RespondValue is
+    // promise-aware, so the reply flows back when it resolves).
+    napi_value electron = RefV(g_electron);
+    napi_value dialog = electron ? GetProp(env, electron, "dialog") : nullptr;
+    if (!dialog) {
+      napi_throw_error(env, nullptr, "dialog module unavailable");
+      return nullptr;
+    }
+    napi_value opts = nullptr;
+    napi_create_object(env, &opts);
+    for (const char* k : {"title", "filters", "properties", "defaultPath",
+                          "type", "message", "buttons", "defaultId",
+                          "cancelId"}) {
+      napi_value v = GetProp(env, p, k);
+      napi_valuetype vt = napi_undefined;
+      if (v) napi_typeof(env, v, &vt);
+      if (vt != napi_undefined) napi_set_named_property(env, opts, k, v);
+    }
+    if (napi_value b = GetProp(env, p, "button")) {
+      napi_valuetype bt = napi_undefined;
+      napi_typeof(env, b, &bt);
+      if (bt == napi_string) napi_set_named_property(env, opts, "buttonLabel", b);
+    }
+    const char* fn_name = m == "showMessageDialog" ? "showMessageBox"
+                          : m == "showSaveDialog"  ? "showSaveDialog"
+                                                   : "showOpenDialog";
+    napi_value fn = GetProp(env, dialog, fn_name);
+    if (!fn) {
+      napi_throw_error(env, nullptr, "dialog fn unavailable");
+      return nullptr;
+    }
+    uint32_t wid = (uint32_t)MPNum(env, p, "windowID", 0);
+    napi_value prom = nullptr;
+    if (wid != 0) {
+      napi_value win = nullptr;
+      auto it = g_windows.find(wid);
+      if (it != g_windows.end()) win = RefV(it->second);
+      if (win) {
+        napi_value a[2] = {win, opts};
+        prom = CallFn(fn, dialog, 2, a);
+      }
+    }
+    if (!prom) prom = CallFn(fn, dialog, 1, &opts);
+    return prom;
+  }
   if (m == "quit") {
     napi_value app = RefV(g_app);
     napi_value fn = app ? GetProp(env, app, "quit") : nullptr;

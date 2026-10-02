@@ -52,8 +52,11 @@ func (m *linuxDialog) show() {
 	})
 }
 
-func newDialogImpl(d *MessageDialog) *linuxDialog {
-	return &linuxDialog{
+func newDialogImpl(d *MessageDialog) messageDialogImpl {
+		if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return &electronMessageDialog{d: d}
+	}
+return &linuxDialog{
 		dialog: d,
 	}
 }
@@ -62,8 +65,11 @@ type linuxOpenFileDialog struct {
 	dialog *OpenFileDialogStruct
 }
 
-func newOpenFileDialogImpl(d *OpenFileDialogStruct) *linuxOpenFileDialog {
-	return &linuxOpenFileDialog{
+func newOpenFileDialogImpl(d *OpenFileDialogStruct) openFileDialogImpl {
+		if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return &electronOpenFileDialog{d: d}
+	}
+return &linuxOpenFileDialog{
 		dialog: d,
 	}
 }
@@ -76,8 +82,11 @@ type linuxSaveFileDialog struct {
 	dialog *SaveFileDialogStruct
 }
 
-func newSaveFileDialogImpl(d *SaveFileDialogStruct) *linuxSaveFileDialog {
-	return &linuxSaveFileDialog{
+func newSaveFileDialogImpl(d *SaveFileDialogStruct) saveFileDialogImpl {
+		if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return &electronSaveFileDialog{d: d}
+	}
+return &linuxSaveFileDialog{
 		dialog: d,
 	}
 }

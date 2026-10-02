@@ -12,15 +12,19 @@ import (
 )
 
 func (m *windowsApp) showAboutDialog(title string, message string, _ []byte) {
-	about := newDialogImpl(&MessageDialog{
+	opts := &MessageDialog{
 		MessageDialogOptions: MessageDialogOptions{
 			DialogType: InfoDialogType,
 			Title:      title,
 			Message:    message,
 		},
-	})
-	about.UseAppIcon = true
-	about.show()
+	}
+	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		opts.impl = &electronMessageDialog{d: opts}
+	} else {
+		opts.impl = &windowsDialog{dialog: opts, UseAppIcon: true}
+	}
+	opts.Show()
 }
 
 type windowsDialog struct {
@@ -85,8 +89,11 @@ func (m *windowsDialog) show() {
 	}
 }
 
-func newDialogImpl(d *MessageDialog) *windowsDialog {
-	return &windowsDialog{
+func newDialogImpl(d *MessageDialog) messageDialogImpl {
+		if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return &electronMessageDialog{d: d}
+	}
+return &windowsDialog{
 		dialog: d,
 	}
 }
@@ -95,8 +102,11 @@ type windowOpenFileDialog struct {
 	dialog *OpenFileDialogStruct
 }
 
-func newOpenFileDialogImpl(d *OpenFileDialogStruct) *windowOpenFileDialog {
-	return &windowOpenFileDialog{
+func newOpenFileDialogImpl(d *OpenFileDialogStruct) openFileDialogImpl {
+		if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return &electronOpenFileDialog{d: d}
+	}
+return &windowOpenFileDialog{
 		dialog: d,
 	}
 }
@@ -169,8 +179,11 @@ type windowSaveFileDialog struct {
 	dialog *SaveFileDialogStruct
 }
 
-func newSaveFileDialogImpl(d *SaveFileDialogStruct) *windowSaveFileDialog {
-	return &windowSaveFileDialog{
+func newSaveFileDialogImpl(d *SaveFileDialogStruct) saveFileDialogImpl {
+		if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return &electronSaveFileDialog{d: d}
+	}
+return &windowSaveFileDialog{
 		dialog: d,
 	}
 }
