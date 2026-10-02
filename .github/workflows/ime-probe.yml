@@ -1,0 +1,46 @@
+# Lightweight IME-feasibility experiment: Windows-only, dispatch-triggered.
+# Builds the compat app + addon and runs the IME probe without the full
+# matrix, so experiment iterations don't wait ~30 minutes per round.
+name: IME Probe (Windows, dispatch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      electron_version:
+        description: Electron version
+        default: "44.4.5"
+
+jobs:
+  ime-probe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v3/go.mod
+      - name: Install mingw g++
+        run: choco install mingw -y --no-progress
+      - name: Download Electron (win32-x64)
+        shell: pwsh
+        run: |
+          $v = "${{ inputs.electron_version }}"
+          curl.exe -sL -o $env:RUNNER_TEMP\electron.zip "https://github.com/electron/electron/releases/download/v$v/electron-v$v-win32-x64.zip"
+          Expand-Archive -Force $env:RUNNER_TEMP\electron.zip C:\electron
+      - name: Build native addon (N-API, electron host binding)
+        shell: bash
+        run: |
+          export PATH="/c/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin:$PATH"
+          BRIDGE_WIN_ELECTRON_EXE=C:/electron/electron.exe \
+            bash v3/internal/electron/nativeaddon/build-cpp.sh \
+            "${{ inputs.electron_version }}" "$PWD/go_bridge_cpp.node"
+      - name: Build compat app
+        working-directory: v3
+        run: go build -o ..\webview-compat.exe ./examples/webview-compat/
+      - name: IME probe
+        continue-on-error: true
+        env:
+          WAILS_ELECTRON_DIR: C:/electron
+          WAILS_ELECTRON_DISABLE_SANDBOX: "1"
+          WAILS_ELECTRON_EXPERIMENT: native-ipc,native-http
+          WAILS_ELECTRON_NATIVE_ADDON: go_bridge_cpp.node
+        run: powershell -ExecutionPolicy Bypass -File v3\examples\webview-compat\ci\ime-probe-win.ps1 -AppPath webview-compat.exe
