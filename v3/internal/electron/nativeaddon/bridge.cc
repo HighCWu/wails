@@ -43,7 +43,9 @@
 #endif
 #include <pthread.h>
 
+#define UV_EXTERN
 #include <uv.h>
+#undef UV_EXTERN
 
 #include <cerrno>
 #include <cstdarg>
@@ -151,8 +153,8 @@ extern "C" {
 NAPI_DYN_LIST(X)
 #undef X
 #define X(name, params, args)   \
-  static void (*name##_p) params; \
-  void name params { name##_p args; }
+  static int (*name##_p) params; \
+  int name params { return name##_p args; }
 NAPI_UV_LIST(X)
 #undef X
 }
@@ -165,7 +167,7 @@ __attribute__((constructor)) static void napi_dyn_init() {
   NAPI_DYN_LIST(X)
 #undef X
 #define X(name, params, args)                \
-  name##_p = reinterpret_cast<void(*) params>( \
+  name##_p = reinterpret_cast<int(*) params>(  \
       GetProcAddress(h, #name));
   NAPI_UV_LIST(X)
 #undef X
