@@ -35,6 +35,7 @@ if [ -z "$HDR" ]; then
 fi
 
 EXTRA=""
+LINKER_FLAGS="-shared"
 # BRIDGE_SERDE_TEST=1 exports the _fastSerialize/_fastDeserialize hooks
 # (node's v8.serialize byte-compare in nativeaddon/test/); production
 # builds stay lean.
@@ -46,10 +47,15 @@ MINGW*|MSYS*|CYGWIN*)
   # windows.h hygiene + static CRT strings; the napi surface itself is
   # bound at load time (NAPI_DYN_LIST), so the link has zero electron
   # dependencies.
-  EXTRA="-static-libgcc -static-libstdc++"
+  EXTRA="$EXTRA -static-libgcc -static-libstdc++"
+  ;;
+Darwin)
+  # mach-o two-level namespaces need the lookup escape: the napi symbols
+  # resolve against the host process when electron loads the addon
+  LINKER_FLAGS="-dynamiclib -undefined dynamic_lookup"
   ;;
 esac
 
-g++ -std=c++20 -fno-rtti -O2 -fPIC -shared -o "$OUT" bridge.cc \
+g++ -std=c++20 -fno-rtti -O2 -fPIC $LINKER_FLAGS -o "$OUT" bridge.cc \
   -I"$HDR" -lpthread $EXTRA
 echo "built $OUT from bridge.cc (headers: $HDR)"
