@@ -58,35 +58,47 @@ sleep 1
 xdotool windowactivate --sync "$WID"
 sleep 1
 
-eval "$(xdotool getwindowgeometry --shell "$WID")"
-W0=$WIDTH; H0=$HEIGHT
-echo "before: ${W0}x${H0} at $X,$Y"
+# xwininfo's absolute origin is authoritative: xdotool's
+# getwindowgeometry can report a stale position after the WM places the
+# frame, and a stale grab misses the edge entirely (dW=0)
+win_geom() {
+  xwininfo -id "$WID" -stats | awk '/Absolute upper-left X/{x=$NF} /Absolute upper-left Y/{y=$NF} /Width:/{w=$NF} /Height:/{h=$NF} END{print x+0, y+0, w+0, h+0}'
+}
 
-# right edge: grab within the border (W/2 inset), drag right
-xdotool mousemove "$((X + W0 - 2))" "$((Y + H0 / 2))"
-sleep 0.3
-xdotool mousedown 1
-sleep 0.4
-xdotool mousemove_relative -- 120 0
-sleep 0.8
-xdotool mouseup 1
-sleep 1
-eval "$(xdotool getwindowgeometry --shell "$WID")"
-echo "after right-edge drag: ${WIDTH}x${HEIGHT}"
-DW=$((WIDTH - W0))
+drag_resize() {  # $1=dx $2=dy $3=edge-x-offset-fn $4=edge-y-offset-fn name unused
+  xdotool mousemove "$1" "$2"
+  sleep 0.3
+  xdotool mousedown 1
+  sleep 0.4
+  xdotool mousemove_relative -- "$3" "$4"
+  sleep 0.8
+  xdotool mouseup 1
+  sleep 1
+}
 
-# bottom edge: grab at the bottom border midpoint, drag down
-xdotool mousemove "$((X + WIDTH / 2))" "$((Y + HEIGHT - 2))"
-sleep 0.3
-xdotool mousedown 1
-sleep 0.4
-xdotool mousemove_relative -- 0 90
-sleep 0.8
-xdotool mouseup 1
-sleep 1
-eval "$(xdotool getwindowgeometry --shell "$WID")"
-echo "after bottom-edge drag: ${WIDTH}x${HEIGHT}"
-DH=$((HEIGHT - H0))
+# each edge gets up to 3 attempts: the press can land outside the ozone
+# hit border on a loaded runner and the WM simply ignores the gesture
+DW=0; DH=0
+for attempt in 1 2 3; do
+  read -r GX GY W0 H0 <<< "$(win_geom)"
+  echo "attempt $attempt: before ${W0}x${H0} at $GX,$GY"
+
+  # right edge: grab within the border (mid height), drag right
+  drag_resize "$((GX + W0 - 2))" "$((GY + H0 / 2))" 120 0
+  read -r _ _ W1 _ <<< "$(win_geom)"
+  echo "after right-edge drag: ${W1}x${H0}"
+  DW=$((W1 - W0))
+
+  # bottom edge: grab at the bottom border midpoint, drag down
+  drag_resize "$((GX + W1 / 2))" "$((GY + H0 - 2))" 0 90
+  read -r _ _ W2 H2 <<< "$(win_geom)"
+  echo "after bottom-edge drag: ${W2}x${H2}"
+  DH=$((H2 - H0))
+
+  if [ "$DW" -ge 60 ] && [ "$DH" -ge 50 ]; then
+    break
+  fi
+done
 
 if [ "$DW" -lt 60 ] || [ "$DH" -lt 50 ]; then
   die "edge resize did not take (dW=$DW dH=$DH)"
