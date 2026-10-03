@@ -76,10 +76,14 @@ drag_resize() {  # $1=dx $2=dy $3=edge-x-offset-fn $4=edge-y-offset-fn name unus
   sleep 1
 }
 
-# each edge gets up to 3 attempts: the press can land outside the ozone
-# hit border on a loaded runner and the WM simply ignores the gesture
+# each edge gets up to 5 attempts: the press can land outside the ozone
+# hit border on a loaded runner and the WM simply ignores the gesture;
+# re-activate the window per attempt — a failed drag can leave focus
+# elsewhere entirely
 DW=0; DH=0
-for attempt in 1 2 3; do
+for attempt in 1 2 3 4 5; do
+  xdotool windowactivate --sync "$WID" 2>/dev/null
+  sleep 1
   read -r GX GY W0 H0 <<< "$(win_geom)"
   echo "attempt $attempt: before ${W0}x${H0} at $GX,$GY"
 
