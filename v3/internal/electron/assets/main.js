@@ -79,6 +79,9 @@ globalThis.__wailsSetMenu = (json) => {
   } else {
     Menu.setApplicationMenu(menu);
   }
+  // stderr, not stdout: the control plane consumes stdout frames, while
+  // stderr is forwarded to the host log where drivers can assert on it
+  process.stderr.write('[wails-electron] menu-set id=' + spec.id + '\n');
 };
 
 // System tray: same pure-JS build path as the menus. One entry point —

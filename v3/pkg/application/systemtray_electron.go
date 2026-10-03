@@ -40,13 +40,7 @@ func pngDataURL(icon []byte) string {
 }
 
 func (t *electronSystemTray) electronTrayCall(method string, params map[string]any, out any) error {
-	electronBackend.mu.Lock()
-	proc := electronBackend.proc
-	electronBackend.mu.Unlock()
-	if proc == nil {
-		return fmt.Errorf("electron: process not running")
-	}
-	return proc.Call(method, 0, params, out)
+	return electronProcessCall(method, 0, params, out)
 }
 
 func (t *electronSystemTray) spec(action string) map[string]any {
@@ -118,6 +112,9 @@ func (t *electronSystemTray) setMenu(menu *Menu) {
 		state.menu = menu
 	}
 	electronBackend.mu.Unlock()
+	attachElectronMenuImpls(menu, &electronMenuSurface{
+		menu: menu, kind: "tray", id: t.id,
+	})
 	params := t.spec("setmenu")
 	if menu != nil {
 		params["menu"] = electronSerializeMenu(menu.items)

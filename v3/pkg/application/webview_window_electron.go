@@ -700,6 +700,11 @@ func (w *electronWindow) setMenu(menu *Menu) {
 	electronBackend.mu.Lock()
 	electronBackend.menus[wid] = menu
 	electronBackend.mu.Unlock()
+	// programmatic state changes re-serialize + re-push (native menus
+	// render live widgets; the electron pipeline needs the resync)
+	attachElectronMenuImpls(menu, &electronMenuSurface{
+		menu: menu, kind: "menubar", id: wid,
+	})
 	if err := w.call("setMenu", map[string]any{
 		"id":   wid,
 		"menu": electronSerializeMenu(menu.items),

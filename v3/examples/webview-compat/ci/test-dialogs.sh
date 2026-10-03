@@ -68,6 +68,17 @@ wait_log "compat: MSG-OPENED"
 sleep 1
 xdotool key --clearmodifiers Return
 wait_log "compat: DIALOGS-DONE" 20
+# DIALOGS-DONE is logged on a timer, not on dismissal — the modal box
+# can still be up (a missed Return leaves it blocking every later
+# overlay, including the context popup). Clear it before the menu leg.
+for _ in 1 2 3; do
+  DWID=$(xdotool search --onlyvisible --name "compat dialogs" | head -1)
+  [ -z "$DWID" ] && break
+  xdotool windowactivate --sync "$DWID" 2>/dev/null
+  sleep 0.3
+  xdotool key --clearmodifiers Escape
+  sleep 1
+done
 touch /tmp/compat-dialogs-done
 
 # ---- context menu: open, Down selects the first item, Return clicks it

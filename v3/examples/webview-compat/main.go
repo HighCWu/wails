@@ -244,7 +244,15 @@ func main() {
 				mb.Add("CompatAction").SetAccelerator("Ctrl+Shift+M").OnClick(func(*application.Context) {
 					app.Logger.Info("compat: MENUBAR-CLICKED")
 				})
+				check := mb.AddCheckbox("CompatCheck", true)
 				win.SetMenu(mb)
+				// programmatic state change must re-serialize + re-push the
+				// menubar (the driver asserts a second menu-set event)
+				go func() {
+					time.Sleep(3 * time.Second)
+					check.SetChecked(false)
+					app.Logger.Info("compat: CHECK-SET false")
+				}()
 				win.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 					app.Logger.Info("compat: CLOSING-EVENT")
 				})

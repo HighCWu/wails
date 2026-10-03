@@ -158,6 +158,14 @@ if [ "${WAILS_COMPAT_APIEXT:-}" = "1" ]; then
   xdotool key ctrl+shift+g
   wait_log "compat: GLOBAL-SHORTCUT-FIRED" 10
   echo "PASS: global shortcut fired (X11 grab)"
+  # programmatic checkbox change must re-push the menubar: the initial
+  # setMenu emits one menu-set event, the SetChecked resync a second
+  wait_log "compat: CHECK-SET" 15
+  SETS=$(grep -c "menu-set id=" "$LOG" || true)
+  if [ "$SETS" -lt 2 ]; then
+    die "expected >= 2 menu-set events (initial + resync), got $SETS"
+  fi
+  echo "PASS: programmatic menu state resync ($SETS pushes)"
   xdotool key alt+F4
   wait_log "compat: CLOSING-EVENT" 10
   echo "PASS: user close emits WindowClosing"

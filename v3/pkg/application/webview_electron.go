@@ -506,6 +506,9 @@ func electronSetApplicationMenu(menu *Menu) {
 	electronBackend.mu.Lock()
 	electronBackend.menus[0] = menu
 	electronBackend.mu.Unlock()
+	attachElectronMenuImpls(menu, &electronMenuSurface{
+		menu: menu, kind: "app", id: 0,
+	})
 	if menu == nil {
 		return
 	}
