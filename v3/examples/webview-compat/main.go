@@ -251,6 +251,14 @@ func main() {
 				win.Flash(true)
 				time.Sleep(200 * time.Millisecond)
 				win.Flash(false)
+				// global shortcut: OS-level grab (X11 / RegisterHotKey),
+				// backend-independent — proves the platform layer under
+				// the electron process
+				if err := app.GlobalShortcut.Register("Ctrl+Shift+G", func() {
+					app.Logger.Info("compat: GLOBAL-SHORTCUT-FIRED ctrl+shift+g")
+				}); err != nil {
+					app.Logger.Info("compat: GLOBAL-SHORTCUT-ERR " + err.Error())
+				}
 				app.Logger.Info("compat: APIEXT-ARMED")
 			}
 			if os.Getenv("WAILS_COMPAT_TRAY") == "1" {
@@ -274,10 +282,31 @@ func main() {
 				tray.OnClick(func() {
 					app.Logger.Info("compat: TRAY-LEFT-CLICK")
 				})
+				// attached window: ToggleWindow is the default click
+				// handler — driving it programmatically exercises the
+				// bounds/positionWindow/getScreen chain under electron
+				tw := app.Window.NewWithOptions(application.WebviewWindowOptions{
+					Name: "tray-attached", Title: "tray-attached",
+					Width: 300, Height: 200, Hidden: true,
+				})
+				tray.AttachWindow(tw).WindowOffset(5)
 				tray.Run()
+				app.Logger.Info(fmt.Sprintf(
+					"compat: TRAY-ARMED attached-visible=%v main-visible=%v",
+					tw.IsVisible(), win.IsVisible()))
 				app.Logger.Info("compat: TRAY-ARMED")
 				go func() {
 					time.Sleep(2 * time.Second)
+					tray.ToggleWindow()
+					// visibility state rides the async event stream —
+					// give the show/hide events time to land
+					time.Sleep(1 * time.Second)
+					app.Logger.Info(fmt.Sprintf(
+						"compat: TRAY-TOGGLE visible=%v", tw.IsVisible()))
+					tray.ToggleWindow()
+					time.Sleep(1 * time.Second)
+					app.Logger.Info(fmt.Sprintf(
+						"compat: TRAY-TOGGLE2 visible=%v", tw.IsVisible()))
 					// programmatic menu open → click round trip
 					tray.OpenMenu()
 					app.Logger.Info("compat: TRAY-OPEN-CALLED")

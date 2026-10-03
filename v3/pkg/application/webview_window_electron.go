@@ -53,7 +53,9 @@ type electronWindow struct {
 var debugElectronWindowEvents = os.Getenv("WAILS_ELECTRON_DEBUG") == "1"
 
 func newElectronWindow(parent *WebviewWindow) *electronWindow {
-	return &electronWindow{parent: parent, zoomLevel: 1.0, visible: true}
+	// hidden-at-creation windows stay invisible until the app calls Show
+	return &electronWindow{parent: parent, zoomLevel: 1.0,
+		visible: !parent.options.Hidden}
 }
 
 // handleRendererGone recovers the page after an abnormal renderer death:
@@ -135,6 +137,7 @@ func (w *electronWindow) run() {
 		"transparent": o.BackgroundType != BackgroundTypeSolid,
 		"resizable":   !o.DisableResize,
 		"alwaysOnTop": o.AlwaysOnTop,
+		"show":        !o.Hidden,
 		"url":         startURL,
 
 		"enableFileDrop": o.EnableFileDrop,

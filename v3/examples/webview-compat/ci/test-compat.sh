@@ -154,6 +154,10 @@ if [ "${WAILS_COMPAT_APIEXT:-}" = "1" ]; then
     die "expected 2 menubar clicks (mouse + accelerator), got $CLICKS"
   fi
   echo "PASS: menubar item accelerator fired"
+  # global shortcut: the OS-level grab catches the key without focus
+  xdotool key ctrl+shift+g
+  wait_log "compat: GLOBAL-SHORTCUT-FIRED" 10
+  echo "PASS: global shortcut fired (X11 grab)"
   xdotool key alt+F4
   wait_log "compat: CLOSING-EVENT" 10
   echo "PASS: user close emits WindowClosing"
@@ -178,7 +182,13 @@ if [ "${WAILS_COMPAT_TRAY:-}" = "1" ]; then
     die "tray backend errors"
   fi
   wait_log "compat: TRAY-OPEN-CALLED" 10
-  echo "PASS: electron tray lifecycle (create + setters + menu)"
+  TOGGLES=$(grep -c "compat: TRAY-TOGGLE visible=true" "$LOG" || true)
+  if [ "$TOGGLES" -lt 1 ]; then
+    grep "compat: TRAY-TOGGLE" "$LOG"
+    die "attached window did not show via ToggleWindow"
+  fi
+  grep -q "compat: TRAY-TOGGLE2 visible=false" "$LOG" || die "second toggle did not hide the attached window"
+  echo "PASS: electron tray lifecycle (create + setters + menu + attach)"
 fi
 FAILS=$(grep -c "compat:.*FAIL" "$LOG" || true)
 if [ "$FAILS" -ne 0 ]; then

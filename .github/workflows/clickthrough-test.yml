@@ -35,6 +35,8 @@ jobs:
           mkdir -p /opt/electron && unzip -q /tmp/electron.zip -d /opt/electron
       - name: Build native bridge addon (Electron V8 headers)
         run: bash v3/internal/electron/nativeaddon/build-cpp.sh 44.4.5 /tmp/go_bridge_cpp.node
+      - name: Addon unit tests (serde corpus, control plane, reconnect)
+        run: bash v3/internal/electron/nativeaddon/test/run-tests.sh 44.4.5
       - name: Run hit-test scenario (electron backend)
         env:
           WAILS_WEBVIEW_BACKEND: electron
@@ -184,6 +186,14 @@ jobs:
           WAILS_ELECTRON_EXPERIMENT: native-ipc,native-http
           WAILS_ELECTRON_NATIVE_ADDON: go_bridge_cpp.node
         run: powershell -ExecutionPolicy Bypass -File v3\examples\webview-compat\ci\ime-probe-win.ps1 -AppPath webview-compat.exe
+      - name: Run API extensions scenario (electron backend, windows)
+        # accelerator feed + menubar item accelerator + Alt+F4 close chain
+        env:
+          WAILS_ELECTRON_DIR: C:/electron
+          WAILS_ELECTRON_DISABLE_SANDBOX: "1"
+          WAILS_ELECTRON_EXPERIMENT: native-ipc,native-http
+          WAILS_ELECTRON_NATIVE_ADDON: go_bridge_cpp.node
+        run: powershell -ExecutionPolicy Bypass -File v3\examples\webview-compat\ci\test-apiext-win.ps1 -AppPath webview-compat.exe
       - name: Run compat scenario (electron backend, windows)
         shell: bash
         env:

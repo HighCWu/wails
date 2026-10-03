@@ -2309,7 +2309,16 @@ static napi_value WinCreate(napi_env env, napi_value p) {
   napi_set_named_property(env, opts, "resizable", bv);
   napi_get_boolean(env, MPBool(env, p, "alwaysOnTop"), &bv);
   napi_set_named_property(env, opts, "alwaysOnTop", bv);
-  napi_get_boolean(env, true, &bv);
+  // honor the hidden-at-creation option: wails windows created with
+  // Hidden:true must not flash visible before the app calls Show
+  napi_value showv = GetProp(env, p, "show");
+  napi_valuetype showt = napi_undefined;
+  bool show = true;
+  if (showv) {
+    napi_typeof(env, showv, &showt);
+    if (showt == napi_boolean) napi_get_value_bool(env, showv, &show);
+  }
+  napi_get_boolean(env, show, &bv);
   napi_set_named_property(env, opts, "show", bv);
   if (transparent) {
     napi_set_named_property(env, opts, "backgroundColor", NF(env, "#00000000"));

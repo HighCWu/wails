@@ -35,6 +35,12 @@ if [ -z "$HDR" ]; then
 fi
 
 EXTRA=""
+# BRIDGE_SERDE_TEST=1 exports the _fastSerialize/_fastDeserialize hooks
+# (node's v8.serialize byte-compare in nativeaddon/test/); production
+# builds stay lean.
+if [ "${BRIDGE_SERDE_TEST:-}" = "1" ]; then
+  EXTRA="-DWAILS_BRIDGE_SERDE_TEST"
+fi
 case "$(uname -s)" in
 MINGW*|MSYS*|CYGWIN*)
   # windows.h hygiene + static CRT strings; the napi surface itself is
