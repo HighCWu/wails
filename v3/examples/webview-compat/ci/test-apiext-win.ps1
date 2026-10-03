@@ -101,6 +101,11 @@ try {
   Wait-Marker "compat: CLOSING-EVENT" 20
 
   if (-not $proc.WaitForExit(20000)) {
+    Write-Output "remaining processes:"
+    Get-Process | Where-Object { $_.ProcessName -match "electron|webview-compat" } |
+      ForEach-Object { Write-Output ("  {0} pid={1}" -f $_.ProcessName, $_.Id) }
+    Write-Output "app log tail:"
+    Dump-Log | ForEach-Object { Write-Output "  $_" }
     throw "app still running 20s after the Alt+F4 close"
   }
   Write-Output "PASS: app exited through the closing chain"

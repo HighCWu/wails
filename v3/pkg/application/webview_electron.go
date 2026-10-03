@@ -322,6 +322,18 @@ func pumpElectronEvents(proc *electron.Process) {
 				InvokeSync(func() { w.parent.markAsDestroyed() })
 				electronBackend.dropWindow(ev.WindowID)
 			}
+			// last window gone: end the application without waiting for
+			// the electron process EOF — inherited stdout handles can
+			// delay that indefinitely on windows
+			electronBackend.mu.Lock()
+			remaining := len(electronBackend.windows)
+			electronBackend.mu.Unlock()
+			if remaining == 0 {
+				go func() {
+					defer handlePanic()
+					globalApplication.Quit()
+				}()
+			}
 		case "contextmenu-select":
 			var p struct {
 				ID  uint   `json:"id"`
