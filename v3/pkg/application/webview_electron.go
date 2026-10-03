@@ -283,6 +283,17 @@ func stopPlatformElectron() {
 }
 
 func pumpElectronEvents(proc *electron.Process) {
+	defer func() {
+		// the electron process is gone — with no backend left to serve,
+		// end the application (mirrors the native backends, where the
+		// loop ends when the platform process finishes)
+		if globalApplication != nil {
+			go func() {
+				defer handlePanic()
+				globalApplication.Quit()
+			}()
+		}
+	}()
 	events := proc.Subscribe()
 	for ev := range events {
 		switch ev.Name {

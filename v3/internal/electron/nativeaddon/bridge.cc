@@ -1957,6 +1957,13 @@ static void MQuitApp(napi_env env);
 // Go decide — the emitted WindowClosing chain re-enters with destroy(),
 // which bypasses 'close' and cannot loop. Mirrors the GTK backend's
 // blocked delete-event.
+static void MQuitApp(napi_env env);
+
+static napi_value QuitAllCb(napi_env env, napi_callback_info info) {
+  MQuitApp(env);
+  return nullptr;
+}
+
 static napi_value CloseEventCb(napi_env env, napi_callback_info info) {
   g_env = env;
   size_t c = 1;
@@ -3102,7 +3109,12 @@ static napi_value MainEntry(napi_env env, napi_callback_info info) {
     const char* evs[2] = {"preload-error", "window-all-closed"};
     napi_callback_info_unused_marker:;
     for (const char* ev : evs) {
-      napi_callback cb = strcmp(ev, "preload-error") == 0 ? PreloadErrorCb : NoopCb;
+      // window-all-closed must actually quit: any handler overrides
+      // electron's built-in quit-on-all-closed, and a noop would leave a
+      // windowless electron process alive after the last window closes
+      napi_callback cb = strcmp(ev, "window-all-closed") == 0 ? QuitAllCb
+                         : strcmp(ev, "preload-error") == 0   ? PreloadErrorCb
+                                                              : NoopCb;
       napi_value fn = nullptr;
       napi_create_function(env, ev, NAPI_AUTO_LENGTH, cb, nullptr, &fn);
       napi_value a[2] = {NF(env, ev), fn};
