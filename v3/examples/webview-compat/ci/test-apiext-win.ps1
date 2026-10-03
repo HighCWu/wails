@@ -92,6 +92,11 @@ try {
   [Win32Input]::KeyUp(0x10); [Win32Input]::KeyUp(0x11)
   Wait-Marker "compat: MENUBAR-CLICKED" 20
 
+  # JS window.close() on the secondary window rides the same chain
+  Wait-Marker "compat: WIN2-CLOSING" 30
+  Wait-Marker "compat: WIN2-GONE" 30
+  Write-Output "PASS: JS window.close chain"
+
   # Alt+F4 -> intercepted close: WindowClosing fires, then the app exits
   # through the closing chain (destroy via the default listener)
   Start-Sleep -Milliseconds 500

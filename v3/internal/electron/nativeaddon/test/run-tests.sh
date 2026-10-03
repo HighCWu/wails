@@ -20,8 +20,18 @@ node "$DIR/napi_corpus.js" || FAIL=1
 echo "== main-surface harness"
 node "$DIR/main_driver.js" 2>&1 | grep -q "MAIN-HARNESS PASS" || { echo "FAIL: main harness"; FAIL=1; }
 
-echo "== reconnect regression"
-node "$DIR/reconn_test.js" 2>&1 | grep -q "RECONN-TEST PASS" || { echo "FAIL: reconn"; FAIL=1; }
+case "$(uname -s)" in
+MINGW*|MSYS*|CYGWIN*)
+  # the reconnect test dials a unix socket — windows CI skips it (the
+  # named-pipe path rides the same handshake and is covered end to end
+  # by the reload scenario)
+  echo "== reconnect regression: skipped on windows"
+  ;;
+*)
+  echo "== reconnect regression"
+  node "$DIR/reconn_test.js" 2>&1 | grep -q "RECONN-TEST PASS" || { echo "FAIL: reconn"; FAIL=1; }
+  ;;
+esac
 
 if [ "$FAIL" -ne 0 ]; then
   echo "ADDON TESTS FAILED"

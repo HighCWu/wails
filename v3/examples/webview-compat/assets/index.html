@@ -106,6 +106,17 @@
   }
 
   bench();
+
+  // bindings error path: a Go error must reject the promise with the
+  // error text intact (asserted host-side via this event)
+  (async () => {
+    try {
+      await wails.Call.ByName("main.CompatService.Fail", "boom");
+      wails.Events.Emit("compat:rpc-error-prop", "NO-THROW");
+    } catch (e) {
+      wails.Events.Emit("compat:rpc-error-prop", String((e && e.message) || e));
+    }
+  })();
 </script>
 </body>
 </html>

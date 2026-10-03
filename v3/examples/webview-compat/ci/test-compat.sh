@@ -158,6 +158,11 @@ if [ "${WAILS_COMPAT_APIEXT:-}" = "1" ]; then
   xdotool key ctrl+shift+g
   wait_log "compat: GLOBAL-SHORTCUT-FIRED" 10
   echo "PASS: global shortcut fired (X11 grab)"
+  # JS-initiated close on the secondary window rides the same
+  # intercepted-close chain without keyboard input
+  wait_log "compat: WIN2-CLOSING" 30
+  wait_log "compat: WIN2-GONE" 30
+  echo "PASS: JS window.close chain"
   # programmatic checkbox change must re-push the menubar: the initial
   # setMenu emits one menu-set event, the SetChecked resync a second
   wait_log "compat: CHECK-SET" 15
@@ -178,6 +183,23 @@ if [ "${WAILS_COMPAT_APIEXT:-}" = "1" ]; then
     die "window still visible after Alt+F4 close"
   fi
   echo "PASS: app exited through the closing chain"
+fi
+# single-instance leg (WAILS_COMPAT_SINGLEINSTANCE=1): after the app is
+# up, a second launch must exit quietly and the first instance must
+# receive OnSecondInstanceLaunch
+if [ "${WAILS_COMPAT_SINGLEINSTANCE:-}" = "1" ]; then
+  wait_log "compat: SUITE PASS" 120
+  DISPLAY="$DISP" "$APP" > /tmp/compat-second-instance.log 2>&1 & SECOND_PID=$!
+  for _ in $(seq 1 40); do
+    kill -0 "$SECOND_PID" 2>/dev/null || break
+    sleep 0.5
+  done
+  if kill -0 "$SECOND_PID" 2>/dev/null; then
+    kill "$SECOND_PID" 2>/dev/null
+    die "second instance did not exit"
+  fi
+  wait_log "compat: SECOND-INSTANCE" 20
+  echo "PASS: second instance exited and callback fired"
 fi
 # tray leg (WAILS_COMPAT_TRAY=1, electron backend): the Tray mapping
 # lifecycle — create, icon/tooltip/menu setters and the programmatic

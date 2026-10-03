@@ -2,10 +2,12 @@ package main
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -29,6 +31,12 @@ func (s *CompatService) ImeReport(event string, data string) string {
 	return "ok"
 }
 
+// Fail always errors: the frontend asserts the error propagates as a
+// rejected Promise (bindings error path).
+func (s *CompatService) Fail(msg string) (string, error) {
+	return "", errors.New("intentional: " + msg)
+}
+
 var failures int
 
 func check(win *application.WebviewWindow, app *application.App, name string, ok bool, detail string) {
@@ -41,7 +49,8 @@ func check(win *application.WebviewWindow, app *application.App, name string, ok
 }
 
 func main() {
-	app := application.New(application.Options{
+	var app *application.App
+	opts := application.Options{
 		Name: "webview-compat",
 		Assets: application.AssetOptions{
 			Handler: application.BundledAssetFileServer(assets),
@@ -49,7 +58,20 @@ func main() {
 		Services: []application.Service{
 			application.NewService(&CompatService{}),
 		},
-	})
+	}
+	if os.Getenv("WAILS_COMPAT_SINGLEINSTANCE") == "1" {
+		// second-instance lock: the driver launches this binary twice and
+		// asserts the first instance receives the launch callback
+		opts.SingleInstance = &application.SingleInstanceOptions{
+			UniqueID: "com.wails.compat.singleinstance",
+			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
+				// app is assigned by the time a second instance can launch
+				app.Logger.Info(fmt.Sprintf(
+					"compat: SECOND-INSTANCE args=%v workdir=%s", data.Args, data.WorkingDir))
+			},
+		}
+	}
+	app = application.New(opts)
 
 	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:      "main",
@@ -100,6 +122,15 @@ func main() {
 	// exists for renderer crashes).
 	app.Event.On("electron:rendererCrashed", func(e *application.CustomEvent) {
 		app.Logger.Info("compat: CRASH-EVENT", "data", e.Data)
+	})
+
+	// bindings error path: the frontend calls CompatService.Fail and the
+	// rejection must carry the Go error text back
+	var rpcErrProp int32
+	app.Event.On("compat:rpc-error-prop", func(e *application.CustomEvent) {
+		if msg, ok := e.Data.(string); ok && strings.Contains(msg, "intentional") {
+			atomic.StoreInt32(&rpcErrProp, 1)
+		}
 	})
 
 	// The frontend measures the frontend->Go call path (bindings) and
@@ -215,6 +246,9 @@ func main() {
 				}()
 			}
 			runSuite(app, win)
+			check(win, app, "rpc-error-prop",
+				atomic.LoadInt32(&rpcErrProp) == 1,
+				fmt.Sprintf("propagated=%d", atomic.LoadInt32(&rpcErrProp)))
 			// Window-event parity is asserted on the electron backend only:
 			// the GTK impl does not surface focus/maximise state signals as
 			// Common events (upstream gap), so the full set is its own task.
@@ -267,6 +301,33 @@ func main() {
 				}); err != nil {
 					app.Logger.Info("compat: GLOBAL-SHORTCUT-ERR " + err.Error())
 				}
+				// JS-initiated close on a secondary window: window.close()
+				// fires electron 'close', the addon preventDefaults it, Go
+				// runs the WindowClosing chain and the default listener
+				// destroys — asserting the chain without keyboard input
+				win2 := app.Window.NewWithOptions(application.WebviewWindowOptions{
+					Name: "apiext-second", Title: "apiext-second",
+					Width: 300, Height: 200,
+				})
+				win2.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
+					app.Logger.Info("compat: WIN2-CLOSING")
+				})
+				go func() {
+					time.Sleep(2 * time.Second)
+					win2.ExecJS("window.close()")
+					deadline := time.Now().Add(10 * time.Second)
+					for {
+						if _, ok := app.Window.GetByID(win2.ID()); !ok {
+							app.Logger.Info("compat: WIN2-GONE")
+							return
+						}
+						if time.Now().After(deadline) {
+							app.Logger.Info("compat: WIN2-STUCK")
+							return
+						}
+						time.Sleep(200 * time.Millisecond)
+					}
+				}()
 				app.Logger.Info("compat: APIEXT-ARMED")
 			}
 			if os.Getenv("WAILS_COMPAT_TRAY") == "1" {

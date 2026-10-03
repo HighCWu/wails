@@ -44,6 +44,26 @@ if grep -q "compat: BENCH-ERROR" "$LOG"; then
 fi
 grep -q "compat: events PASS" "$LOG" || die "window-event parity failed"
 
+# crash-recovery leg (WAILS_COMPAT_CRASH=1): SIGKILL the electron
+# renderer; the backend must report the crash and reload once
+if [ "${WAILS_COMPAT_CRASH:-}" = "1" ]; then
+  killed=""
+  for attempt in 1 2 3 4 5; do
+    powershell -NoProfile -Command 'Get-CimInstance Win32_Process -Filter "Name=''electron.exe''" | Where-Object { $_.CommandLine -match "type=renderer" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }' && killed=1 && break
+    sleep 1
+  done
+  [ -n "$killed" ] || die "no electron renderer process found to kill"
+  wait_log "compat: CRASH-EVENT" 30
+  echo "PASS: crash recovery event fired"
+fi
+
+# churn leg (WAILS_COMPAT_CHURN=1): five create/close cycles must all end
+# removed from the window manager
+if [ "${WAILS_COMPAT_CHURN:-}" = "1" ]; then
+  wait_log "compat: CHURN PASS" 90
+  echo "PASS: window churn cycles complete"
+fi
+
 # reload leg (WAILS_COMPAT_RELOAD=1): the app reloads the page after the
 # suite; the renderer re-injects, re-dials the named-pipe bridge endpoint
 # and the re-run bench proves the new connection end to end
