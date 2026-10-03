@@ -33,8 +33,13 @@ func FindRuntime() (string, error) {
 			"electron backend: WAILS_ELECTRON_DIR is not set; point it at an Electron distribution directory")
 	}
 	exe := "electron"
-	if runtime.GOOS == "windows" {
+	switch runtime.GOOS {
+	case "windows":
 		exe = "electron.exe"
+	case "darwin":
+		// the darwin distribution ships the app bundle; the binary inside
+		// runs a plain main.js directory like the linux exe does
+		exe = filepath.Join("Electron.app", "Contents", "MacOS", "Electron")
 	}
 	full := filepath.Join(dir, exe)
 	if st, err := os.Stat(full); err != nil || st.IsDir() {

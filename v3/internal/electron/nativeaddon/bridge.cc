@@ -323,6 +323,12 @@ static int dial_bridge_endpoint(const char* endpoint) {
     close(fd);
     return -1;
   }
+#ifdef __APPLE__
+  // darwin sockets raise SIGPIPE on writes to a closed peer, which
+  // would take the renderer down mid-race; suppress per-socket
+  int nosigpipe = 1;
+  setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+#endif
   struct timeval tv = {BRIDGE_TIMEOUT_SEC, 0};
   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
   int bufsz = 4 * 1024 * 1024;

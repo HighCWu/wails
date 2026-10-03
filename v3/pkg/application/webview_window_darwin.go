@@ -1450,7 +1450,12 @@ func (w *macosWebviewWindow) setAlwaysOnTop(alwaysOnTop bool) {
 	C.windowSetAlwaysOnTop(w.nsWindow, C.bool(alwaysOnTop))
 }
 
-func newWindowImpl(parent *WebviewWindow) *macosWebviewWindow {
+func newWindowImpl(parent *WebviewWindow) webviewWindowImpl {
+	// The electron backend replaces the whole window (BrowserWindow via
+	// the control protocol) — same dispatch as the linux/windows factories.
+	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return newElectronWindow(parent)
+	}
 	result := &macosWebviewWindow{
 		parent: parent,
 	}

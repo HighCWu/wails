@@ -79,8 +79,8 @@ func preparePlatformElectron(app *App) error {
 	if app.webviewBackend != WebviewBackendElectron {
 		return nil
 	}
-	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
-		return fmt.Errorf("electron backend: %s is not supported yet (linux/windows only)", runtime.GOOS)
+	if runtime.GOOS == "ios" || runtime.GOOS == "android" {
+		return fmt.Errorf("electron backend: %s is not supported", runtime.GOOS)
 	}
 	if electronRuntimeProbe != nil {
 		if err := electronRuntimeProbe(); err != nil {

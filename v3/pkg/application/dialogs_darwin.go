@@ -387,6 +387,20 @@ func dialogCallback(id C.int, buttonPressed C.int) {
 }
 
 func (m *macosApp) showAboutDialog(title string, message string, icon []byte) {
+	// electron backend: the Go-side NSAboutBox does not reach the Electron
+	// windows — route to the electron message dialog instead
+	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		opts := &MessageDialog{
+			MessageDialogOptions: MessageDialogOptions{
+				DialogType: InfoDialogType,
+				Title:      title,
+				Message:    message,
+			},
+		}
+		opts.impl = &electronMessageDialog{d: opts}
+		opts.Show()
+		return
+	}
 	var iconData unsafe.Pointer
 	if icon != nil {
 		iconData = unsafe.Pointer(&icon[0])
@@ -475,7 +489,11 @@ func (m *macosDialog) show() {
 
 }
 
-func newDialogImpl(d *MessageDialog) *macosDialog {
+func newDialogImpl(d *MessageDialog) messageDialogImpl {
+	// electron backend: dialogs render in the Electron process
+	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return &electronMessageDialog{d: d}
+	}
 	return &macosDialog{
 		dialog: d,
 	}
@@ -485,7 +503,11 @@ type macosOpenFileDialog struct {
 	dialog *OpenFileDialogStruct
 }
 
-func newOpenFileDialogImpl(d *OpenFileDialogStruct) *macosOpenFileDialog {
+func newOpenFileDialogImpl(d *OpenFileDialogStruct) openFileDialogImpl {
+	// electron backend: dialogs render in the Electron process
+	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return &electronOpenFileDialog{d: d}
+	}
 	return &macosOpenFileDialog{
 		dialog: d,
 	}
@@ -572,7 +594,11 @@ type macosSaveFileDialog struct {
 	dialog *SaveFileDialogStruct
 }
 
-func newSaveFileDialogImpl(d *SaveFileDialogStruct) *macosSaveFileDialog {
+func newSaveFileDialogImpl(d *SaveFileDialogStruct) saveFileDialogImpl {
+	// electron backend: dialogs render in the Electron process
+	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return &electronSaveFileDialog{d: d}
+	}
 	return &macosSaveFileDialog{
 		dialog: d,
 	}

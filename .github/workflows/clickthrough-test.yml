@@ -252,3 +252,24 @@ jobs:
         run: go build -o /tmp/clickthrough ./examples/clickthrough/
       - name: Run hit-test scenario
         run: v3/examples/clickthrough/ci/test-macos.sh /tmp/clickthrough
+      - name: Download Electron runtime (darwin-arm64)
+        run: |
+          curl -sL -o /tmp/electron.zip https://github.com/electron/electron/releases/download/v44.4.5/electron-v44.4.5-darwin-arm64.zip
+          mkdir -p /opt/electron && unzip -q /tmp/electron.zip -d /opt/electron
+          xattr -cr /opt/electron 2>/dev/null || true
+      - name: Build native bridge addon (Electron headers)
+        run: bash v3/internal/electron/nativeaddon/build-cpp.sh 44.4.5 /tmp/go_bridge_cpp.node
+      - name: Addon unit tests (serde corpus + harness)
+        run: bash v3/internal/electron/nativeaddon/test/run-tests.sh 44.4.5
+      - name: Build API compat scenario
+        working-directory: v3
+        run: go build -o /tmp/webview-compat ./examples/webview-compat/
+      - name: Run API compat scenario (electron backend, darwin)
+        # first electron-on-macOS pass: window/API suite + events parity +
+        # bindings bench over the control protocol, log markers only (the
+        # keyboard-synthesis legs stay off the mac runners)
+        env:
+          WAILS_WEBVIEW_BACKEND: electron
+          WAILS_ELECTRON_DIR: /opt/electron
+          WAILS_ELECTRON_NATIVE_ADDON: /tmp/go_bridge_cpp.node
+        run: bash v3/examples/webview-compat/ci/test-compat-win.sh /tmp/webview-compat
