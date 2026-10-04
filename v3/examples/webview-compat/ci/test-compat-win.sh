@@ -113,7 +113,9 @@ if [ "${WAILS_COMPAT_SINGLEINSTANCE:-}" = "1" ]; then
     kill "$SECOND_PID" 2>/dev/null
     die "second instance did not exit"
   fi
-  wait_log "compat: SECOND-INSTANCE" 20
+  # darwin notifies through NSDistributedNotificationCenter, whose
+  # delivery on hosted runners can take well over 20 seconds
+  wait_log "compat: SECOND-INSTANCE" 60
   echo "PASS: second instance exited and callback fired"
 fi
 
