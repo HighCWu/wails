@@ -243,6 +243,41 @@ static napi_value CallFn(napi_value fn, napi_value recv, size_t argc,
 
 static void Warn(const char* msg) { fprintf(stderr, "[go-bridge] %s\n", msg); }
 
+// CallFn with JS-exception surfacing: a throwing callee leaves the env
+// with a pending exception while napi_call_function reports napi_ok —
+// without this the error vanishes and the GO side sees success. The
+// exception text goes to stderr and re-throws so the control-plane
+// response carries it.
+static napi_value CallFnChecked(napi_env env, napi_value fn,
+                                napi_value recv, size_t argc,
+                                const napi_value* argv, const char* what) {
+  napi_value out = nullptr;
+  if (!fn || !recv ||
+      napi_call_function(env, recv, fn, argc, argv, &out) != napi_ok) {
+    std::string text = std::string(what) + ": call failed";
+    Warn(text.c_str());
+    napi_throw_error(env, nullptr, text.c_str());
+    return nullptr;
+  }
+  bool pending = false;
+  if (napi_is_exception_pending(env, &pending) == napi_ok && pending) {
+    napi_value err = nullptr;
+    std::string text(what);
+    if (napi_get_and_clear_last_exception(env, &err) == napi_ok && err) {
+      napi_value strs = nullptr;
+      std::string m;
+      if (napi_coerce_to_string(env, err, &strs) == napi_ok && strs &&
+          U8(env, strs, &m) && !m.empty()) {
+        text += ": " + m;
+      }
+    }
+    Warn(text.c_str());
+    napi_throw_error(env, nullptr, text.c_str());
+    return nullptr;
+  }
+  return out;
+}
+
 // ----------------------------------------------------------------------
 // wire I/O — identical frames to bridge.cc (4-byte LE length + payload)
 
@@ -2523,7 +2558,7 @@ static napi_value DispatchMethod(napi_env env, const std::string& m,
     napi_value jv = MJsonStringify(env, p);
     if (!jv) return nullptr;
     napi_value jargv[1] = {jv};
-    return CallFn(fn, global, 1, jargv);
+    return CallFnChecked(env, fn, global, 1, jargv, "trayOp");
   }
   if (m == "setMenu") {
     // menubar: forward the serialized template to main.js's
@@ -2539,7 +2574,7 @@ static napi_value DispatchMethod(napi_env env, const std::string& m,
     napi_value jv = MJsonStringify(env, p);
     if (!jv) return nullptr;
     napi_value jargv[1] = {jv};
-    return CallFn(fn, global, 1, jargv);
+    return CallFnChecked(env, fn, global, 1, jargv, "setMenu");
   }
   if (m == "copy") return simple("webContents", "copy");
   if (m == "paste") return simple("webContents", "paste");
@@ -2741,7 +2776,7 @@ static napi_value DispatchMethod(napi_env env, const std::string& m,
     napi_value jv = MJsonStringify(env, p);
     if (!jv) return nullptr;
     napi_value argv[1] = {jv};
-    return CallFn(fn, global, 1, argv);
+    return CallFnChecked(env, fn, global, 1, argv, "showContextMenu");
   }
   if (m == "showOpenDialog" || m == "showSaveDialog" || m == "showMessageDialog") {
     // Go sends Electron-shaped options; copy the known fields onto the
