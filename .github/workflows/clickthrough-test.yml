@@ -198,6 +198,18 @@ jobs:
       - name: Addon unit tests (serde corpus + harness)
         shell: bash
         run: bash v3/internal/electron/nativeaddon/test/run-tests.sh 44.4.5
+      - name: Run crash/churn scenario (electron backend, windows)
+        # renderer SIGKILL must recover; window churn must clean up
+        shell: bash
+        env:
+          WAILS_WEBVIEW_BACKEND: electron
+          WAILS_ELECTRON_DIR: C:/electron
+          WAILS_ELECTRON_DISABLE_SANDBOX: "1"
+          WAILS_ELECTRON_EXPERIMENT: native-ipc,native-http
+          WAILS_ELECTRON_NATIVE_ADDON: go_bridge_cpp.node
+          WAILS_COMPAT_CRASH: "1"
+          WAILS_COMPAT_CHURN: "1"
+        run: bash v3/examples/webview-compat/ci/test-compat-win.sh ./webview-compat.exe
       - name: Run API extensions scenario (electron backend, windows)
         # accelerator feed + menubar item accelerator + Alt+F4 close chain
         env:
@@ -215,18 +227,6 @@ jobs:
           WAILS_ELECTRON_EXPERIMENT: native-ipc,native-http
           WAILS_ELECTRON_NATIVE_ADDON: go_bridge_cpp.node
           WAILS_ELECTRON_DEBUG: "1"
-        run: bash v3/examples/webview-compat/ci/test-compat-win.sh ./webview-compat.exe
-      - name: Run crash/churn scenario (electron backend, windows)
-        # renderer SIGKILL must recover; window churn must clean up
-        shell: bash
-        env:
-          WAILS_WEBVIEW_BACKEND: electron
-          WAILS_ELECTRON_DIR: C:/electron
-          WAILS_ELECTRON_DISABLE_SANDBOX: "1"
-          WAILS_ELECTRON_EXPERIMENT: native-ipc,native-http
-          WAILS_ELECTRON_NATIVE_ADDON: go_bridge_cpp.node
-          WAILS_COMPAT_CRASH: "1"
-          WAILS_COMPAT_CHURN: "1"
         run: bash v3/examples/webview-compat/ci/test-compat-win.sh ./webview-compat.exe
       - name: Run same-process reload scenario (electron backend, windows)
         shell: bash

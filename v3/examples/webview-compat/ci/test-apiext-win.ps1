@@ -39,6 +39,30 @@ public class Win32Input {
 "@
 
 $script:LogPath = [System.IO.Path]::GetTempFileName()
+$script:Hwnd = [IntPtr]::Zero
+
+# press a modifier chord with retries: on a loaded runner the foreground
+# switch can silently fail and the keys land nowhere
+function Send-Chord([byte[]]$vks, [string]$marker, [int]$timeoutSec = 10) {
+  for ($r = 1; $r -le 3; $r++) {
+    [Win32Input]::SetForegroundWindow($script:Hwnd) | Out-Null
+    Start-Sleep -Milliseconds 400
+    foreach ($vk in $vks) {
+      [Win32Input]::KeyDown($vk); Start-Sleep -Milliseconds 60
+    }
+    for ($j = $vks.Length - 1; $j -ge 0; $j--) {
+      [Win32Input]::KeyUp($vks[$j]); Start-Sleep -Milliseconds 60
+    }
+    $start = Get-Date
+    while (((Get-Date) - $start).TotalSeconds -lt $timeoutSec) {
+      $hit = Select-String -Path $script:LogPath -Pattern $marker -SimpleMatch
+      if ($hit) { Write-Output "PASS: log marker '$marker' (attempt $r)"; return }
+      Start-Sleep -Milliseconds 250
+    }
+    Write-Output "retry $r: '$marker' not seen"
+  }
+  throw "timeout waiting for log marker: $marker"
+}
 function Dump-Log { Get-Content $script:LogPath | Select-Object -Last 30 }
 function Wait-Marker($pattern, $timeoutSec = 45) {
   $start = Get-Date
@@ -74,23 +98,16 @@ try {
     if ($hwnd -eq [IntPtr]::Zero) { Start-Sleep -Seconds 2 }
   }
   if ($hwnd -eq [IntPtr]::Zero) { throw "could not find the electron window" }
+  $script:Hwnd = $hwnd
   [Win32Input]::SetForegroundWindow($hwnd) | Out-Null
   Start-Sleep -Seconds 1
 
   # Ctrl+Shift+K -> window key binding through before-input-event
-  [Win32Input]::KeyDown(0x11); Start-Sleep -Milliseconds 80
-  [Win32Input]::KeyDown(0x10); Start-Sleep -Milliseconds 80
-  [Win32Input]::KeyDown(0x4B); Start-Sleep -Milliseconds 60; [Win32Input]::KeyUp(0x4B)
-  [Win32Input]::KeyUp(0x10); [Win32Input]::KeyUp(0x11)
-  Wait-Marker "compat: ACCEL-FIRED" 20
+  Send-Chord ([byte[]]@(0x11, 0x10, 0x4B)) "compat: ACCEL-FIRED"
 
   # Ctrl+Shift+M -> menubar item accelerator (menu-click pipeline)
   Start-Sleep -Milliseconds 500
-  [Win32Input]::KeyDown(0x11); Start-Sleep -Milliseconds 80
-  [Win32Input]::KeyDown(0x10); Start-Sleep -Milliseconds 80
-  [Win32Input]::KeyDown(0x4D); Start-Sleep -Milliseconds 60; [Win32Input]::KeyUp(0x4D)
-  [Win32Input]::KeyUp(0x10); [Win32Input]::KeyUp(0x11)
-  Wait-Marker "compat: MENUBAR-CLICKED" 20
+  Send-Chord ([byte[]]@(0x11, 0x10, 0x4D)) "compat: MENUBAR-CLICKED"
 
   # JS window.close() on the secondary window rides the same chain
   Wait-Marker "compat: WIN2-CLOSING" 30
@@ -100,10 +117,7 @@ try {
   # Alt+F4 -> intercepted close: WindowClosing fires, then the app exits
   # through the closing chain (destroy via the default listener)
   Start-Sleep -Milliseconds 500
-  [Win32Input]::KeyDown(0x12); Start-Sleep -Milliseconds 80
-  [Win32Input]::KeyDown(0x73); Start-Sleep -Milliseconds 60; [Win32Input]::KeyUp(0x73)
-  [Win32Input]::KeyUp(0x12)
-  Wait-Marker "compat: CLOSING-EVENT" 20
+  Send-Chord ([byte[]]@(0x12, 0x73)) "compat: CLOSING-EVENT" 15
 
   if (-not $proc.WaitForExit(20000)) {
     Write-Output "remaining processes:"
