@@ -60,8 +60,17 @@ if grep -q "compat: BENCH-ERROR" "$LOG"; then
 fi
 grep -q "compat: events PASS" "$LOG" || die "window-event parity failed"
 
+# churn leg (WAILS_COMPAT_CHURN=1): five create/close cycles must all end
+# removed from the window manager
+if [ "${WAILS_COMPAT_CHURN:-}" = "1" ]; then
+  wait_log "compat: CHURN PASS" 90
+  echo "PASS: window churn cycles complete"
+fi
+
 # crash-recovery leg (WAILS_COMPAT_CRASH=1): SIGKILL the electron
-# renderer; the backend must report the crash and reload once
+# renderer; the backend must report the crash and reload once. Runs late
+# in the sequence: the kill hits EVERY renderer alive at that moment,
+# and each triggers its own recovery — later legs need the storm settled
 if [ "${WAILS_COMPAT_CRASH:-}" = "1" ]; then
   killed=""
   for attempt in 1 2 3 4 5; do
@@ -76,13 +85,9 @@ if [ "${WAILS_COMPAT_CRASH:-}" = "1" ]; then
   [ -n "$killed" ] || die "no electron renderer process found to kill"
   wait_log "compat: CRASH-EVENT" 30
   echo "PASS: crash recovery event fired"
-fi
-
-# churn leg (WAILS_COMPAT_CHURN=1): five create/close cycles must all end
-# removed from the window manager
-if [ "${WAILS_COMPAT_CHURN:-}" = "1" ]; then
-  wait_log "compat: CHURN PASS" 90
-  echo "PASS: window churn cycles complete"
+  # each killed renderer auto-reloads under a 10s cooldown — let every
+  # recovery finish before the next leg asserts
+  sleep 12
 fi
 
 # apiext leg (WAILS_COMPAT_APIEXT=1): the input-free subset — the JS
