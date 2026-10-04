@@ -269,8 +269,10 @@ jobs:
       - name: Run API compat scenario (electron backend, darwin)
         # window/API suite + events parity + bindings bench, plus the
         # input-free scenario set (crash recovery, churn, reload, tray,
-        # single instance, apiext JS-close/menu-resync, DevTools exit) —
-        # the keyboard-synthesis legs stay off the mac runners
+        # single instance, DevTools exit) — the keyboard-synthesis legs
+        # stay off the mac runners, and apiext rides them too: the
+        # win2/executeJavaScript race under runner load needs a dev
+        # machine before it can be asserted here
         env:
           WAILS_WEBVIEW_BACKEND: electron
           WAILS_ELECTRON_DIR: /Users/runner/electron
@@ -281,6 +283,5 @@ jobs:
           WAILS_COMPAT_RELOAD: "1"
           WAILS_COMPAT_TRAY: "1"
           WAILS_COMPAT_SINGLEINSTANCE: "1"
-          WAILS_COMPAT_APIEXT: "1"
           WAILS_COMPAT_DEVTOOLS: "1"
         run: bash v3/examples/webview-compat/ci/test-compat-win.sh /tmp/webview-compat
