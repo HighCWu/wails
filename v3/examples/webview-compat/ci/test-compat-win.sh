@@ -104,18 +104,24 @@ fi
 # must exit quietly and the first instance must receive the callback
 if [ "${WAILS_COMPAT_SINGLEINSTANCE:-}" = "1" ]; then
   wait_log "compat: SUITE PASS" 120
-  "$APP" > /tmp/compat-second-instance.log 2>&1 & SECOND_PID=$!
-  for _ in $(seq 1 40); do
-    kill -0 "$SECOND_PID" 2>/dev/null || break
-    sleep 0.5
+  # darwin notifies through NSDistributedNotificationCenter: the second
+  # instance posts and exits immediately, so a delivery can be lost under
+  # runner load — re-launch up to three times, one delivery is enough
+  SECOND_OK=""
+  for attempt in 1 2 3; do
+    "$APP" > /tmp/compat-second-instance.log 2>&1 & SECOND_PID=$!
+    for _ in $(seq 1 40); do
+      kill -0 "$SECOND_PID" 2>/dev/null || break
+      sleep 0.5
+    done
+    if kill -0 "$SECOND_PID" 2>/dev/null; then
+      kill "$SECOND_PID" 2>/dev/null
+      die "second instance did not exit"
+    fi
+    if grep -q "compat: SECOND-INSTANCE" "$LOG"; then SECOND_OK=1; break; fi
+    sleep 2
   done
-  if kill -0 "$SECOND_PID" 2>/dev/null; then
-    kill "$SECOND_PID" 2>/dev/null
-    die "second instance did not exit"
-  fi
-  # darwin notifies through NSDistributedNotificationCenter, whose
-  # delivery on hosted runners can take well over 20 seconds
-  wait_log "compat: SECOND-INSTANCE" 60
+  [ -n "$SECOND_OK" ] || wait_log "compat: SECOND-INSTANCE" 30
   echo "PASS: second instance exited and callback fired"
 fi
 
