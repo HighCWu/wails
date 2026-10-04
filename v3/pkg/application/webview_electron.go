@@ -179,6 +179,17 @@ func startPlatformElectron(app *App) error {
 	return nil
 }
 
+func init() {
+	// The backend-resolution probe: FindRuntime validates that
+	// WAILS_ELECTRON_DIR points at a distribution with the platform
+	// binary. Install it here so auto/auto-electron decisions and the
+	// exported ElectronRuntimeAvailable check run before any window.
+	electronRuntimeProbe = func() error {
+		_, err := electron.FindRuntime()
+		return err
+	}
+}
+
 // serveWebviewRequestDirect runs a /wails/runtime request through the
 // asset server in-process. Shared by the control protocol (fetch-ipc)
 // and the native UDS transport (native-uds promotion).
