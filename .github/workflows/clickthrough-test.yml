@@ -267,11 +267,19 @@ jobs:
         working-directory: v3
         run: go build -o /tmp/webview-compat ./examples/webview-compat/
       - name: Run API compat scenario (electron backend, darwin)
-        # first electron-on-macOS pass: window/API suite + events parity +
-        # bindings bench over the control protocol, log markers only (the
-        # keyboard-synthesis legs stay off the mac runners)
+        # window/API suite + events parity + bindings bench, plus the
+        # input-free scenario set (crash recovery, churn, reload, tray,
+        # single instance, apiext JS-close/menu-resync, DevTools exit) —
+        # the keyboard-synthesis legs stay off the mac runners
         env:
           WAILS_WEBVIEW_BACKEND: electron
           WAILS_ELECTRON_DIR: /Users/runner/electron
           WAILS_ELECTRON_NATIVE_ADDON: /tmp/go_bridge_cpp.node
+          WAILS_COMPAT_CRASH: "1"
+          WAILS_COMPAT_CHURN: "1"
+          WAILS_COMPAT_RELOAD: "1"
+          WAILS_COMPAT_TRAY: "1"
+          WAILS_COMPAT_SINGLEINSTANCE: "1"
+          WAILS_COMPAT_APIEXT: "1"
+          WAILS_COMPAT_DEVTOOLS: "1"
         run: bash v3/examples/webview-compat/ci/test-compat-win.sh /tmp/webview-compat

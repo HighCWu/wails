@@ -241,6 +241,10 @@ func (s *macosSystemTray) setTooltip(tooltip string) {
 }
 
 func newSystemTrayImpl(s *SystemTray) systemTrayImpl {
+	// electron backend: the tray renders in the Electron process
+	if globalApplication != nil && globalApplication.webviewBackend == WebviewBackendElectron {
+		return newElectronSystemTray(s)
+	}
 	result := &macosSystemTray{
 		parent:         s,
 		id:             s.id,

@@ -132,6 +132,7 @@ globalThis.__wailsTray = (json) => {
   const tray = globalThis.__wailsTrays.get(spec.id);
   if (!tray) return;
   if (spec.action === 'seticon') tray.setImage(nativeImage.createFromDataURL(spec.icon));
+  else if (spec.action === 'setlabel') tray.setTitle(spec.label || '');
   else if (spec.action === 'settooltip') tray.setToolTip(spec.tooltip || '');
   else if (spec.action === 'setmenu') tray.setContextMenu(spec.menu ? __wailsTrayMenu(spec.menu, spec.id) : null);
   else if (spec.action === 'bounds') return tray.getBounds();

@@ -9,6 +9,7 @@ package application
 import (
 	"encoding/base64"
 	"fmt"
+	"runtime"
 )
 
 // blankPNG is a 16x16 transparent icon: the Tray constructor needs an
@@ -74,8 +75,17 @@ func (t *electronSystemTray) create() {
 }
 
 func (t *electronSystemTray) setLabel(label string) {
-	// Electron's setTitle is macOS-only; nothing to map on linux/windows
-	// (the linux native tray maps it to the StatusNotifier Title).
+	// Electron's setTitle is macOS-only; on linux/windows there is
+	// nothing to map (the linux native tray maps it to the StatusNotifier
+	// Title instead).
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	params := t.spec("setlabel")
+	params["label"] = label
+	if err := t.electronTrayCall("trayOp", params, nil); err != nil {
+		globalApplication.error("electron: tray setLabel: %v", err)
+	}
 }
 
 func (t *electronSystemTray) setTooltip(tooltip string) {
