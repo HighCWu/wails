@@ -73,9 +73,12 @@ globalThis.__wailsSetMenu = (json) => {
     return out;
   });
   const menu = Menu.buildFromTemplate(conv(spec.menu));
-  if (spec.id) {
+  if (spec.id && process.platform !== 'darwin') {
+    // per-window menubar exists on linux/windows only; the mac build has
+    // no BrowserWindow.setMenu at all — route through the app menu there
     const win = BrowserWindow.fromId(spec.id);
-    if (win) win.setMenu(menu);
+    if (win && typeof win.setMenu === 'function') win.setMenu(menu);
+    else Menu.setApplicationMenu(menu);
   } else {
     Menu.setApplicationMenu(menu);
   }
