@@ -247,6 +247,12 @@ func main() {
 				}()
 			}
 			runSuite(app, win)
+			// the frontend fires the error call on page load; give a slow
+			// runner's event delivery a moment before the verdict
+			errDeadline := time.Now().Add(5 * time.Second)
+			for atomic.LoadInt32(&rpcErrProp) == 0 && time.Now().Before(errDeadline) {
+				time.Sleep(100 * time.Millisecond)
+			}
 			check(win, app, "rpc-error-prop",
 				atomic.LoadInt32(&rpcErrProp) == 1,
 				fmt.Sprintf("propagated=%d", atomic.LoadInt32(&rpcErrProp)))

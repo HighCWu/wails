@@ -105,10 +105,9 @@
     document.getElementById("rpc").textContent = "bench complete";
   }
 
-  bench();
-
   // bindings error path: a Go error must reject the promise with the
-  // error text intact (asserted host-side via this event)
+  // error text intact (asserted host-side via this event). Runs before
+  // the bench — the host suite checks the flag at suite end.
   (async () => {
     try {
       await wails.Call.ByName("main.CompatService.Fail", "boom");
@@ -117,6 +116,8 @@
       wails.Events.Emit("compat:rpc-error-prop", String((e && e.message) || e));
     }
   })();
+
+  bench();
 </script>
 </body>
 </html>
