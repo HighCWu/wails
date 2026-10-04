@@ -420,6 +420,12 @@ func pumpElectronEvents(proc *electron.Process) {
 					}
 				}
 			})
+		case "menu-set":
+			var p struct {
+				ID uint `json:"id"`
+			}
+			_ = json.Unmarshal(ev.Params, &p)
+			globalApplication.Logger.Info(fmt.Sprintf("electron: menu-set id=%d", p.ID))
 		case "render-gone":
 			if w := electronBackend.window(ev.WindowID); w != nil {
 				var p struct {

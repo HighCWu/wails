@@ -79,9 +79,12 @@ globalThis.__wailsSetMenu = (json) => {
   } else {
     Menu.setApplicationMenu(menu);
   }
-  // stderr, not stdout: the control plane consumes stdout frames, while
-  // stderr is forwarded to the host log where drivers can assert on it
-  process.stderr.write('[wails-electron] menu-set id=' + spec.id + '\n');
+  // report as a control-plane event: the Go side logs it, which keeps
+  // the marker visible on every platform (electron stderr does not reach
+  // the host log on darwin)
+  process.stdout.write(JSON.stringify({
+    t: 'ev', e: 'menu-set', p: { id: spec.id },
+  }) + String.fromCharCode(10));
 };
 
 // System tray: same pure-JS build path as the menus. One entry point —
