@@ -59,7 +59,7 @@ function Send-Chord([byte[]]$vks, [string]$marker, [int]$timeoutSec = 10) {
       if ($hit) { Write-Output "PASS: log marker '$marker' (attempt $r)"; return }
       Start-Sleep -Milliseconds 250
     }
-    Write-Output "retry $r: '$marker' not seen"
+    Write-Output "retry ${r}: '$marker' not seen"
   }
   throw "timeout waiting for log marker: $marker"
 }
