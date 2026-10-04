@@ -281,7 +281,6 @@ jobs:
           WAILS_COMPAT_CRASH: "1"
           WAILS_COMPAT_CHURN: "1"
           WAILS_COMPAT_RELOAD: "1"
-          WAILS_COMPAT_TRAY: "1"
           WAILS_COMPAT_SINGLEINSTANCE: "1"
           WAILS_COMPAT_DEVTOOLS: "1"
         run: bash v3/examples/webview-compat/ci/test-compat-win.sh /tmp/webview-compat
