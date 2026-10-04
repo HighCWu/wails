@@ -49,7 +49,7 @@ grep -q "compat: events PASS" "$LOG" || die "window-event parity failed"
 if [ "${WAILS_COMPAT_CRASH:-}" = "1" ]; then
   killed=""
   for attempt in 1 2 3 4 5; do
-    powershell -NoProfile -Command 'Get-CimInstance Win32_Process -Filter "Name=''electron.exe''" | Where-Object { $_.CommandLine -match "type=renderer" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }' && killed=1 && break
+    powershell -NoProfile -Command 'Get-CimInstance Win32_Process | Where-Object { $_.Name -eq "electron.exe" -and $_.CommandLine -match "type=renderer" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }' && killed=1 && break
     sleep 1
   done
   [ -n "$killed" ] || die "no electron renderer process found to kill"
