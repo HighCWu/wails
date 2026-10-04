@@ -13,6 +13,22 @@ APP_PID=""
 cleanup() { [[ -n "$APP_PID" ]] && kill "$APP_PID" 2>/dev/null; }
 trap cleanup EXIT
 die() { echo "FAIL: $*"; echo "--- app log ($LOG):"; cat "$LOG"; exit 1; }
+wait_log() {
+  local pattern="$1" timeout="${2:-90}"
+  local start
+  start=$(date +%s)
+  until grep -q "$pattern" "$LOG"; do
+    if ! kill -0 "$APP_PID" 2>/dev/null; then
+      echo "--- app log ($LOG):"
+      cat "$LOG"
+      die "app exited while waiting for: $pattern"
+    fi
+    if [ $(( $(date +%s) - start )) -gt "$timeout" ]; then
+      die "timeout waiting for log marker: $pattern"
+    fi
+    sleep 0.3
+  done
+}
 
 "$APP" >"$LOG" 2>&1 & APP_PID=$!
 

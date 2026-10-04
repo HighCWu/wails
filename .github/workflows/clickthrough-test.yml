@@ -274,6 +274,7 @@ jobs:
         env:
           WAILS_WEBVIEW_BACKEND: electron
           WAILS_ELECTRON_DIR: /Users/runner/electron
+          WAILS_ELECTRON_EXPERIMENT: native-ipc,native-http
           WAILS_ELECTRON_NATIVE_ADDON: /tmp/go_bridge_cpp.node
           WAILS_COMPAT_CRASH: "1"
           WAILS_COMPAT_CHURN: "1"
